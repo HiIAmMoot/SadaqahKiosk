@@ -1,0 +1,191 @@
+# Sadaqah Kiosk
+
+An open-source Android donation kiosk app powered by the [SumUp](https://sumup.com) card payment SDK. Designed for mosques, Islamic charities, and community organisations to accept card donations through a self-service touchscreen terminal.
+
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE.md)
+
+---
+
+## Features
+
+- **Card payments** via SumUp card reader (chip & PIN, contactless)
+- **Tap-to-pay** option (experimental, requires supported reader)
+- **Preset donation amounts** on a responsive grid
+- **Custom amount** entry via on-screen numpad
+- **8 languages**: English, Dutch, German, French, Spanish, Italian, Turkish, Arabic
+  - Auto-detected from device locale on first launch
+- **Fully themeable**: background, pattern overlay, button colour, and text/border colour
+- **Logo upload**: display your organisation's logo on the donation screen
+- **Islamic thank-you screen**: toggle between an Arabic blessing (بارك الله فيكم) and a localised "thank you"
+- **Biometric / PIN gate** on the settings screen
+- **Export / import settings** as JSON (including affiliate key, with permission)
+- **Offline awareness**: warns when internet is unavailable
+- **Screensaver** after 5 minutes of inactivity
+- **Auto-reinitialise** at 02:00 daily to keep the SumUp session fresh
+- Responsive layout — tuned for Lenovo M9 tablet (800 dp landscape), scales to any Android device
+
+---
+
+## Requirements
+
+| Requirement | Details |
+|---|---|
+| Android | 8.0+ (API 26) |
+| SumUp account | [sumup.com](https://sumup.com) — free to register |
+| SumUp Affiliate Key | Generated in the SumUp developer dashboard |
+| SumUp card reader | Air, Air Lite, Solo, or any supported reader |
+| Internet connection | Required for SumUp authentication and payments |
+
+---
+
+## Building from Source
+
+### Prerequisites
+
+- Android Studio Hedgehog or newer
+- JDK 17+
+- Android SDK with API 34
+
+### Steps
+
+```bash
+git clone https://github.com/your-org/sadaqah-kiosk.git
+cd sadaqah-kiosk
+```
+
+Open the project in Android Studio, or build from the command line:
+
+```bash
+# Debug build
+./gradlew assembleDebug
+
+# Release build (requires a signing keystore — see Signing below)
+./gradlew assembleRelease
+```
+
+The debug APK is output to `app/build/outputs/apk/debug/`.
+
+### Signing a Release Build
+
+1. Generate a keystore:
+   ```bash
+   keytool -genkey -v -keystore kiosk.jks -keyalg RSA -keysize 2048 -validity 10000 -alias kiosk
+   ```
+2. Create `keystore.properties` in the project root (this file is gitignored):
+   ```properties
+   storeFile=../kiosk.jks
+   storePassword=your_store_password
+   keyAlias=kiosk
+   keyPassword=your_key_password
+   ```
+3. Reference it in `app/build.gradle.kts` under `signingConfigs`.
+
+---
+
+## First-Time Setup
+
+1. Install the APK on your Android tablet or phone.
+2. Launch the app — it auto-detects your device language.
+3. Tap the **gear icon** (long-press if biometrics are required) to open **Settings**.
+4. Enter your **SumUp Affiliate Key** on the login screen and tap **Log In**.
+5. Once logged in, tap **Connect Card Reader** in Settings to pair your SumUp reader.
+6. Customise the kiosk name, logo, colours, currency, and language.
+7. Tap **Save & Back** — your donors can now tap to give.
+
+### Settings Reference
+
+| Setting | Description |
+|---|---|
+| Kiosk Name | Appears on SumUp transaction receipts |
+| Logo | PNG/JPEG shown on the donation screen |
+| Language | UI language; 8 options; auto-detected on first launch |
+| Currency | EUR, USD, or GBP |
+| Background / Pattern / Button / Text colours | Full RGBA colour picker with history and suggested palette |
+| Connect Card Reader | Pairs the SumUp reader (must be logged in first) |
+| Islamic Blessing | Toggle between Arabic بارك الله فيكم and localised "thank you" |
+| Export / Import Settings | Back up or copy settings between devices as JSON |
+| Reset App | Clears all stored data and restarts (double-tap to confirm) |
+
+---
+
+## Architecture
+
+```
+app/src/main/java/com/sadaqah/kiosk/
+├── MainActivity.kt          # Activity, SumUp API integration, state management
+├── Translations.kt          # Language enum, TranslationManager, all 8 Strings objects
+├── ColorHistory.kt          # Recently picked and suggested colours singleton
+├── Utils.kt                 # responsiveDp / responsiveSp helpers, grid column logic
+├── model/
+│   └── Settings.kt          # Data class for all persisted settings
+├── screens/
+│   ├── DonationScreen.kt    # Main donation grid
+│   ├── CustomAmountScreen.kt
+│   ├── SettingsScreen.kt
+│   ├── ColorPickerScreen.kt
+│   ├── LoginScreen.kt
+│   ├── ThankYouScreen.kt
+│   └── MaintenanceScreen.kt
+└── components/
+    ├── NumpadButton.kt
+    └── ColorComponents.kt
+```
+
+Settings are persisted to `SharedPreferences` as JSON (Gson). The SumUp SDK handles all payment processing; this app never touches card data.
+
+---
+
+## Contributing
+
+Contributions are welcome! Please read the guidelines below before opening a PR.
+
+### Reporting Bugs
+
+Use the [Bug Report](.github/ISSUE_TEMPLATE/bug_report.md) template. Include:
+- Device model and Android version
+- Steps to reproduce
+- What you expected vs. what happened
+- Logs if available (`adb logcat -s SumUpPayment SumUpLogin NetworkStatus`)
+
+### Suggesting Features
+
+Use the [Feature Request](.github/ISSUE_TEMPLATE/feature_request.md) template.
+
+### Submitting Code
+
+1. Fork the repository and create a branch from `master`:
+   ```bash
+   git checkout -b feature/my-feature
+   ```
+2. Make your changes. Keep PRs focused — one feature or fix per PR.
+3. Follow the existing code style (Kotlin, Jetpack Compose, Material3).
+4. Test on at least one real device (emulator alone is insufficient for SumUp SDK testing).
+5. Open a Pull Request using the [PR template](.github/pull_request_template.md).
+
+### Adding a Language
+
+1. Add a new entry to the `Language` enum in `Translations.kt` with the BCP 47 language code, display name, flag emoji, and short code.
+2. Implement the `Strings` interface for the new language (copy `EnglishStrings` and translate all fields).
+3. Add the new case to `TranslationManager.currentStrings()` and `rememberStrings()`.
+
+### Code Style
+
+- Self-documenting names over comments
+- Comments only for non-obvious *why*, never for *what*
+- No commented-out code
+- Keep Composables small and single-purpose
+- No hardcoded colours in screens — always use `settings.buttonColor` / `settings.buttonBorderColor`
+
+---
+
+## Privacy
+
+This app does **not** collect, store, or transmit any personal data beyond what the SumUp SDK requires for payment processing. No analytics, no crash reporting, no tracking. See [SumUp's privacy policy](https://sumup.com/privacy/) for details on payment data handling.
+
+---
+
+## License
+
+[GNU General Public License v3.0](LICENSE.md) — see the file for full terms.
+
+In short: you may use, modify, and distribute this software freely, but any derivative work must also be released under GPL v3 with source code available.

@@ -1,15 +1,40 @@
-*.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
+# Gradle build outputs
+.gradle/
+/build/
+/app/build/
+**/build/
+
+# Local configuration — contains SDK path, never commit
+local.properties
+
+# Android Studio project files (keep project-level config, ignore personal/cache files)
+/.idea/caches/
+/.idea/libraries/
 /.idea/modules.xml
 /.idea/workspace.xml
 /.idea/navEditor.xml
 /.idea/assetWizardSettings.xml
+*.iml
+
+# macOS metadata
 .DS_Store
-/build
-/captures
-.externalNativeBuild
-.cxx
-local.properties
+
+# NDK / CMake
+.externalNativeBuild/
+.cxx/
+
+# Kotlin compiler error dumps
+.kotlin/
+
+# Release artifacts — build from source, never commit binaries
+*.apk
+*.aab
+app/release/
+
+# Signing keys — NEVER commit these
+*.keystore
+*.jks
+keystore.properties
+
+# Captures (Android Studio profiler recordings)
+/captures/
