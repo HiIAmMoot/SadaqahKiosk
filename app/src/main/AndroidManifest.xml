@@ -31,13 +31,13 @@
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
-        android:theme="@style/Theme.SumUpApp"
+        android:theme="@style/Theme.SadaqahKiosk"
         tools:targetApi="35">
         <activity
             android:name=".MainActivity"
             android:exported="true"
             android:label="@string/app_name"
-            android:theme="@style/Theme.SumUpApp"
+            android:theme="@style/Theme.SadaqahKiosk"
             android:lockTaskMode="if_whitelisted">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

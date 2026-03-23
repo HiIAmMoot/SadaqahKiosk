@@ -33,7 +33,8 @@ fun SetupStatusScreen(
     settings: Settings,
     onBack: () -> Unit,
     onConfigureWifi: () -> Unit,
-    onEnableBluetooth: () -> Unit
+    onEnableBluetooth: () -> Unit,
+    showBack: Boolean = true
 ) {
     val strings = rememberStrings()
     val kioskNameSet = !settings.kioskName.isNullOrBlank()
@@ -124,20 +125,22 @@ fun SetupStatusScreen(
                     }
                 }
 
-                Button(
-                    onClick = onBack,
-                    colors = ButtonDefaults.buttonColors(containerColor = Color(settings.buttonColor)),
-                    shape = RoundedCornerShape(responsiveDp(16.dp)),
-                    modifier = Modifier
-                        .fillMaxWidth(0.55f)
-                        .height(responsiveDp(70.dp))
-                ) {
-                    Text(
-                        text = strings.back,
-                        color = Color(settings.buttonBorderColor),
-                        fontSize = responsiveSp(22.0),
-                        fontWeight = FontWeight.Bold
-                    )
+                if (showBack) {
+                    Button(
+                        onClick = onBack,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(settings.buttonColor)),
+                        shape = RoundedCornerShape(responsiveDp(16.dp)),
+                        modifier = Modifier
+                            .fillMaxWidth(0.55f)
+                            .height(responsiveDp(70.dp))
+                    ) {
+                        Text(
+                            text = strings.back,
+                            color = Color(settings.buttonBorderColor),
+                            fontSize = responsiveSp(22.0),
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
                 }
             }
         }

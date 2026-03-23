@@ -27,7 +27,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import com.sadaqah.kiosk.model.Settings
-import com.sadaqah.kiosk.ui.theme.SumUpAppTheme
+import com.sadaqah.kiosk.ui.theme.SadaqahKioskTheme
 import com.google.gson.Gson
 import com.sadaqah.kiosk.screens.*
 import com.sumup.merchant.reader.api.SumUpAPI
@@ -172,7 +172,7 @@ class MainActivity : FragmentActivity() {
         scheduleAutoPinIfReady()
 
         setContent {
-            SumUpAppTheme {
+            SadaqahKioskTheme {
                 LaunchedEffect(Unit) {
                     while (true) {
                         delay(10000L) // Check every 10 seconds
@@ -397,6 +397,12 @@ class MainActivity : FragmentActivity() {
             Toast.makeText(this, "Test mode: card reader simulated", Toast.LENGTH_SHORT).show()
             return
         }
+        if (!isBluetoothEnabled) {
+            val strings = TranslationManager.currentStrings()
+            Toast.makeText(this, strings.enableBluetooth, Toast.LENGTH_SHORT).show()
+            Log.w("SumUpReader", "Card reader connection attempted with Bluetooth disabled")
+            return
+        }
         isConnectingCardReader = true
         autoPinJob?.cancel()
         stopAppPinning()
@@ -438,6 +444,7 @@ class MainActivity : FragmentActivity() {
         if (!isNetworkAvailable) {
             Toast.makeText(this, strings.noInternetConnection, Toast.LENGTH_LONG).show()
             Log.w("SumUpPayment", "Payment attempted with no network")
+            return
         }
 
         val title = if (!settings.kioskName.isNullOrBlank()) {
@@ -876,6 +883,18 @@ fun AppUI(
                         style = settings.screensaverStyle,
                         settings = settings,
                         onTouch = onResetScreensaver
+                    )
+                } else if (!isNetworkAvailable || !isBluetoothEnabled) {
+                    SetupStatusScreen(
+                        isNetworkAvailable = isNetworkAvailable,
+                        isBluetoothEnabled = isBluetoothEnabled,
+                        isLoggedIn = isLoggedIn,
+                        isCardReaderConnected = isCardReaderConnected,
+                        settings = settings,
+                        showBack = false,
+                        onBack = {},
+                        onConfigureWifi = onReconnectWifi,
+                        onEnableBluetooth = onEnableBluetooth
                     )
                 } else {
                     DonationGridScreen(
