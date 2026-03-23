@@ -130,15 +130,14 @@ class MainActivity : FragmentActivity() {
             }
 
             override fun onLost(network: android.net.Network) {
-                // A single network was lost — check if any other network still has internet.
+                // A single network was lost — check if the active network still has internet.
                 // On phones with both WiFi and cellular, Android de-prioritises cellular when
                 // WiFi is active, which fires onLost for cellular even though WiFi is fine.
                 val cm = connectivityManager ?: return
-                val stillConnected = cm.allNetworks.any { remaining ->
-                    remaining != network &&
-                    cm.getNetworkCapabilities(remaining)
+                val activeNetwork = cm.activeNetwork
+                val stillConnected = activeNetwork != null &&
+                    cm.getNetworkCapabilities(activeNetwork)
                         ?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-                }
                 isNetworkAvailable = stillConnected
                 if (!stillConnected) autoPinJob?.cancel()
                 Log.d("NetworkStatus", "Network lost: $network — still connected: $stillConnected")
@@ -151,13 +150,13 @@ class MainActivity : FragmentActivity() {
         connectivityManager!!.registerNetworkCallback(networkRequest, networkCallback!!)
 
         // Check current connectivity at startup instead of assuming true
-        isNetworkAvailable = connectivityManager!!.allNetworks.any { network ->
-            connectivityManager!!.getNetworkCapabilities(network)
+        val activeNetwork = connectivityManager!!.activeNetwork
+        isNetworkAvailable = activeNetwork != null &&
+            connectivityManager!!.getNetworkCapabilities(activeNetwork)
                 ?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-        }
 
-        @Suppress("DEPRECATION")
-        isBluetoothEnabled = BluetoothAdapter.getDefaultAdapter()?.isEnabled == true
+        isBluetoothEnabled = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)
+            ?.adapter?.isEnabled == true
 
         bluetoothReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
