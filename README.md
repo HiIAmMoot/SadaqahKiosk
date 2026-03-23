@@ -2,7 +2,7 @@
 
 An open-source Android donation kiosk app powered by the [SumUp](https://sumup.com) card payment SDK. Designed for mosques, Islamic charities, and community organisations to accept card donations through a self-service touchscreen terminal.
 
-[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE.md)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL%20v3-blue.svg)](LICENSE.md)
 
 ---
 
@@ -14,7 +14,7 @@ An open-source Android donation kiosk app powered by the [SumUp](https://sumup.c
 - **Custom amount** entry via on-screen numpad
 - **8 languages**: English, Dutch, German, French, Spanish, Italian, Turkish, Arabic
   - Auto-detected from device locale on first launch
-- **Fully themeable**: background, pattern overlay, button colour, and text/border colour
+- **Fully themeable**: background, pattern overlay, button color, and text/border color
 - **Logo upload**: display your organisation's logo on the donation screen
 - **Islamic thank-you screen**: toggle between an Arabic blessing (بارك الله فيكم) and a localised "thank you"
 - **Biometric / PIN gate** on the settings screen
@@ -86,11 +86,10 @@ The debug APK is output to `app/build/outputs/apk/debug/`.
 
 1. Install the APK on your Android tablet or phone.
 2. Launch the app — it auto-detects your device language.
-3. Tap the **gear icon** (long-press if biometrics are required) to open **Settings**.
-4. Enter your **SumUp Affiliate Key** on the login screen and tap **Log In**.
-5. Once logged in, tap **Connect Card Reader** in Settings to pair your SumUp reader.
-6. Customise the kiosk name, logo, colours, currency, and language.
-7. Tap **Save & Back** — your donors can now tap to give.
+3. Tap the **gear icon** — biometrics (fingerprint or PIN) will trigger automatically.
+4. In Settings, enter your **SumUp Affiliate Key** and tap **Log In**, then tap **Connect Card Reader** to pair your SumUp reader. You can also log in first and configure settings afterwards — either order works.
+5. Customize the kiosk name, logo, colors, currency, and language.
+6. Tap **Save & Back** — your donors can now tap to give.
 
 ### Settings Reference
 
@@ -100,7 +99,7 @@ The debug APK is output to `app/build/outputs/apk/debug/`.
 | Logo | PNG/JPEG shown on the donation screen |
 | Language | UI language; 8 options; auto-detected on first launch |
 | Currency | EUR, USD, or GBP |
-| Background / Pattern / Button / Text colours | Full RGBA colour picker with history and suggested palette |
+| Background / Pattern / Button / Text colors | Full RGBA color picker with history and suggested palette |
 | Connect Card Reader | Pairs the SumUp reader (must be logged in first) |
 | Islamic Blessing | Toggle between Arabic بارك الله فيكم and localised "thank you" |
 | Export / Import Settings | Back up or copy settings between devices as JSON |
@@ -114,7 +113,7 @@ The debug APK is output to `app/build/outputs/apk/debug/`.
 app/src/main/java/com/sadaqah/kiosk/
 ├── MainActivity.kt          # Activity, SumUp API integration, state management
 ├── Translations.kt          # Language enum, TranslationManager, all 8 Strings objects
-├── ColorHistory.kt          # Recently picked and suggested colours singleton
+├── ColorHistory.kt          # Recently picked and suggested colors singleton
 ├── Utils.kt                 # responsiveDp / responsiveSp helpers, grid column logic
 ├── model/
 │   └── Settings.kt          # Data class for all persisted settings
@@ -174,7 +173,7 @@ Use the [Feature Request](.github/ISSUE_TEMPLATE/feature_request.md) template.
 - Comments only for non-obvious *why*, never for *what*
 - No commented-out code
 - Keep Composables small and single-purpose
-- No hardcoded colours in screens — always use `settings.buttonColor` / `settings.buttonBorderColor`
+- No hardcoded colors in screens — always use `settings.buttonColor` / `settings.buttonBorderColor`
 
 ---
 
@@ -186,6 +185,6 @@ This app does **not** collect, store, or transmit any personal data beyond what 
 
 ## License
 
-[GNU General Public License v3.0](LICENSE.md) — see the file for full terms.
+[GNU Affero General Public License v3.0](LICENSE.md) — see the file for full terms.
 
-In short: you may use, modify, and distribute this software freely, but any derivative work must also be released under GPL v3 with source code available.
+In short: you may use, modify, and distribute this software freely, but any derivative work must also be released under AGPL v3 with source code available — including if you run a modified version as a hosted or network service.
