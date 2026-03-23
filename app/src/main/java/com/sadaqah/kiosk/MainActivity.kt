@@ -2,6 +2,11 @@ package com.sadaqah.kiosk
 
 import android.bluetooth.BluetoothAdapter
 import android.content.BroadcastReceiver
+import android.net.ConnectivityManager
+import android.net.ConnectivityManager.NetworkCallback
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -44,8 +49,8 @@ class MainActivity : FragmentActivity() {
 
     private var biometricPrompt: BiometricPrompt? = null
     private var authTimeoutJob: Job? = null
-    private var networkCallback: android.net.ConnectivityManager.NetworkCallback? = null
-    private var connectivityManager: android.net.ConnectivityManager? = null
+    private var networkCallback: NetworkCallback? = null
+    private var connectivityManager: ConnectivityManager? = null
     private var autoPinJob: Job? = null
     private var wifiReconnectJob: Job? = null
     private var bluetoothReceiver: BroadcastReceiver? = null
@@ -112,9 +117,9 @@ class MainActivity : FragmentActivity() {
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemBars()
 
-        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as android.net.ConnectivityManager
-        networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: android.net.Network) {
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        networkCallback = object : NetworkCallback() {
+            override fun onAvailable(network: Network) {
                 isNetworkAvailable = true
                 Log.d("NetworkStatus", "Network available: $network")
                 if (isReconnectingWifi) {
@@ -129,7 +134,7 @@ class MainActivity : FragmentActivity() {
                 }
             }
 
-            override fun onLost(network: android.net.Network) {
+            override fun onLost(network: Network) {
                 // A single network was lost — check if the active network still has internet.
                 // On phones with both WiFi and cellular, Android de-prioritises cellular when
                 // WiFi is active, which fires onLost for cellular even though WiFi is fine.
@@ -137,15 +142,15 @@ class MainActivity : FragmentActivity() {
                 val activeNetwork = cm.activeNetwork
                 val stillConnected = activeNetwork != null &&
                     cm.getNetworkCapabilities(activeNetwork)
-                        ?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                        ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
                 isNetworkAvailable = stillConnected
                 if (!stillConnected) autoPinJob?.cancel()
                 Log.d("NetworkStatus", "Network lost: $network — still connected: $stillConnected")
             }
         }
 
-        val networkRequest = android.net.NetworkRequest.Builder()
-            .addCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        val networkRequest = NetworkRequest.Builder()
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
             .build()
         connectivityManager!!.registerNetworkCallback(networkRequest, networkCallback!!)
 
@@ -153,7 +158,7 @@ class MainActivity : FragmentActivity() {
         val activeNetwork = connectivityManager!!.activeNetwork
         isNetworkAvailable = activeNetwork != null &&
             connectivityManager!!.getNetworkCapabilities(activeNetwork)
-                ?.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+                ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
 
         isBluetoothEnabled = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)
             ?.adapter?.isEnabled == true
@@ -228,6 +233,7 @@ class MainActivity : FragmentActivity() {
                     onPinApp = ::startAppPinning,
                     onReconnectWifi = ::startWifiReconnectFlow,
                     onEnableBluetooth = ::openBluetoothSettings,
+                    onDisableBluetooth = ::disableBluetooth,
                     onActivateScreensaver = ::activateScreensaver,
                     onTestModeChange = { enabled ->
                         onSettingsChange(settings.copy(testMode = enabled))
@@ -365,6 +371,12 @@ class MainActivity : FragmentActivity() {
 
     fun openBluetoothSettings() {
         openSystemSettings(Intent(AndroidSettings.ACTION_BLUETOOTH_SETTINGS))
+    }
+
+    fun disableBluetooth() {
+        val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
+        @Suppress("DEPRECATION")
+        adapter?.disable()
     }
 
     fun unpinApp() {
@@ -786,6 +798,7 @@ fun AppUI(
     onPinApp: () -> Unit,
     onReconnectWifi: () -> Unit,
     onEnableBluetooth: () -> Unit,
+    onDisableBluetooth: () -> Unit,
     onActivateScreensaver: () -> Unit,
     onTestModeChange: (Boolean) -> Unit,
     onLogout: () -> Unit
@@ -821,7 +834,8 @@ fun AppUI(
                         onEnableBluetooth = {
                             onShowSetupStatus(false)
                             onEnableBluetooth()
-                        }
+                        },
+                        onDisableBluetooth = onDisableBluetooth
                     )
                     else -> SettingsScreen(
                         settings = settings,
@@ -893,7 +907,8 @@ fun AppUI(
                         showBack = false,
                         onBack = {},
                         onConfigureWifi = onReconnectWifi,
-                        onEnableBluetooth = onEnableBluetooth
+                        onEnableBluetooth = onEnableBluetooth,
+                        onDisableBluetooth = onDisableBluetooth
                     )
                 } else {
                     DonationGridScreen(

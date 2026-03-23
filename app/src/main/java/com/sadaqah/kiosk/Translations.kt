@@ -6,15 +6,15 @@ import androidx.compose.runtime.getValue
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-enum class Language(val code: String, val displayName: String, val flag: String, val shortCode: String) {
-    ENGLISH("en", "English",    "🇬🇧", "EN"),
-    DUTCH(  "nl", "Nederlands", "🇳🇱", "NL"),
-    GERMAN( "de", "Deutsch",    "🇩🇪", "DE"),
-    FRENCH( "fr", "Français",   "🇫🇷", "FR"),
-    SPANISH("es", "Español",    "🇪🇸", "ES"),
-    ITALIAN("it", "Italiano",   "🇮🇹", "IT"),
-    TURKISH("tr", "Türkçe",     "🇹🇷", "TR"),
-    ARABIC( "ar", "العربية",   "🇸🇦", "AR"),
+enum class Language(val code: String, val flag: String, val shortCode: String) {
+    ENGLISH("en", "🇬🇧", "EN"),
+    DUTCH(  "nl", "🇳🇱", "NL"),
+    GERMAN( "de", "🇩🇪", "DE"),
+    FRENCH( "fr", "🇫🇷", "FR"),
+    SPANISH("es", "🇪🇸", "ES"),
+    ITALIAN("it", "🇮🇹", "IT"),
+    TURKISH("tr", "🇹🇷", "TR"),
+    ARABIC( "ar", "🇸🇦", "AR"),
 }
 
 object TranslationManager {
@@ -192,6 +192,7 @@ interface Strings {
     val reconnectWifi: String
     val configureWifi: String
     val enableBluetooth: String
+    val disableBluetooth: String
     val testMode: String
     val testModeActive: String
     val logOut: String
@@ -337,6 +338,7 @@ object DutchStrings : Strings {
     override val reconnectWifi = "WiFi Opnieuw Verbinden"
     override val configureWifi = "WiFi Configureren"
     override val enableBluetooth = "Bluetooth Inschakelen"
+    override val disableBluetooth = "Bluetooth Uitschakelen"
     override val testMode = "Testmodus"
     override val testModeActive = "TESTMODUS"
     override val logOut = "Uitloggen"
@@ -481,6 +483,7 @@ object EnglishStrings : Strings {
     override val reconnectWifi = "Reconnect WiFi"
     override val configureWifi = "Configure WiFi"
     override val enableBluetooth = "Enable Bluetooth"
+    override val disableBluetooth = "Disable Bluetooth"
     override val testMode = "Test Mode"
     override val testModeActive = "TEST MODE"
     override val logOut = "Log Out"
@@ -625,6 +628,7 @@ object GermanStrings : Strings {
     override val reconnectWifi = "WLAN Wiederherstellen"
     override val configureWifi = "WLAN Konfigurieren"
     override val enableBluetooth = "Bluetooth Aktivieren"
+    override val disableBluetooth = "Bluetooth Deaktivieren"
     override val testMode = "Testmodus"
     override val testModeActive = "TESTMODUS"
     override val logOut = "Abmelden"
@@ -769,6 +773,7 @@ object FrenchStrings : Strings {
     override val reconnectWifi = "Reconnecter WiFi"
     override val configureWifi = "Configurer WiFi"
     override val enableBluetooth = "Activer Bluetooth"
+    override val disableBluetooth = "Désactiver Bluetooth"
     override val testMode = "Mode test"
     override val testModeActive = "MODE TEST"
     override val logOut = "Se déconnecter"
@@ -913,6 +918,7 @@ object SpanishStrings : Strings {
     override val reconnectWifi = "Reconectar WiFi"
     override val configureWifi = "Configurar WiFi"
     override val enableBluetooth = "Activar Bluetooth"
+    override val disableBluetooth = "Desactivar Bluetooth"
     override val testMode = "Modo de prueba"
     override val testModeActive = "MODO PRUEBA"
     override val logOut = "Cerrar sesión"
@@ -1057,6 +1063,7 @@ object ItalianStrings : Strings {
     override val reconnectWifi = "Riconnetti WiFi"
     override val configureWifi = "Configura WiFi"
     override val enableBluetooth = "Attiva Bluetooth"
+    override val disableBluetooth = "Disattiva Bluetooth"
     override val testMode = "Modalità test"
     override val testModeActive = "MODALITÀ TEST"
     override val logOut = "Disconnetti"
@@ -1201,6 +1208,7 @@ object TurkishStrings : Strings {
     override val reconnectWifi = "WiFi'ya Yeniden Bağlan"
     override val configureWifi = "WiFi'ı Yapılandır"
     override val enableBluetooth = "Bluetooth'u Etkinleştir"
+    override val disableBluetooth = "Bluetooth'u Devre Dışı Bırak"
     override val testMode = "Test Modu"
     override val testModeActive = "TEST MODU"
     override val logOut = "Çıkış Yap"
@@ -1345,6 +1353,7 @@ object ArabicStrings : Strings {
     override val reconnectWifi = "إعادة الاتصال بالواي فاي"
     override val configureWifi = "إعداد الواي فاي"
     override val enableBluetooth = "تفعيل البلوتوث"
+    override val disableBluetooth = "تعطيل البلوتوث"
     override val testMode = "وضع الاختبار"
     override val testModeActive = "وضع الاختبار"
     override val logOut = "تسجيل الخروج"

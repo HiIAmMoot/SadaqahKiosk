@@ -34,6 +34,7 @@ fun SetupStatusScreen(
     onBack: () -> Unit,
     onConfigureWifi: () -> Unit,
     onEnableBluetooth: () -> Unit,
+    onDisableBluetooth: () -> Unit,
     showBack: Boolean = true
 ) {
     val strings = rememberStrings()
@@ -106,23 +107,21 @@ fun SetupStatusScreen(
                     )
                 }
 
-                // Bluetooth enable button — only when BT is off
-                if (!isBluetoothEnabled) {
-                    Button(
-                        onClick = onEnableBluetooth,
-                        colors = ButtonDefaults.buttonColors(containerColor = Color(settings.buttonColor)),
-                        shape = RoundedCornerShape(responsiveDp(16.dp)),
-                        modifier = Modifier
-                            .fillMaxWidth(0.55f)
-                            .height(responsiveDp(70.dp))
-                    ) {
-                        Text(
-                            text = strings.enableBluetooth,
-                            color = Color(settings.buttonBorderColor),
-                            fontSize = responsiveSp(22.0),
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+                // Bluetooth toggle button — always visible
+                Button(
+                    onClick = if (isBluetoothEnabled) onDisableBluetooth else onEnableBluetooth,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color(settings.buttonColor)),
+                    shape = RoundedCornerShape(responsiveDp(16.dp)),
+                    modifier = Modifier
+                        .fillMaxWidth(0.55f)
+                        .height(responsiveDp(70.dp))
+                ) {
+                    Text(
+                        text = if (isBluetoothEnabled) strings.disableBluetooth else strings.enableBluetooth,
+                        color = Color(settings.buttonBorderColor),
+                        fontSize = responsiveSp(22.0),
+                        fontWeight = FontWeight.Bold
+                    )
                 }
 
                 if (showBack) {
