@@ -9,7 +9,7 @@ An open-source Android donation kiosk app powered by the [SumUp](https://sumup.c
 ## Features
 
 - **Card payments** via SumUp card reader (chip & PIN, contactless)
-- **Tap-to-pay** option (experimental, requires supported reader)
+  - Achieved through the SumUp Android SDK: https://github.com/sumup/sumup-android-sdk
 - **Preset donation amounts** on a responsive grid
 - **Custom amount** entry via on-screen numpad
 - **8 languages**: English, Dutch, German, French, Spanish, Italian, Turkish, Arabic
@@ -22,19 +22,19 @@ An open-source Android donation kiosk app powered by the [SumUp](https://sumup.c
 - **Offline awareness**: warns when internet is unavailable
 - **Screensaver** after 5 minutes of inactivity
 - **Auto-reinitialise** at 02:00 daily to keep the SumUp session fresh
-- Responsive layout — tuned for Lenovo M9 tablet (800 dp landscape), scales to any Android device
+- Responsive layout — tuned for Lenovo M9 tablet (800 dp portrait), scales to any Android device
 
 ---
 
 ## Requirements
 
-| Requirement | Details |
-|---|---|
-| Android | 8.0+ (API 26) |
-| SumUp account | [sumup.com](https://sumup.com) — free to register |
-| SumUp Affiliate Key | Generated in the SumUp developer dashboard |
-| SumUp card reader | Air, Air Lite, Solo, or any supported reader |
-| Internet connection | Required for SumUp authentication and payments |
+| Requirement         | Details                                         |
+|---------------------|-------------------------------------------------|
+| Android             | 11.0+ (API 30)                                  |
+| SumUp account       | [sumup.com](https://sumup.com) free to register |
+| SumUp Affiliate Key | Generated in the SumUp developer dashboard      |
+| SumUp card reader   | Air, Air Lite, Solo, or any supported reader    |
+| Internet connection | Required for SumUp authentication and payments  |
 
 ---
 
@@ -43,14 +43,14 @@ An open-source Android donation kiosk app powered by the [SumUp](https://sumup.c
 ### Prerequisites
 
 - Android Studio Hedgehog or newer
-- JDK 17+
-- Android SDK with API 34
+- JDK 11+
+- Android SDK with API 35
 
 ### Steps
 
 ```bash
-git clone https://github.com/your-org/sadaqah-kiosk.git
-cd sadaqah-kiosk
+git clone https://github.com/HiIAmMoot/SadaqahKiosk.git
+cd SadaqahKiosk
 ```
 
 Open the project in Android Studio, or build from the command line:
@@ -85,25 +85,26 @@ The debug APK is output to `app/build/outputs/apk/debug/`.
 ## First-Time Setup
 
 1. Install the APK on your Android tablet or phone.
-2. Launch the app — it auto-detects your device language.
-3. Tap the **gear icon** — biometrics (fingerprint or PIN) will trigger automatically.
-4. In Settings, enter your **SumUp Affiliate Key** and tap **Log In**, then tap **Connect Card Reader** to pair your SumUp reader. You can also log in first and configure settings afterwards — either order works.
-5. Customize the kiosk name, logo, colors, currency, and language.
-6. Tap **Save & Back** — your donors can now tap to give.
+2. Launch the app, it auto-detects your device language. 
+3. Tap the **gear icon**, biometrics (fingerprint or PIN) will trigger automatically.
+4. In Settings, customize the kiosk name, logo, colors, currency, and language. Tap Save & Back.
+5. Log in with your SumUp Affiliate Key, you will then be prompted to log in using your SumUp account's credentials.
+6. You will be prompted to connect a device.
+7. After successful connection, your donors can now tap to give.
 
 ### Settings Reference
 
-| Setting | Description |
-|---|---|
-| Kiosk Name | Appears on SumUp transaction receipts |
-| Logo | PNG/JPEG shown on the donation screen |
-| Language | UI language; 8 options; auto-detected on first launch |
-| Currency | EUR, USD, or GBP |
-| Background / Pattern / Button / Text colors | Full RGBA color picker with history and suggested palette |
-| Connect Card Reader | Pairs the SumUp reader (must be logged in first) |
-| Islamic Blessing | Toggle between Arabic بارك الله فيكم and localised "thank you" |
-| Export / Import Settings | Back up or copy settings between devices as JSON |
-| Reset App | Clears all stored data and restarts (double-tap to confirm) |
+| Setting                                     | Description                                                  |
+|---------------------------------------------|--------------------------------------------------------------|
+| Kiosk Name                                  | Appears on SumUp transaction receipts with a "SK - " prefix  |
+| Logo                                        | PNG/JPEG shown on the donation screen, transparency supported |
+| Language                                    | UI language; 8 options; auto-detected on first launch        |
+| Currency                                    | EUR, USD, or GBP                                             |
+| Background / Pattern / Button / Text colors | Full RGBA color picker with history and suggested colors     |
+| Connect Card Reader                         | Pairs the SumUp reader (must be logged in first)             |
+| Islamic Blessing when donating              | Toggle between Arabic بارك الله فيكم and localised "thank you" |
+| Export / Import Settings                    | Back up or copy settings between devices as JSON             |
+| Reset App                                   | Clears all stored data and restarts (double-tap to confirm)  |
 
 ---
 
@@ -146,6 +147,8 @@ Use the [Bug Report](.github/ISSUE_TEMPLATE/bug_report.md) template. Include:
 - What you expected vs. what happened
 - Logs if available (`adb logcat -s SumUpPayment SumUpLogin NetworkStatus`)
 
+For bugs specifically related to the SumUp SDK, please refer to their github issues page: https://github.com/sumup/sumup-android-sdk/issues
+
 ### Suggesting Features
 
 Use the [Feature Request](.github/ISSUE_TEMPLATE/feature_request.md) template.
@@ -173,7 +176,7 @@ Use the [Feature Request](.github/ISSUE_TEMPLATE/feature_request.md) template.
 - Comments only for non-obvious *why*, never for *what*
 - No commented-out code
 - Keep Composables small and single-purpose
-- No hardcoded colors in screens — always use `settings.buttonColor` / `settings.buttonBorderColor`
+- No hardcoded colors in screens — always use `settings.buttonColor` / `settings.buttonBorderColor` etc.
 
 ---
 
