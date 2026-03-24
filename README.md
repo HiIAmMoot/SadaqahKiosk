@@ -6,6 +6,22 @@ An open-source Android donation kiosk app powered by the [SumUp](https://sumup.c
 
 ---
 
+## Screenshots
+
+| Splash | Login |
+|:---:|:---:|
+| ![Splash](docs/screenshots/screensaver.jpeg) | ![Login](docs/screenshots/login.jpeg) |
+
+| Donation Screen | Custom Amount |
+|:---:|:---:|
+| ![Donation](docs/screenshots/donation_grid.jpeg) | ![Custom Amount](docs/screenshots/custom_amount.jpeg) |
+
+| Settings | |
+|:---:|:---:|
+| ![Settings](docs/screenshots/settings.jpeg) | |
+
+---
+
 ## Features
 
 - **Card payments** via SumUp card reader (chip & PIN, contactless)
