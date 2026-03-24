@@ -180,6 +180,20 @@ Use the [Feature Request](.github/ISSUE_TEMPLATE/feature_request.md) template.
 
 ---
 
+## Support the Project
+
+If this app has been useful to your masjid or organisation, consider supporting its development.
+
+| Method         | Address / Link                                             |
+|----------------|------------------------------------------------------------|
+| Ko-fi          | [ko-fi.com/iammoot](https://ko-fi.com/iammoot)             |
+| thanks.dev     | [thanks.dev/gh/hiiammoot](https://thanks.dev/gh/hiiammoot) |
+| Bitcoin (BTC)  | `bc1qprtakahp8xtt6tltjacx88wvnp4hgcxlk7kmhe`               |
+| Ethereum (ETH) | `0x6B652e4955b82Fb40eF9f503D30dBBf28c09573a`               |
+| Solana (SOL)   | `CDiKy33RzxpFFXxzxKN89MpfAmCYsZhSN2a2UV5bErqz`             |
+
+---
+
 ## Privacy
 
 This app does **not** collect, store, or transmit any personal data beyond what the SumUp SDK requires for payment processing. No analytics, no crash reporting, no tracking. See [SumUp's privacy policy](https://sumup.com/privacy/) for details on payment data handling.
