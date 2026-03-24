@@ -100,9 +100,10 @@ fun AffiliateLoginScreen(
             )
 
             Spacer(modifier = Modifier.height(responsiveDp(200.dp)))
+            val fieldHeight = responsiveDp(70.dp).coerceAtLeast(56.dp)
             Box(
                 modifier = Modifier
-                    .height(responsiveDp(70.dp))
+                    .height(fieldHeight)
                     .fillMaxWidth()
                     .border(
                         width = responsiveDp(4.dp),
@@ -139,12 +140,14 @@ fun AffiliateLoginScreen(
                         unfocusedBorderColor = Color(settings.buttonColor),
                         cursorColor = Color(settings.buttonColor),
                         focusedLabelColor = Color(settings.buttonColor),
+                        focusedTextColor = Color(settings.buttonBorderColor),
+                        unfocusedTextColor = Color(settings.buttonBorderColor),
                     ),
                     shape = RoundedCornerShape(responsiveDp(25.dp)),
                     singleLine = true,
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(responsiveDp(70.dp))
+                        .height(fieldHeight)
                 )
             }
 
