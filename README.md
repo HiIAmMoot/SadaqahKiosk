@@ -8,17 +8,13 @@ An open-source Android donation kiosk app powered by the [SumUp](https://sumup.c
 
 ## Screenshots
 
-| Splash | Login |
-|:---:|:---:|
-| ![Splash](docs/screenshots/screensaver.jpeg) | ![Login](docs/screenshots/login.jpeg) |
-
-| Donation Screen | Custom Amount |
-|:---:|:---:|
-| ![Donation](docs/screenshots/donation_grid.jpeg) | ![Custom Amount](docs/screenshots/custom_amount.jpeg) |
-
-| Settings | |
-|:---:|:---:|
-| ![Settings](docs/screenshots/settings.jpeg) | |
+<p align="center">
+  <img src="docs/screenshots/screensaver.jpeg" width="150">
+  <img src="docs/screenshots/login.jpeg" width="150">
+  <img src="docs/screenshots/donation_grid.jpeg" width="150">
+  <img src="docs/screenshots/custom_amount.jpeg" width="150">
+  <img src="docs/screenshots/settings.jpeg" width="150">
+</p>
 
 ---
 
