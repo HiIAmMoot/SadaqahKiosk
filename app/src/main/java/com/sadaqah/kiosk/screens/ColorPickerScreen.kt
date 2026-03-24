@@ -212,10 +212,10 @@ fun RgbaInputs(
     controller: ColorPickerController,
     onColorChange: (Color) -> Unit
 ) {
-    var r by remember { mutableStateOf(color.red) }
-    var g by remember { mutableStateOf(color.green) }
-    var b by remember { mutableStateOf(color.blue) }
-    var a by remember { mutableStateOf(color.alpha) }
+    var r by remember { mutableFloatStateOf(color.red) }
+    var g by remember { mutableFloatStateOf(color.green) }
+    var b by remember { mutableFloatStateOf(color.blue) }
+    var a by remember { mutableFloatStateOf(color.alpha) }
 
     // Sync with external color changes (from picker or swatches)
     LaunchedEffect(color) {

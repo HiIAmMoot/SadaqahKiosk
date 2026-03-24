@@ -11,7 +11,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
-import android.os.Build
+import android.annotation.SuppressLint
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
 import android.util.Log
@@ -68,7 +68,7 @@ class MainActivity : FragmentActivity() {
     var showCustomAmountScreen by mutableStateOf(false)
     var customAmountInput by mutableStateOf("")
     var isScreensaverActive by mutableStateOf(false)
-    var lastInteractionTime by mutableStateOf(System.currentTimeMillis())
+    var lastInteractionTime by mutableLongStateOf(System.currentTimeMillis())
     var isNetworkAvailable by mutableStateOf(true)
     var firstLogIn by mutableStateOf(true)
     var isPinned by mutableStateOf(false)
@@ -361,18 +361,14 @@ class MainActivity : FragmentActivity() {
     }
 
     fun startWifiReconnectFlow() {
-        val intent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            Intent(AndroidSettings.Panel.ACTION_WIFI)
-        } else {
-            Intent(AndroidSettings.ACTION_WIFI_SETTINGS)
-        }
-        openSystemSettings(intent)
+        openSystemSettings(Intent(AndroidSettings.Panel.ACTION_WIFI))
     }
 
     fun openBluetoothSettings() {
         openSystemSettings(Intent(AndroidSettings.ACTION_BLUETOOTH_SETTINGS))
     }
 
+    @SuppressLint("MissingPermission")
     fun disableBluetooth() {
         val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
         @Suppress("DEPRECATION")

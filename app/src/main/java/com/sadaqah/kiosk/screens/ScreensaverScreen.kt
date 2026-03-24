@@ -38,7 +38,7 @@ object ScreensaverStyle {
     const val SCROLLING  = "scrolling"
     const val PARTICLES  = "particles"
 
-    val all = listOf(HUE_DRIFT, RIPPLE, SCROLLING, PARTICLES)
+    val all = listOf(SCROLLING, HUE_DRIFT, RIPPLE, PARTICLES)
     fun label(style: String) = when (style) {
         RIPPLE    -> "Ripples"
         SCROLLING -> "Scrolling"

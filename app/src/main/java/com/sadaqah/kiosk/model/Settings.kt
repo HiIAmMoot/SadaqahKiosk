@@ -12,7 +12,7 @@ data class Settings(
     val currency: String = "EUR", // "EUR", "USD", "GBP"
     val useTapToPay: Boolean = false,
     val useArabicThankYou: Boolean = true,
-    val screensaverStyle: String = "hue_drift",
+    val screensaverStyle: String = "scrolling",
     val screensaverCustomMessage: String = "",
     val screensaverCycleMessages: Boolean = true,
     val screensaverIdleTimeoutSec: Int = 300,
