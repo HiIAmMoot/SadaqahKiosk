@@ -7,13 +7,8 @@
 # Local configuration — contains SDK path, never commit
 local.properties
 
-# Android Studio project files (keep project-level config, ignore personal/cache files)
-/.idea/caches/
-/.idea/libraries/
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
+# Android Studio project files
+.idea/
 *.iml
 
 # macOS metadata
@@ -30,6 +25,7 @@ local.properties
 *.apk
 *.aab
 app/release/
+app/debug/
 
 # Signing keys — NEVER commit these
 *.keystore
