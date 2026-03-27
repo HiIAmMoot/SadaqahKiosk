@@ -38,6 +38,7 @@ import com.sadaqah.kiosk.screens.*
 import com.sumup.merchant.reader.api.SumUpAPI
 import com.sumup.merchant.reader.api.SumUpLogin
 import com.sumup.merchant.reader.api.SumUpPayment
+import com.sumup.merchant.reader.ReaderModuleCoreState
 import com.sumup.merchant.reader.api.SumUpState
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -178,6 +179,7 @@ class MainActivity : FragmentActivity() {
         setContent {
             SadaqahKioskTheme {
                 LaunchedEffect(Unit) {
+                    var prepareCounter = 0
                     while (true) {
                         delay(10000L) // Check every 10 seconds
                         val idleTime = System.currentTimeMillis() - lastInteractionTime
@@ -186,6 +188,18 @@ class MainActivity : FragmentActivity() {
                         if (idleTime > screensaverDelay && !isScreensaverActive && isLoggedIn && !isEditingSettings && !showThankYou && !showMaintenanceScreen) {
                             isScreensaverActive = true
                             Log.d("Screensaver", "Activated after 5 minutes idle")
+                        }
+
+                        // Prepare card reader every 5 minutes when on donation screen or screensaver
+                        val onDonationScreen = isLoggedIn && !isEditingSettings && !showThankYou && !showMaintenanceScreen
+                        if (onDonationScreen || isScreensaverActive) {
+                            prepareCounter++
+                            if (prepareCounter >= 30) { // 30 × 10s = 5 minutes
+                                prepareCounter = 0
+                                prepareCardReader()
+                            }
+                        } else {
+                            prepareCounter = 0
                         }
                     }
                 }
@@ -254,6 +268,9 @@ class MainActivity : FragmentActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         val strings = TranslationManager.currentStrings()
 
+        val extras = data?.extras?.keySet()?.associateWith { data.extras?.get(it) } ?: emptyMap<String, Any?>()
+        Log.d("ActivityResult", "requestCode=$requestCode resultCode=$resultCode extras=$extras")
+
         when (requestCode) {
             1 -> {
                 if (resultCode == 1 && data != null) {
@@ -272,16 +289,22 @@ class MainActivity : FragmentActivity() {
                 }
             }
             2 -> {
-                if (resultCode == 1 && data != null) {
+                val readerConnected = try {
+                    ReaderModuleCoreState.Instance()?.mReaderCoreManager?.isCardReaderConnected() == true
+                } catch (e: Exception) { false }
+                isConnectingCardReader = false
+                scheduleAutoPinIfReady()
+                if (resultCode == 1 || readerConnected) {
                     isCardReaderConnected = true
                     Toast.makeText(this, strings.deviceConnectionSuccessful, Toast.LENGTH_SHORT).show()
-                    prepareCardReader()
+                    lifecycleScope.launch {
+                        delay(3000)
+                        prepareCardReader()
+                    }
                 } else {
                     isCardReaderConnected = false
                     val errorMessage = data?.getStringExtra(SumUpAPI.Response.MESSAGE) ?: "Unknown error"
                     val errorCode = data?.getIntExtra(SumUpAPI.Response.RESULT_CODE, -1) ?: -1
-                    Log.e("SumUpReader", "Connection failed - Code: $errorCode, Message: $errorMessage")
-
                     val userMessage = when {
                         errorMessage.contains("timeout", ignoreCase = true) -> strings.cardReaderTimeout
                         errorMessage.contains("not found", ignoreCase = true) -> strings.cardReaderNotFound
@@ -383,6 +406,7 @@ class MainActivity : FragmentActivity() {
     fun activateScreensaver() {
         isEditingSettings = false
         isScreensaverActive = true
+        finishActivity(2)
     }
 
     fun authenticate(affiliateKey: String) {
@@ -436,6 +460,7 @@ class MainActivity : FragmentActivity() {
 
             showMaintenanceScreen = false
             Log.d("SumUpDebug", "Maintenance complete - returning to normal operation")
+            prepareCardReader()
         }
     }
 
@@ -520,6 +545,7 @@ class MainActivity : FragmentActivity() {
             showMaintenanceScreen = false
             Toast.makeText(this@MainActivity, strings.reinitialized, Toast.LENGTH_SHORT).show()
             Log.d("SumUpDebug", "Manual reinit complete")
+            prepareCardReader()
         }
     }
 
@@ -532,10 +558,6 @@ class MainActivity : FragmentActivity() {
             if (isNetworkAvailable && isBluetoothEnabled) {
                 startAppPinning()
             }
-        }
-        if (isConnectingCardReader) {
-            isConnectingCardReader = false
-            scheduleAutoPinIfReady()
         }
     }
 
@@ -565,6 +587,7 @@ class MainActivity : FragmentActivity() {
         if (isScreensaverActive) {
             isScreensaverActive = false
             Log.d("Screensaver", "Deactivated by user interaction")
+            finishActivity(2)
             prepareCardReader()
         }
     }
@@ -672,8 +695,12 @@ class MainActivity : FragmentActivity() {
     }
 
     fun onToggleSettings() {
+        val wasEditing = isEditingSettings
         isEditingSettings = !isEditingSettings
         resetState = false
+        if (wasEditing && isLoggedIn && isCardReaderConnected) {
+            prepareCardReader()
+        }
     }
 
     fun onSettingsChange(newSettings: Settings) {
