@@ -15,10 +15,10 @@ data class Settings(
     val screensaverStyle: String = "scrolling",
     val screensaverCustomMessage: String = "",
     val screensaverCycleMessages: Boolean = true,
-    val screensaverIdleTimeoutSec: Int = 300,
-    val screensaverDurationSec: Int = 600,
-    val screensaverCustomMessageHoldSec: Int = 120,
-    val screensaverMessageHoldSec: Int = 6,
+    val screensaverIdleTimeoutSec: Int = 600,
+    val screensaverDurationSec: Int = 60,
+    val screensaverCustomMessageHoldSec: Int = 20,
+    val screensaverMessageHoldSec: Int = 5,
     val thankYouDurationSec: Int = 3,
     val testMode: Boolean = false
 )
