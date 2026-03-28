@@ -488,17 +488,8 @@ class MainActivity : FragmentActivity() {
 
             delay(durationUntil2am)
 
-            showMaintenanceScreen = true
-            Log.d("SumUpDebug", "Scheduled reinit at 2am - showing maintenance screen")
-
-            delay(500L)
-            authenticate(affiliateKey)
-            delay(5000L)
-
-
-            showMaintenanceScreen = false
-            Log.d("SumUpDebug", "Maintenance complete - returning to normal operation")
-            prepareCardReader()
+            Log.d("SumUpDebug", "Scheduled reinit at 2am")
+            performReinit()
         }
     }
 
@@ -565,37 +556,40 @@ class MainActivity : FragmentActivity() {
     }
 
     fun reinitSumUp() {
-        val strings = TranslationManager.currentStrings()
         if (settings.testMode) {
             Toast.makeText(this, "Test mode: reinit skipped", Toast.LENGTH_SHORT).show()
             return
         }
+        val strings = TranslationManager.currentStrings()
         lifecycleScope.launch {
             Toast.makeText(this@MainActivity, strings.reinitializing, Toast.LENGTH_SHORT).show()
             Log.d("SumUpDebug", "Manual reinit triggered")
-
-            showMaintenanceScreen = true
-
-            // Explicitly disconnect the card reader transport via the SDK before reinit.
-            // The SDK keeps the BLE transport alive for Air/Solo readers (shouldKeepConnectionAlive=true),
-            // so without this, SumUpState.init() resets higher-level state while the transport remains,
-            // causing "transport already initialized" → TRANSPORT_ERROR loop on the next payment.
-            val readerManager = ReaderModuleCoreState.Instance()?.mReaderCoreManager
-            if (readerManager?.isCardReaderConnected() == true) {
-                Log.d("SumUpDebug", "Reinit: disconnecting card reader transport via SDK")
-                readerManager.disconnect()
-                isCardReaderConnected = false
-                delay(1500L) // give BLE stack time to process the disconnect
-            }
-
-            authenticate(affiliateKey)
-            delay(5000L)
-
-            showMaintenanceScreen = false
+            performReinit()
             Toast.makeText(this@MainActivity, strings.reinitialized, Toast.LENGTH_SHORT).show()
-            Log.d("SumUpDebug", "Manual reinit complete")
-            prepareCardReader()
         }
+    }
+
+    suspend fun performReinit() {
+        showMaintenanceScreen = true
+
+        // Explicitly disconnect the card reader transport via the SDK before reinit.
+        // The SDK keeps the BLE transport alive for Air/Solo readers (shouldKeepConnectionAlive=true),
+        // so without this, SumUpState.init() resets higher-level state while the transport remains,
+        // causing "transport already initialized" → TRANSPORT_ERROR loop on the next payment.
+        val readerManager = ReaderModuleCoreState.Instance()?.mReaderCoreManager
+        if (readerManager?.isCardReaderConnected() == true) {
+            Log.d("SumUpDebug", "Reinit: disconnecting card reader transport via SDK")
+            readerManager.disconnect()
+            isCardReaderConnected = false
+            delay(1500L)
+        }
+
+        authenticate(affiliateKey)
+        delay(5000L)
+
+        showMaintenanceScreen = false
+        Log.d("SumUpDebug", "Reinit complete")
+        prepareCardReader()
     }
 
     override fun onResume() {
