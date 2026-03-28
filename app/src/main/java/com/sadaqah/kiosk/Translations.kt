@@ -317,7 +317,7 @@ object DutchStrings : Strings {
     override val screensaverDefaultMessages = listOf(
         "Sadaqah Jariyah",
         "Steun ons nu",
-        "Sadaqah vermeerder uw rijkdom",
+        "Sadaqah vermeerdert uw rijkdom",
         "Elke cent is een zaad van eindeloze beloning",
         "Wees vrijgevig",
         "Geef omwille van Allah",
