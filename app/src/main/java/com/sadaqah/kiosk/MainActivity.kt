@@ -1,6 +1,7 @@
 package com.sadaqah.kiosk
 
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.net.ConnectivityManager
 import android.net.ConnectivityManager.NetworkCallback
@@ -188,9 +189,15 @@ class MainActivity : FragmentActivity() {
                         if (idleTime > screensaverDelay && !isScreensaverActive && isLoggedIn && !isEditingSettings && !showThankYou && !showMaintenanceScreen) {
                             isScreensaverActive = true
                             Log.d("Screensaver", "Activated after 5 minutes idle")
+                            ReaderModuleCoreState.Instance()?.mReaderCoreManager?.let { rm ->
+                                if (rm.isCardReaderConnected()) {
+                                    Log.d("Screensaver", "Disconnecting card reader on screensaver activation")
+                                    rm.disconnect()
+                                    isCardReaderConnected = false
+                                }
+                            }
                         }
 
-                        // Prepare card reader every 5 minutes when on donation screen or screensaver
                         val onDonationScreen = isLoggedIn && !isEditingSettings && !showThankYou && !showMaintenanceScreen
                         if (onDonationScreen || isScreensaverActive) {
                             prepareCounter++
@@ -383,6 +390,26 @@ class MainActivity : FragmentActivity() {
         Log.d("ScreenPin", "Opened system settings — 2min re-pin timeout started")
     }
 
+    fun scheduleCardReaderPoll(btManager: android.bluetooth.BluetoothManager?, gattBefore: Set<String>) {
+        lifecycleScope.launch {
+            delay(500)
+            if (!isConnectingCardReader) return@launch
+            val sdkConnected = try {
+                ReaderModuleCoreState.Instance()?.mReaderCoreManager?.isCardReaderConnected() == true
+            } catch (e: Exception) { false }
+            @SuppressLint("MissingPermission")
+            val gattNow = btManager?.getConnectedDevices(BluetoothProfile.GATT)
+                ?.map { it.address }?.toSet() ?: emptySet()
+            val newGattDevice = (gattNow - gattBefore).isNotEmpty()
+            if (sdkConnected || newGattDevice) {
+                delay(3000)
+                finishActivity(2)
+            } else {
+                scheduleCardReaderPoll(btManager, gattBefore)
+            }
+        }
+    }
+
     fun startWifiReconnectFlow() {
         openSystemSettings(Intent(AndroidSettings.Panel.ACTION_WIFI))
     }
@@ -407,6 +434,13 @@ class MainActivity : FragmentActivity() {
         isEditingSettings = false
         isScreensaverActive = true
         finishActivity(2)
+        ReaderModuleCoreState.Instance()?.mReaderCoreManager?.let { rm ->
+            if (rm.isCardReaderConnected()) {
+                Log.d("Screensaver", "Disconnecting card reader on screensaver activation")
+                rm.disconnect()
+                isCardReaderConnected = false
+            }
+        }
     }
 
     fun authenticate(affiliateKey: String) {
@@ -434,10 +468,15 @@ class MainActivity : FragmentActivity() {
             Log.w("SumUpReader", "Card reader connection attempted with Bluetooth disabled")
             return
         }
+        val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
+        @SuppressLint("MissingPermission")
+        val gattBefore = btManager?.getConnectedDevices(BluetoothProfile.GATT)
+            ?.map { it.address }?.toSet() ?: emptySet()
         isConnectingCardReader = true
         autoPinJob?.cancel()
         stopAppPinning()
         SumUpAPI.openCardReaderPage(this@MainActivity, 2)
+        scheduleCardReaderPoll(btManager, gattBefore)
     }
 
     fun scheduleDailyLoginReset(affiliateKey: String) {
@@ -537,10 +576,21 @@ class MainActivity : FragmentActivity() {
             Log.d("SumUpDebug", "Manual reinit triggered")
 
             showMaintenanceScreen = true
-            delay(500L)
+
+            // Explicitly disconnect the card reader transport via the SDK before reinit.
+            // The SDK keeps the BLE transport alive for Air/Solo readers (shouldKeepConnectionAlive=true),
+            // so without this, SumUpState.init() resets higher-level state while the transport remains,
+            // causing "transport already initialized" → TRANSPORT_ERROR loop on the next payment.
+            val readerManager = ReaderModuleCoreState.Instance()?.mReaderCoreManager
+            if (readerManager?.isCardReaderConnected() == true) {
+                Log.d("SumUpDebug", "Reinit: disconnecting card reader transport via SDK")
+                readerManager.disconnect()
+                isCardReaderConnected = false
+                delay(1500L) // give BLE stack time to process the disconnect
+            }
+
             authenticate(affiliateKey)
             delay(5000L)
-
 
             showMaintenanceScreen = false
             Toast.makeText(this@MainActivity, strings.reinitialized, Toast.LENGTH_SHORT).show()
@@ -593,7 +643,7 @@ class MainActivity : FragmentActivity() {
     }
 
     fun prepareCardReader() {
-        if (!settings.testMode && isLoggedIn) {
+        if (!settings.testMode && isLoggedIn && !isCardReaderConnected) {
             SumUpAPI.prepareForCheckout()
             Log.d("SumUpPayment", "Card reader prepared for checkout")
         }

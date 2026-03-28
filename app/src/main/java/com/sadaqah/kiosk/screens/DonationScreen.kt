@@ -122,7 +122,7 @@ fun DonationGridScreen(
             )
         }
 
-        Column(
+Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(horizontal = responsiveDp(24.dp), vertical = responsiveDp(32.dp)),
