@@ -275,8 +275,7 @@ class MainActivity : FragmentActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         val strings = TranslationManager.currentStrings()
 
-        val extras = data?.extras?.keySet()?.associateWith { data.extras?.get(it) } ?: emptyMap<String, Any?>()
-        Log.d("ActivityResult", "requestCode=$requestCode resultCode=$resultCode extras=$extras")
+        Log.d("ActivityResult", "requestCode=$requestCode resultCode=$resultCode extras=${data?.extras}")
 
         when (requestCode) {
             1 -> {
