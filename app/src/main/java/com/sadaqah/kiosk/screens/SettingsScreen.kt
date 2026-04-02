@@ -438,8 +438,8 @@ fun SettingsScreen(
 
                     SettingsSection(title = strings.timers, settings = settings) {
                         Column(verticalArrangement = Arrangement.spacedBy(responsiveDp(8.dp))) {
-                            TimerInputRow(strings.screensaverIdleTimeout, screensaverIdleTimeoutInput, strings.minutes, { screensaverIdleTimeoutInput = it }, settings)
-                            TimerInputRow(strings.screensaverDuration, screensaverDurationInput, strings.minutes, { screensaverDurationInput = it }, settings)
+                            TimerInputRow(strings.screensaverIdleTimeout, screensaverIdleTimeoutInput, strings.seconds, { screensaverIdleTimeoutInput = it }, settings)
+                            TimerInputRow(strings.screensaverDuration, screensaverDurationInput, strings.seconds, { screensaverDurationInput = it }, settings)
                             TimerInputRow(strings.screensaverCustomMessageHold, screensaverCustomMessageHoldInput, strings.seconds, { screensaverCustomMessageHoldInput = it }, settings)
                             TimerInputRow(strings.screensaverMessageHold, screensaverMessageHoldInput, strings.seconds, { screensaverMessageHoldInput = it }, settings)
                             TimerInputRow(strings.thankYouDuration, thankYouDurationInput, strings.seconds, { thankYouDurationInput = it }, settings)
