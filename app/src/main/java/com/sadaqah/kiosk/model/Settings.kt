@@ -20,5 +20,11 @@ data class Settings(
     val screensaverCustomMessageHoldSec: Int = 20,
     val screensaverMessageHoldSec: Int = 5,
     val thankYouDurationSec: Int = 3,
-    val testMode: Boolean = false
+    val testMode: Boolean = false,
+    // Resilience / auto-recovery
+    val maxConsecutiveFailures: Int = 3,
+    val restartCooldownSec: Int = 300,           // 5 minutes
+    val maxRestartsBeforeGiveUp: Int = 3,
+    val longDowntimeThresholdSec: Int = 120,     // 2 minutes
+    val restartCountResetSec: Int = 1800         // 30 minutes
 )

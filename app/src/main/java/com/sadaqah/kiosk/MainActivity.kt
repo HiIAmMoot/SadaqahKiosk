@@ -12,7 +12,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
+import android.Manifest
+import android.app.admin.DevicePolicyManager
 import android.annotation.SuppressLint
+import android.content.ComponentName
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
 import android.util.Log
@@ -35,6 +40,7 @@ import androidx.lifecycle.lifecycleScope
 import com.sadaqah.kiosk.model.Settings
 import com.sadaqah.kiosk.ui.theme.SadaqahKioskTheme
 import com.google.gson.Gson
+import com.sadaqah.kiosk.recovery.*
 import com.sadaqah.kiosk.screens.*
 import com.sumup.merchant.reader.api.SumUpAPI
 import com.sumup.merchant.reader.api.SumUpLogin
@@ -54,8 +60,13 @@ class MainActivity : FragmentActivity() {
     private var networkCallback: NetworkCallback? = null
     private var connectivityManager: ConnectivityManager? = null
     private var autoPinJob: Job? = null
+    private var pairingUnpinJob: Job? = null
     private var wifiReconnectJob: Job? = null
     private var bluetoothReceiver: BroadcastReceiver? = null
+    private var networkDismissJob: Job? = null
+    private var restartCountResetJob: Job? = null
+    private lateinit var restartManager: RestartManager
+    private lateinit var networkRecoveryManager: NetworkRecoveryManager
 
     var settings: Settings = Settings()
     var isLoggedIn by mutableStateOf(false)
@@ -86,6 +97,13 @@ class MainActivity : FragmentActivity() {
         prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
         ColorHistory.init(prefs)
 
+        // Whitelist this app for silent lock task mode (no blue notification)
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val admin = ComponentName(this, KioskDeviceAdminReceiver::class.java)
+        if (dpm.isDeviceOwnerApp(packageName)) {
+            dpm.setLockTaskPackages(admin, arrayOf(packageName))
+        }
+
         if (settings.testMode) {
             isLoggedIn = true
             isCardReaderConnected = true
@@ -115,6 +133,10 @@ class MainActivity : FragmentActivity() {
             TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
         }
 
+        val store = SharedPreferencesStore(prefs)
+        restartManager = RestartManager(store, settings)
+        networkRecoveryManager = NetworkRecoveryManager(settings)
+
         enableEdgeToEdge()
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemBars()
@@ -134,6 +156,7 @@ class MainActivity : FragmentActivity() {
                 } else {
                     scheduleAutoPinIfReady()
                 }
+                handleNetworkRestored()
             }
 
             override fun onLost(network: Network) {
@@ -146,7 +169,10 @@ class MainActivity : FragmentActivity() {
                     cm.getNetworkCapabilities(activeNetwork)
                         ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
                 isNetworkAvailable = stillConnected
-                if (!stillConnected) autoPinJob?.cancel()
+                if (!stillConnected) {
+                    autoPinJob?.cancel()
+                    handleNetworkLost()
+                }
                 Log.d("NetworkStatus", "Network lost: $network — still connected: $stillConnected")
             }
         }
@@ -177,6 +203,12 @@ class MainActivity : FragmentActivity() {
 
         scheduleAutoPinIfReady()
 
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        ) {
+            requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_SCAN), 100)
+        }
+
         setContent {
             SadaqahKioskTheme {
                 LaunchedEffect(Unit) {
@@ -188,14 +220,8 @@ class MainActivity : FragmentActivity() {
 
                         if (idleTime > screensaverDelay && !isScreensaverActive && isLoggedIn && !isEditingSettings && !showThankYou && !showMaintenanceScreen) {
                             isScreensaverActive = true
-                            Log.d("Screensaver", "Activated after 5 minutes idle")
-                            ReaderModuleCoreState.Instance()?.mReaderCoreManager?.let { rm ->
-                                if (rm.isCardReaderConnected()) {
-                                    Log.d("Screensaver", "Disconnecting card reader on screensaver activation")
-                                    rm.disconnect()
-                                    isCardReaderConnected = false
-                                }
-                            }
+                            Log.d("Screensaver", "Activated after idle")
+                            disconnectCardReader()
                         }
 
                         val onDonationScreen = isLoggedIn && !isEditingSettings && !showThankYou && !showMaintenanceScreen
@@ -279,19 +305,32 @@ class MainActivity : FragmentActivity() {
 
         when (requestCode) {
             1 -> {
-                if (resultCode == 1 && data != null) {
+                // If network is down, this was an unwanted SumUp login popup — suppress it
+                if (!isNetworkAvailable) {
+                    Log.d("SumUpLogin", "Login result while offline — suppressing")
+                    stopPairingUnpin()
+                    scheduleAutoPinIfReady()
+                } else if (resultCode == 1 && data != null) {
                     Toast.makeText(this, strings.logInSuccessful, Toast.LENGTH_SHORT).show()
                     prefs.edit() { putString("affiliate_key", affiliateKey) }
                     isLoggedIn = true
+                    restartManager.clearCounters()
+                    scheduleRestartCounterReset()
                     if (firstLogIn) {
                         connectCardReader()
                         firstLogIn = false
+                    } else {
+                        stopPairingUnpin()
+                        scheduleAutoPinIfReady()
                     }
                 } else {
+                    stopPairingUnpin()
+                    scheduleAutoPinIfReady()
                     val errorMessage = data?.getStringExtra(SumUpAPI.Response.MESSAGE) ?: "Unknown error"
                     val errorCode = data?.getIntExtra(SumUpAPI.Response.RESULT_CODE, -1) ?: -1
                     Log.e("SumUpLogin", "Login failed - Code: $errorCode, Message: $errorMessage")
                     Toast.makeText(this, "${strings.logInFailed}: $errorMessage", Toast.LENGTH_LONG).show()
+                    handleRestartResult(restartManager.recordReinitFailure(), "reinit_failures")
                 }
             }
             2 -> {
@@ -299,9 +338,12 @@ class MainActivity : FragmentActivity() {
                     ReaderModuleCoreState.Instance()?.mReaderCoreManager?.isCardReaderConnected() == true
                 } catch (e: Exception) { false }
                 isConnectingCardReader = false
+                stopPairingUnpin()
                 scheduleAutoPinIfReady()
                 if (resultCode == 1 || readerConnected) {
                     isCardReaderConnected = true
+                    restartManager.clearCardReaderFailures()
+                    scheduleRestartCounterReset()
                     Toast.makeText(this, strings.deviceConnectionSuccessful, Toast.LENGTH_SHORT).show()
                     lifecycleScope.launch {
                         delay(3000)
@@ -318,6 +360,7 @@ class MainActivity : FragmentActivity() {
                         else -> "${strings.connectionFailed}: $errorMessage"
                     }
                     Toast.makeText(this, userMessage, Toast.LENGTH_LONG).show()
+                    handleRestartResult(restartManager.recordCardReaderFailure(), "card_reader_failures")
                 }
             }
             3 -> {
@@ -325,6 +368,8 @@ class MainActivity : FragmentActivity() {
                     val txCode = data.getStringExtra(SumUpAPI.Response.TX_CODE)
                     Log.d("SumUpPayment", "Payment successful - TX Code: $txCode")
                     Toast.makeText(this, strings.paymentSuccessful, Toast.LENGTH_SHORT).show()
+                    restartManager.clearCounters()
+                    scheduleRestartCounterReset()
                     showThankYouScreen()
                 } else {
                     val errorMessage = data?.getStringExtra(SumUpAPI.Response.MESSAGE) ?: "Unknown error"
@@ -359,6 +404,31 @@ class MainActivity : FragmentActivity() {
             isPinned = false
             Log.d("ScreenPin", "App unpinned")
         }
+    }
+
+    fun startPairingUnpin() {
+        autoPinJob?.cancel()
+        stopAppPinning()
+        showSystemBars()
+        pairingUnpinJob?.cancel()
+        pairingUnpinJob = lifecycleScope.launch {
+            while (true) {
+                delay(5000L)
+                if (isPinned) {
+                    stopLockTask()
+                    isPinned = false
+                    Log.d("ScreenPin", "Pairing unpin: forced unpin")
+                }
+            }
+        }
+        Log.d("ScreenPin", "Pairing unpin started")
+    }
+
+    fun stopPairingUnpin() {
+        pairingUnpinJob?.cancel()
+        pairingUnpinJob = null
+        hideSystemBars()
+        Log.d("ScreenPin", "Pairing unpin stopped")
     }
 
     fun scheduleAutoPinIfReady() {
@@ -396,9 +466,14 @@ class MainActivity : FragmentActivity() {
             val sdkConnected = try {
                 ReaderModuleCoreState.Instance()?.mReaderCoreManager?.isCardReaderConnected() == true
             } catch (e: Exception) { false }
-            @SuppressLint("MissingPermission")
-            val gattNow = btManager?.getConnectedDevices(BluetoothProfile.GATT)
-                ?.map { it.address }?.toSet() ?: emptySet()
+            val gattNow = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+                checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+            ) {
+                @SuppressLint("MissingPermission")
+                val devices = btManager?.getConnectedDevices(BluetoothProfile.GATT)
+                    ?.map { it.address }?.toSet() ?: emptySet()
+                devices
+            } else emptySet()
             val newGattDevice = (gattNow - gattBefore).isNotEmpty()
             if (sdkConnected || newGattDevice) {
                 delay(3000)
@@ -433,13 +508,15 @@ class MainActivity : FragmentActivity() {
         isEditingSettings = false
         isScreensaverActive = true
         finishActivity(2)
+        disconnectCardReader()
+    }
+
+    fun disconnectCardReader() {
         ReaderModuleCoreState.Instance()?.mReaderCoreManager?.let { rm ->
-            if (rm.isCardReaderConnected()) {
-                Log.d("Screensaver", "Disconnecting card reader on screensaver activation")
-                rm.disconnect()
-                isCardReaderConnected = false
-            }
+            Log.d("CardReader", "Disconnecting card reader")
+            rm.disconnect()
         }
+        isCardReaderConnected = false
     }
 
     fun authenticate(affiliateKey: String) {
@@ -448,6 +525,7 @@ class MainActivity : FragmentActivity() {
             isCardReaderConnected = true
             return
         }
+        startPairingUnpin()
         SumUpState.init(this)
         val sumupLogin = SumUpLogin.builder(affiliateKey).build()
         SumUpAPI.openLoginActivity(this@MainActivity, sumupLogin, 1)
@@ -468,12 +546,16 @@ class MainActivity : FragmentActivity() {
             return
         }
         val btManager = getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager
-        @SuppressLint("MissingPermission")
-        val gattBefore = btManager?.getConnectedDevices(BluetoothProfile.GATT)
-            ?.map { it.address }?.toSet() ?: emptySet()
+        val gattBefore = if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        ) {
+            @SuppressLint("MissingPermission")
+            val devices = btManager?.getConnectedDevices(BluetoothProfile.GATT)
+                ?.map { it.address }?.toSet() ?: emptySet()
+            devices
+        } else emptySet()
         isConnectingCardReader = true
-        autoPinJob?.cancel()
-        stopAppPinning()
+        startPairingUnpin()
         SumUpAPI.openCardReaderPage(this@MainActivity, 2)
         scheduleCardReaderPoll(btManager, gattBefore)
     }
@@ -576,13 +658,8 @@ class MainActivity : FragmentActivity() {
         // The SDK keeps the BLE transport alive for Air/Solo readers (shouldKeepConnectionAlive=true),
         // so without this, SumUpState.init() resets higher-level state while the transport remains,
         // causing "transport already initialized" → TRANSPORT_ERROR loop on the next payment.
-        val readerManager = ReaderModuleCoreState.Instance()?.mReaderCoreManager
-        if (readerManager?.isCardReaderConnected() == true) {
-            Log.d("SumUpDebug", "Reinit: disconnecting card reader transport via SDK")
-            readerManager.disconnect()
-            isCardReaderConnected = false
-            delay(1500L)
-        }
+        disconnectCardReader()
+        delay(1500L)
 
         authenticate(affiliateKey)
         delay(5000L)
@@ -594,7 +671,7 @@ class MainActivity : FragmentActivity() {
 
     override fun onResume() {
         super.onResume()
-        hideSystemBars()
+        if (pairingUnpinJob == null) hideSystemBars()
         if (isReconnectingWifi) {
             isReconnectingWifi = false
             wifiReconnectJob?.cancel()
@@ -606,7 +683,83 @@ class MainActivity : FragmentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (hasFocus) hideSystemBars()
+        if (hasFocus && pairingUnpinJob == null) hideSystemBars()
+    }
+
+    // ── Network disconnect / restore handling ──────────────────────────────────
+
+    fun handleNetworkLost() {
+        when (networkRecoveryManager.onNetworkLost(isLoggedIn, settings.testMode)) {
+            NetworkLostAction.Ignore -> return
+            NetworkLostAction.ShowMaintenanceAndDismissSumUp -> {
+                showMaintenanceScreen = true
+                Log.d("NetworkRecovery", "Network lost — showing maintenance, dismissing SumUp activities")
+                networkDismissJob?.cancel()
+                networkDismissJob = lifecycleScope.launch {
+                    repeat(6) { // Try for ~30 seconds
+                        finishActivity(1)
+                        delay(5000L)
+                    }
+                }
+            }
+        }
+    }
+
+    fun handleNetworkRestored() {
+        networkDismissJob?.cancel()
+        val wasTracking = networkRecoveryManager.isTrackingOutage
+        when (networkRecoveryManager.onNetworkRestored(isLoggedIn)) {
+            NetworkRestoredAction.Ignore -> {
+                if (wasTracking) showMaintenanceScreen = false
+            }
+            NetworkRestoredAction.ResumeNormally -> {
+                showMaintenanceScreen = false
+                Log.d("NetworkRecovery", "Short downtime — resuming normally")
+            }
+            NetworkRestoredAction.AutoReinit -> {
+                Log.d("NetworkRecovery", "Long downtime — auto-reinitializing")
+                lifecycleScope.launch {
+                    delay(2000L) // Brief pause for network to stabilise
+                    performReinit()
+                }
+            }
+        }
+    }
+
+    // ── Auto-restart on unrecoverable conditions ─────────────────────────────
+
+    fun handleRestartResult(result: RestartResult, reason: String) {
+        when (result) {
+            RestartResult.BELOW_THRESHOLD -> {}
+            RestartResult.RESTART -> {
+                Log.w("AutoRestart", "Threshold reached — hard restart — reason: $reason")
+                hardRestart(reason)
+            }
+            RestartResult.COOLDOWN_ACTIVE ->
+                Log.w("AutoRestart", "Threshold reached but cooldown active — reason: $reason")
+            RestartResult.MAX_RESTARTS -> {
+                Log.e("AutoRestart", "Threshold reached but max restarts hit — giving up — reason: $reason")
+                showMaintenanceScreen = false
+            }
+        }
+    }
+
+    fun scheduleRestartCounterReset() {
+        restartCountResetJob?.cancel()
+        restartCountResetJob = lifecycleScope.launch {
+            delay(settings.restartCountResetSec * 1000L)
+            restartManager.clearCounters()
+            Log.d("AutoRestart", "Restart counters cleared — system healthy")
+        }
+    }
+
+    fun hardRestart(reason: String) {
+        Log.w("AutoRestart", "Hard restarting app (restart #${restartManager.restartCount}) — reason: $reason")
+        val intent = Intent(applicationContext, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        }
+        startActivity(intent)
+        Runtime.getRuntime().exit(0)
     }
 
     override fun onDestroy() {
@@ -614,7 +767,10 @@ class MainActivity : FragmentActivity() {
         networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
         bluetoothReceiver?.let { unregisterReceiver(it) }
         autoPinJob?.cancel()
+        pairingUnpinJob?.cancel()
         wifiReconnectJob?.cancel()
+        networkDismissJob?.cancel()
+        restartCountResetJob?.cancel()
     }
 
     private fun hideSystemBars() {
@@ -623,6 +779,11 @@ class MainActivity : FragmentActivity() {
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+    }
+
+    private fun showSystemBars() {
+        val controller = WindowInsetsControllerCompat(window, window.decorView)
+        controller.show(WindowInsetsCompat.Type.systemBars())
     }
 
     fun resetScreensaver() {

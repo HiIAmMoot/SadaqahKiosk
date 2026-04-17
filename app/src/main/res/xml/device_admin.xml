@@ -1,0 +1,5 @@
+<device-admin>
+    <uses-policies>
+        <lock-task />
+    </uses-policies>
+</device-admin>
