@@ -31,8 +31,11 @@ An open-source Android donation kiosk app powered by the [SumUp](https://sumup.c
 - **Islamic thank-you screen**: toggle between an Arabic blessing (بارك الله فيكم) and a localised "thank you"
 - **Biometric / PIN gate** on the settings screen
 - **Export / import settings** as JSON (including affiliate key, with permission)
-- **Offline awareness**: warns when internet is unavailable
-- **Screensaver** after 5 minutes of inactivity
+- **Offline awareness**: warns when internet is unavailable; auto-dismisses SumUp login screen on disconnect and auto-reinitialises after prolonged outage
+- **Auto-recovery**: automatic app restart on repeated card reader or reinit failures, with cooldown and max-restart guard to prevent loops
+- **Auto-start on boot**: launches automatically when the device powers on
+- **Device owner / kiosk mode**: optional silent lock-task mode (no blue notification bar) when set as device owner
+- **Screensaver** after configurable idle timeout
 - **Auto-reinitialise** at 02:00 daily to keep the SumUp session fresh
 - Responsive layout — tuned for Lenovo M9 tablet (800 dp portrait), scales to any Android device
 
@@ -104,6 +107,33 @@ The debug APK is output to `app/build/outputs/apk/debug/`.
 6. You will be prompted to connect a device.
 7. After successful connection, your donors can now tap to give.
 
+### Device Owner Setup (Optional)
+
+Setting the app as device owner enables silent lock-task mode (no blue "app is pinned" notification) and allows programmatic Bluetooth control. The app works fine without it — this is optional for a more polished kiosk experience.
+
+> **Important:** Device owner can only be set on a device with no accounts added, or via a fresh factory reset. You cannot set device owner on a device that already has a Google account signed in.
+
+1. Enable **Developer Options** and **USB Debugging** on the tablet.
+2. Connect the tablet to a computer with ADB installed.
+3. If accounts are present, remove them or factory reset:
+   ```bash
+   adb shell pm list users
+   ```
+4. Set device owner:
+   ```bash
+   adb shell dpm set-device-owner com.sadaqah.kiosk/.KioskDeviceAdminReceiver
+   ```
+5. Verify it worked:
+   ```bash
+   adb shell dpm get-device-owner
+   ```
+   You should see `com.sadaqah.kiosk/.KioskDeviceAdminReceiver`.
+
+To remove device owner later:
+```bash
+adb shell dpm remove-active-admin com.sadaqah.kiosk/.KioskDeviceAdminReceiver
+```
+
 ### Settings Reference
 
 | Setting                                     | Description                                                  |
@@ -124,18 +154,26 @@ The debug APK is output to `app/build/outputs/apk/debug/`.
 
 ```
 app/src/main/java/com/sadaqah/kiosk/
-├── MainActivity.kt          # Activity, SumUp API integration, state management
-├── Translations.kt          # Language enum, TranslationManager, all 8 Strings objects
-├── ColorHistory.kt          # Recently picked and suggested colors singleton
-├── Utils.kt                 # responsiveDp / responsiveSp helpers, grid column logic
+├── MainActivity.kt              # Activity, SumUp API integration, state management
+├── Translations.kt              # Language enum, TranslationManager, all 8 Strings objects
+├── ColorHistory.kt              # Recently picked and suggested colors singleton
+├── Utils.kt                     # responsiveDp / responsiveSp helpers, grid column logic
+├── BootReceiver.kt              # Launches app on BOOT_COMPLETED
+├── KioskDeviceAdminReceiver.kt  # Device admin receiver for silent lock-task mode
 ├── model/
-│   └── Settings.kt          # Data class for all persisted settings
+│   └── Settings.kt              # Data class for all persisted settings
+├── recovery/
+│   ├── KeyValueStore.kt         # SharedPreferences abstraction (testable)
+│   ├── RestartManager.kt        # Auto-restart decision logic with guards
+│   └── NetworkRecoveryManager.kt # Network outage detection and recovery
 ├── screens/
-│   ├── DonationScreen.kt    # Main donation grid
+│   ├── DonationScreen.kt        # Main donation grid
 │   ├── CustomAmountScreen.kt
 │   ├── SettingsScreen.kt
+│   ├── SetupStatusScreen.kt     # Network/Bluetooth/reader status checklist
 │   ├── ColorPickerScreen.kt
 │   ├── LoginScreen.kt
+│   ├── ScreensaverScreen.kt
 │   ├── ThankYouScreen.kt
 │   └── MaintenanceScreen.kt
 └── components/
