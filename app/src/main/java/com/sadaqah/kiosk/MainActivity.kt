@@ -4,10 +4,8 @@ import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.net.ConnectivityManager
-import android.net.ConnectivityManager.NetworkCallback
-import android.net.Network
 import android.net.NetworkCapabilities
-import android.net.NetworkRequest
+import android.net.wifi.WifiManager
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
@@ -57,7 +55,6 @@ class MainActivity : FragmentActivity() {
 
     private var biometricPrompt: BiometricPrompt? = null
     private var authTimeoutJob: Job? = null
-    private var networkCallback: NetworkCallback? = null
     private var connectivityManager: ConnectivityManager? = null
     private var autoPinJob: Job? = null
     private var pairingUnpinJob: Job? = null
@@ -65,6 +62,9 @@ class MainActivity : FragmentActivity() {
     private var bluetoothReceiver: BroadcastReceiver? = null
     private var networkDismissJob: Job? = null
     private var restartCountResetJob: Job? = null
+    private var silentLoginWatchdogJob: Job? = null
+    private var connectivityPollJob: Job? = null
+    private var wifiCycleJob: Job? = null
     private lateinit var restartManager: RestartManager
     private lateinit var networkRecoveryManager: NetworkRecoveryManager
 
@@ -77,7 +77,7 @@ class MainActivity : FragmentActivity() {
     var resetState by mutableStateOf(false)
     var mustRefresh by mutableStateOf(false)
     var showThankYou by mutableStateOf(false)
-    var showMaintenanceScreen by mutableStateOf(false)
+    var maintenanceReason by mutableStateOf<MaintenanceReason?>(null)
     var showCustomAmountScreen by mutableStateOf(false)
     var customAmountInput by mutableStateOf("")
     var isScreensaverActive by mutableStateOf(false)
@@ -90,6 +90,7 @@ class MainActivity : FragmentActivity() {
     var isReconnectingWifi by mutableStateOf(false)
     var isConnectingCardReader by mutableStateOf(false)
     var showSetupStatus by mutableStateOf(false)
+    var setupStatusFromOffline by mutableStateOf(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -101,8 +102,15 @@ class MainActivity : FragmentActivity() {
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val admin = ComponentName(this, KioskDeviceAdminReceiver::class.java)
         if (dpm.isDeviceOwnerApp(packageName)) {
-            dpm.setLockTaskPackages(admin, arrayOf(packageName))
+            // Whitelist SumUp so its login / card-reader activities can launch under
+            // lock task without us first having to drop pinning.
+            dpm.setLockTaskPackages(admin, arrayOf(packageName, "com.sumup.merchant.reader"))
         }
+
+        // Initialise connectivity manager up-front so the network gate inside
+        // authenticate() and other SumUp calls reflects reality at startup.
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        isNetworkAvailable = isOnlineNow()
 
         if (settings.testMode) {
             isLoggedIn = true
@@ -133,6 +141,14 @@ class MainActivity : FragmentActivity() {
             TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
         }
 
+        // Migration: GSON ignores Kotlin data-class defaults when deserialising, so
+        // existing installs may still have the old 120s threshold (or 0 if the field
+        // was never persisted). Bump anything below 5 min up to the new default.
+        if (settings.longDowntimeThresholdSec < 300) {
+            settings = settings.copy(longDowntimeThresholdSec = 300)
+            saveSettings(settings)
+        }
+
         val store = SharedPreferencesStore(prefs)
         restartManager = RestartManager(store, settings)
         networkRecoveryManager = NetworkRecoveryManager(settings)
@@ -141,52 +157,8 @@ class MainActivity : FragmentActivity() {
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         hideSystemBars()
 
-        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-        networkCallback = object : NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                isNetworkAvailable = true
-                Log.d("NetworkStatus", "Network available: $network")
-                if (isReconnectingWifi) {
-                    isReconnectingWifi = false
-                    wifiReconnectJob?.cancel()
-                    lifecycleScope.launch {
-                        delay(2000L) // Brief pause for network to stabilise
-                        startAppPinning()
-                    }
-                } else {
-                    scheduleAutoPinIfReady()
-                }
-                handleNetworkRestored()
-            }
-
-            override fun onLost(network: Network) {
-                // A single network was lost — check if the active network still has internet.
-                // On phones with both WiFi and cellular, Android de-prioritises cellular when
-                // WiFi is active, which fires onLost for cellular even though WiFi is fine.
-                val cm = connectivityManager ?: return
-                val activeNetwork = cm.activeNetwork
-                val stillConnected = activeNetwork != null &&
-                    cm.getNetworkCapabilities(activeNetwork)
-                        ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
-                isNetworkAvailable = stillConnected
-                if (!stillConnected) {
-                    autoPinJob?.cancel()
-                    handleNetworkLost()
-                }
-                Log.d("NetworkStatus", "Network lost: $network — still connected: $stillConnected")
-            }
-        }
-
-        val networkRequest = NetworkRequest.Builder()
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-            .build()
-        connectivityManager!!.registerNetworkCallback(networkRequest, networkCallback!!)
-
-        // Check current connectivity at startup instead of assuming true
-        val activeNetwork = connectivityManager!!.activeNetwork
-        isNetworkAvailable = activeNetwork != null &&
-            connectivityManager!!.getNetworkCapabilities(activeNetwork)
-                ?.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) == true
+        startConnectivityPolling()
+        if (!isNetworkAvailable) startWifiCyclingWhileOffline()
 
         isBluetoothEnabled = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)
             ?.adapter?.isEnabled == true
@@ -218,13 +190,13 @@ class MainActivity : FragmentActivity() {
                         val idleTime = System.currentTimeMillis() - lastInteractionTime
                         val screensaverDelay = settings.screensaverIdleTimeoutSec * 1000L
 
-                        if (idleTime > screensaverDelay && !isScreensaverActive && isLoggedIn && !isEditingSettings && !showThankYou && !showMaintenanceScreen) {
+                        if (idleTime > screensaverDelay && !isScreensaverActive && isLoggedIn && !isEditingSettings && !showThankYou && maintenanceReason == null) {
                             isScreensaverActive = true
                             Log.d("Screensaver", "Activated after idle")
                             disconnectCardReader()
                         }
 
-                        val onDonationScreen = isLoggedIn && !isEditingSettings && !showThankYou && !showMaintenanceScreen
+                        val onDonationScreen = isLoggedIn && !isEditingSettings && !showThankYou && maintenanceReason == null
                         if (onDonationScreen || isScreensaverActive) {
                             prepareCounter++
                             if (prepareCounter >= 30) { // 30 × 10s = 5 minutes
@@ -265,7 +237,8 @@ class MainActivity : FragmentActivity() {
                     onCustomAmountSubmit = { processCustomAmount(it) },
                     onShowCustomAmountScreen = { showCustomAmountScreen = it },
                     reinitSumUp = ::reinitSumUp,
-                    showMaintenanceScreen = showMaintenanceScreen,
+                    maintenanceReason = maintenanceReason,
+                    onOfflineSettingsClick = ::onOfflineSettingsClick,
                     isScreensaverActive = isScreensaverActive,
                     onResetScreensaver = ::resetScreensaver,
                     onExportSettings = ::exportSettings,
@@ -276,6 +249,8 @@ class MainActivity : FragmentActivity() {
                     isCardReaderConnected = isCardReaderConnected,
                     showSetupStatus = showSetupStatus,
                     onShowSetupStatus = { showSetupStatus = it },
+                    setupStatusFromOffline = setupStatusFromOffline,
+                    onExitSetupStatus = ::exitSetupStatus,
                     onUnpinApp = ::unpinApp,
                     onPinApp = ::startAppPinning,
                     onReconnectWifi = ::startWifiReconnectFlow,
@@ -305,6 +280,7 @@ class MainActivity : FragmentActivity() {
 
         when (requestCode) {
             1 -> {
+                cancelSilentLoginWatchdog()
                 // If network is down, this was an unwanted SumUp login popup — suppress it
                 if (!isNetworkAvailable) {
                     Log.d("SumUpLogin", "Login result while offline — suppressing")
@@ -519,17 +495,40 @@ class MainActivity : FragmentActivity() {
         isCardReaderConnected = false
     }
 
-    fun authenticate(affiliateKey: String) {
+    fun authenticate(affiliateKey: String, silent: Boolean = false) {
         if (settings.testMode) {
             isLoggedIn = true
             isCardReaderConnected = true
             return
         }
-        startPairingUnpin()
+        // Hard gate: any SumUp call while offline can clobber the cached login
+        // and force a manual email/password re-entry next time. Bail early.
+        if (!isNetworkAvailable) {
+            Log.w("SumUpLogin", "authenticate skipped — no network (silent=$silent)")
+            if (!silent) {
+                val strings = TranslationManager.currentStrings()
+                Toast.makeText(this, strings.noInternetConnection, Toast.LENGTH_LONG).show()
+            }
+            return
+        }
+        if (silent) {
+            // Reinit / scheduled refresh: keep pinning, rely on cached SumUp credentials
+            // for a transparent re-auth behind the maintenance screen. Whitelisted SumUp
+            // package can launch under lock task. Watchdog dismisses the activity if it
+            // stalls (e.g. cached creds expired and SumUp shows the real login form).
+            silentLoginWatchdogJob?.cancel()
+            silentLoginWatchdogJob = lifecycleScope.launch {
+                delay(10_000L)
+                Log.w("SumUpLogin", "Silent login watchdog — forcing finish on stuck login")
+                finishActivity(1)
+            }
+        } else {
+            startPairingUnpin()
+        }
         SumUpState.init(this)
         val sumupLogin = SumUpLogin.builder(affiliateKey).build()
         SumUpAPI.openLoginActivity(this@MainActivity, sumupLogin, 1)
-        Log.d("SumUpTest", "Login started...")
+        Log.d("SumUpTest", "Login started (silent=$silent)...")
         scheduleDailyLoginReset(affiliateKey)
     }
 
@@ -537,6 +536,12 @@ class MainActivity : FragmentActivity() {
         if (settings.testMode) {
             isCardReaderConnected = true
             Toast.makeText(this, "Test mode: card reader simulated", Toast.LENGTH_SHORT).show()
+            return
+        }
+        if (!isNetworkAvailable) {
+            val strings = TranslationManager.currentStrings()
+            Toast.makeText(this, strings.noInternetConnection, Toast.LENGTH_LONG).show()
+            Log.w("SumUpReader", "Card reader connection attempted with no network")
             return
         }
         if (!isBluetoothEnabled) {
@@ -573,6 +578,30 @@ class MainActivity : FragmentActivity() {
             Log.d("SumUpDebug", "Scheduled reinit at 2am")
             performReinit()
         }
+    }
+
+    fun onOfflineSettingsClick() {
+        authenticateWithBiometrics(
+            this,
+            onSuccess = {
+                maintenanceReason = null
+                isEditingSettings = true
+                showSetupStatus = true
+                setupStatusFromOffline = true
+            },
+            onError = { error -> Toast.makeText(this, error, Toast.LENGTH_SHORT).show() }
+        )
+    }
+
+    fun exitSetupStatus() {
+        showSetupStatus = false
+        setupStatusFromOffline = false
+        isEditingSettings = false
+    }
+
+    private fun cancelSilentLoginWatchdog() {
+        silentLoginWatchdogJob?.cancel()
+        silentLoginWatchdogJob = null
     }
 
     fun makePayment(amount: String) {
@@ -643,6 +672,11 @@ class MainActivity : FragmentActivity() {
             return
         }
         val strings = TranslationManager.currentStrings()
+        if (!isNetworkAvailable) {
+            Toast.makeText(this, strings.noInternetConnection, Toast.LENGTH_LONG).show()
+            Log.w("SumUpDebug", "Manual reinit skipped — no network")
+            return
+        }
         lifecycleScope.launch {
             Toast.makeText(this@MainActivity, strings.reinitializing, Toast.LENGTH_SHORT).show()
             Log.d("SumUpDebug", "Manual reinit triggered")
@@ -652,7 +686,13 @@ class MainActivity : FragmentActivity() {
     }
 
     suspend fun performReinit() {
-        showMaintenanceScreen = true
+        // Last line of defense: caller already gates, but the 02:00 scheduled
+        // reinit and the post-outage AutoReinit path land here directly.
+        if (!isNetworkAvailable) {
+            Log.w("SumUpDebug", "performReinit skipped — no network")
+            return
+        }
+        maintenanceReason = MaintenanceReason.Reinitializing
 
         // Explicitly disconnect the card reader transport via the SDK before reinit.
         // The SDK keeps the BLE transport alive for Air/Solo readers (shouldKeepConnectionAlive=true),
@@ -661,10 +701,14 @@ class MainActivity : FragmentActivity() {
         disconnectCardReader()
         delay(1500L)
 
-        authenticate(affiliateKey)
+        authenticate(affiliateKey, silent = true)
         delay(5000L)
 
-        showMaintenanceScreen = false
+        // Don't clobber a NetworkOutage state — if connectivity died mid-reinit, keep showing
+        // the offline screen instead of flashing back to the donation grid.
+        if (maintenanceReason == MaintenanceReason.Reinitializing) {
+            maintenanceReason = null
+        }
         Log.d("SumUpDebug", "Reinit complete")
         prepareCardReader()
     }
@@ -688,12 +732,87 @@ class MainActivity : FragmentActivity() {
 
     // ── Network disconnect / restore handling ──────────────────────────────────
 
+    /**
+     * True only when the active network is both connected AND has been validated
+     * by Android's captive-portal probe. Catches "wifi connected but no internet"
+     * (router up, upstream dead) which a NET_CAPABILITY_INTERNET check misses.
+     */
+    private fun isOnlineNow(): Boolean {
+        val cm = connectivityManager ?: return false
+        val active = cm.activeNetwork ?: return false
+        val caps = cm.getNetworkCapabilities(active) ?: return false
+        return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+               caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+    }
+
+    private fun startConnectivityPolling() {
+        connectivityPollJob?.cancel()
+        connectivityPollJob = lifecycleScope.launch {
+            while (true) {
+                val online = isOnlineNow()
+                if (online != isNetworkAvailable) {
+                    isNetworkAvailable = online
+                    Log.d("NetworkPoll", "Connectivity changed → online=$online")
+                    if (online) {
+                        wifiCycleJob?.cancel()
+                        if (isReconnectingWifi) {
+                            isReconnectingWifi = false
+                            wifiReconnectJob?.cancel()
+                            delay(2000L)
+                            startAppPinning()
+                        } else {
+                            scheduleAutoPinIfReady()
+                        }
+                        handleNetworkRestored()
+                    } else {
+                        autoPinJob?.cancel()
+                        handleNetworkLost()
+                        startWifiCyclingWhileOffline()
+                    }
+                }
+                delay(1_000L)
+            }
+        }
+    }
+
+    private fun startWifiCyclingWhileOffline() {
+        wifiCycleJob?.cancel()
+        wifiCycleJob = lifecycleScope.launch {
+            while (!isNetworkAvailable) {
+                delay(30_000L)
+                if (isNetworkAvailable) break
+                cycleWifi()
+            }
+            Log.d("WifiCycle", "Stopped — network restored")
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private suspend fun cycleWifi() {
+        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        if (wm == null) {
+            Log.w("WifiCycle", "WifiManager unavailable")
+            return
+        }
+        try {
+            val offOk = wm.setWifiEnabled(false)
+            Log.d("WifiCycle", "setWifiEnabled(false) → $offOk")
+            delay(3000L)
+            val onOk = wm.setWifiEnabled(true)
+            Log.d("WifiCycle", "setWifiEnabled(true) → $onOk")
+        } catch (e: SecurityException) {
+            Log.e("WifiCycle", "SecurityException toggling wifi: ${e.message}")
+        } catch (e: Exception) {
+            Log.e("WifiCycle", "Error toggling wifi: ${e.message}")
+        }
+    }
+
     fun handleNetworkLost() {
         when (networkRecoveryManager.onNetworkLost(isLoggedIn, settings.testMode)) {
             NetworkLostAction.Ignore -> return
             NetworkLostAction.ShowMaintenanceAndDismissSumUp -> {
-                showMaintenanceScreen = true
-                Log.d("NetworkRecovery", "Network lost — showing maintenance, dismissing SumUp activities")
+                maintenanceReason = MaintenanceReason.NetworkOutage
+                Log.d("NetworkRecovery", "Network lost — showing offline screen, dismissing SumUp activities")
                 networkDismissJob?.cancel()
                 networkDismissJob = lifecycleScope.launch {
                     repeat(6) { // Try for ~30 seconds
@@ -710,10 +829,14 @@ class MainActivity : FragmentActivity() {
         val wasTracking = networkRecoveryManager.isTrackingOutage
         when (networkRecoveryManager.onNetworkRestored(isLoggedIn)) {
             NetworkRestoredAction.Ignore -> {
-                if (wasTracking) showMaintenanceScreen = false
+                if (wasTracking && maintenanceReason == MaintenanceReason.NetworkOutage) {
+                    maintenanceReason = null
+                }
             }
             NetworkRestoredAction.ResumeNormally -> {
-                showMaintenanceScreen = false
+                if (maintenanceReason == MaintenanceReason.NetworkOutage) {
+                    maintenanceReason = null
+                }
                 Log.d("NetworkRecovery", "Short downtime — resuming normally")
             }
             NetworkRestoredAction.AutoReinit -> {
@@ -739,7 +862,7 @@ class MainActivity : FragmentActivity() {
                 Log.w("AutoRestart", "Threshold reached but cooldown active — reason: $reason")
             RestartResult.MAX_RESTARTS -> {
                 Log.e("AutoRestart", "Threshold reached but max restarts hit — giving up — reason: $reason")
-                showMaintenanceScreen = false
+                maintenanceReason = null
             }
         }
     }
@@ -764,13 +887,15 @@ class MainActivity : FragmentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        networkCallback?.let { connectivityManager?.unregisterNetworkCallback(it) }
         bluetoothReceiver?.let { unregisterReceiver(it) }
         autoPinJob?.cancel()
         pairingUnpinJob?.cancel()
         wifiReconnectJob?.cancel()
         networkDismissJob?.cancel()
         restartCountResetJob?.cancel()
+        silentLoginWatchdogJob?.cancel()
+        connectivityPollJob?.cancel()
+        wifiCycleJob?.cancel()
     }
 
     private fun hideSystemBars() {
@@ -797,7 +922,7 @@ class MainActivity : FragmentActivity() {
     }
 
     fun prepareCardReader() {
-        if (!settings.testMode && isLoggedIn && !isCardReaderConnected) {
+        if (!settings.testMode && isLoggedIn && !isCardReaderConnected && isNetworkAvailable) {
             SumUpAPI.prepareForCheckout()
             Log.d("SumUpPayment", "Card reader prepared for checkout")
         }
@@ -1010,7 +1135,8 @@ fun AppUI(
     onCustomAmountSubmit: (String) -> Unit,
     onShowCustomAmountScreen: (Boolean) -> Unit,
     reinitSumUp: () -> Unit,
-    showMaintenanceScreen: Boolean,
+    maintenanceReason: MaintenanceReason?,
+    onOfflineSettingsClick: () -> Unit,
     isScreensaverActive: Boolean,
     onResetScreensaver: () -> Unit,
     onExportSettings: (Boolean) -> String,
@@ -1021,6 +1147,8 @@ fun AppUI(
     isCardReaderConnected: Boolean,
     showSetupStatus: Boolean,
     onShowSetupStatus: (Boolean) -> Unit,
+    setupStatusFromOffline: Boolean,
+    onExitSetupStatus: () -> Unit,
     onUnpinApp: () -> Unit,
     onPinApp: () -> Unit,
     onReconnectWifi: () -> Unit,
@@ -1034,8 +1162,13 @@ fun AppUI(
 
     if (mustRefresh) {
         RefreshBackground(settings = settings, onRefresh = onRefresh)
-    } else if (showMaintenanceScreen) {
+    } else if (maintenanceReason == MaintenanceReason.Reinitializing) {
         MaintenanceScreen(settings = settings)
+    } else if (maintenanceReason == MaintenanceReason.NetworkOutage) {
+        NoInternetScreen(
+            settings = settings,
+            onOpenSettings = onOfflineSettingsClick
+        )
     } else {
         when {
             isEditingSettings -> {
@@ -1053,7 +1186,14 @@ fun AppUI(
                         isLoggedIn = isLoggedIn,
                         isCardReaderConnected = isCardReaderConnected,
                         settings = settings,
-                        onBack = { onShowSetupStatus(false) },
+                        onBack = {
+                            // When opened from the offline screen, "back" should
+                            // exit the settings stack entirely (back to NoInternet
+                            // or DonationGrid depending on connectivity), not drop
+                            // into the regular SettingsScreen the user never asked for.
+                            if (setupStatusFromOffline) onExitSetupStatus()
+                            else onShowSetupStatus(false)
+                        },
                         onConfigureWifi = {
                             onShowSetupStatus(false)
                             onReconnectWifi()
@@ -1159,11 +1299,6 @@ fun AppUI(
                         onReinitSumUp = {
                             onResetScreensaver()
                             reinitSumUp()
-                        },
-                        isNetworkAvailable = isNetworkAvailable,
-                        onNetworkWarningClick = {
-                            onResetScreensaver()
-                            onReconnectWifi()
                         }
                     )
                 }

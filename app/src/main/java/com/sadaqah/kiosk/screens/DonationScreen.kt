@@ -33,9 +33,7 @@ fun DonationGridScreen(
     onSettingsClick: () -> Unit,
     settings: Settings,
     onShowCustomAmountScreen: (Boolean) -> Unit,
-    onReinitSumUp: () -> Unit,
-    isNetworkAvailable: Boolean,
-    onNetworkWarningClick: () -> Unit
+    onReinitSumUp: () -> Unit
 ) {
     val amounts = listOf("5", "10", "15", "20", "25", "30", "40", "50", "75", "100", "150")
     val columns = donationGridColumns()
@@ -85,34 +83,11 @@ fun DonationGridScreen(
             )
         }
 
-        if (!isNetworkAvailable) {
-            Button(
-                onClick = onNetworkWarningClick,
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(top = responsiveDp(16.dp), end = responsiveDp(8.dp))
-                    .size(responsiveDp(96.dp)),
-                contentPadding = PaddingValues(0.dp),
-                colors = ButtonDefaults.buttonColors(containerColor = Color.Red.copy(alpha = 0.9f)),
-                shape = RoundedCornerShape(responsiveDp(8.dp)),
-                border = BorderStroke(responsiveDp(2.dp), Color.White)
-            ) {
-                Text(
-                    text = "⚠",
-                    color = Color.White,
-                    fontSize = responsiveSp(56.0),
-                    fontWeight = FontWeight.Bold
-                )
-            }
-        }
-
-        // Sits below the network warning when visible (96dp box + 16dp top pad + 8dp gap)
-        val refreshTopPadding = if (!isNetworkAvailable) responsiveDp(120.dp) else responsiveDp(16.dp)
         IconButton(
             onClick = onReinitSumUp,
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(top = refreshTopPadding, end = responsiveDp(8.dp))
+                .padding(top = responsiveDp(16.dp), end = responsiveDp(8.dp))
                 .size(responsiveDp(96.dp))
         ) {
             Text(

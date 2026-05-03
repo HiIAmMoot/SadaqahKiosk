@@ -22,6 +22,11 @@ import com.sadaqah.kiosk.rememberStrings
 import com.sadaqah.kiosk.responsiveDp
 import com.sadaqah.kiosk.responsiveSp
 
+enum class MaintenanceReason {
+    Reinitializing,
+    NetworkOutage
+}
+
 @Composable
 fun MaintenanceScreen(
     settings: Settings

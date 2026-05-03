@@ -25,6 +25,6 @@ data class Settings(
     val maxConsecutiveFailures: Int = 3,
     val restartCooldownSec: Int = 300,           // 5 minutes
     val maxRestartsBeforeGiveUp: Int = 3,
-    val longDowntimeThresholdSec: Int = 120,     // 2 minutes
+    val longDowntimeThresholdSec: Int = 300,     // 5 minutes
     val restartCountResetSec: Int = 1800         // 30 minutes
 )
