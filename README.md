@@ -125,7 +125,7 @@ Setting the app as device owner enables silent lock-task mode (no blue "app is p
    ```
 5. Verify it worked:
    ```bash
-   adb shell dpm get-device-owner
+   adb shell dpm list-owners
    ```
    You should see `com.sadaqah.kiosk/.KioskDeviceAdminReceiver`.
 
