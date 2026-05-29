@@ -5,6 +5,8 @@ import android.bluetooth.BluetoothProfile
 import android.content.BroadcastReceiver
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.net.wifi.ScanResult
+import android.net.wifi.WifiConfiguration
 import android.net.wifi.WifiManager
 import android.content.Context
 import android.content.Intent
@@ -45,9 +47,11 @@ import com.sumup.merchant.reader.api.SumUpLogin
 import com.sumup.merchant.reader.api.SumUpPayment
 import com.sumup.merchant.reader.ReaderModuleCoreState
 import com.sumup.merchant.reader.api.SumUpState
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import java.math.BigDecimal
 
 class MainActivity : FragmentActivity() {
@@ -65,6 +69,8 @@ class MainActivity : FragmentActivity() {
     private var silentLoginWatchdogJob: Job? = null
     private var connectivityPollJob: Job? = null
     private var wifiCycleJob: Job? = null
+    private var bluetoothCycleJob: Job? = null
+    private var savedNetworkFallbackJob: Job? = null
     private lateinit var restartManager: RestartManager
     private lateinit var networkRecoveryManager: NetworkRecoveryManager
 
@@ -105,6 +111,21 @@ class MainActivity : FragmentActivity() {
             // Whitelist SumUp so its login / card-reader activities can launch under
             // lock task without us first having to drop pinning.
             dpm.setLockTaskPackages(admin, arrayOf(packageName, "com.sumup.merchant.reader"))
+
+            // Silently grant the wifi-scan permissions so the saved-network fallback
+            // can call WifiManager.startScan() / scanResults without a runtime prompt.
+            val grantList = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                grantList += Manifest.permission.NEARBY_WIFI_DEVICES
+            }
+            for (perm in grantList) {
+                try {
+                    dpm.setPermissionGrantState(admin, packageName, perm,
+                        DevicePolicyManager.PERMISSION_GRANT_STATE_GRANTED)
+                } catch (e: Exception) {
+                    Log.w("DeviceOwner", "Could not auto-grant $perm: ${e.message}")
+                }
+            }
         }
 
         // Initialise connectivity manager up-front so the network gate inside
@@ -158,7 +179,10 @@ class MainActivity : FragmentActivity() {
         hideSystemBars()
 
         startConnectivityPolling()
-        if (!isNetworkAvailable) startWifiCyclingWhileOffline()
+        if (!isNetworkAvailable) {
+            startWifiCyclingWhileOffline()
+            startSavedNetworkFallback()
+        }
 
         isBluetoothEnabled = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)
             ?.adapter?.isEnabled == true
@@ -493,6 +517,49 @@ class MainActivity : FragmentActivity() {
             rm.disconnect()
         }
         isCardReaderConnected = false
+        // SDK-level disconnect alone has been unreliable: the reader sometimes
+        // believes it is still connected and silently stops accepting commands.
+        // Power-cycling the BT radio (device-owner privilege, no user prompt)
+        // is what reliably clears that stuck state.
+        cycleBluetoothAdapter()
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun cycleBluetoothAdapter() {
+        bluetoothCycleJob?.cancel()
+        bluetoothCycleJob = lifecycleScope.launch {
+            val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
+            if (adapter == null) {
+                Log.w("BluetoothCycle", "BluetoothAdapter unavailable — skip cycle")
+                return@launch
+            }
+            try {
+                @Suppress("DEPRECATION")
+                val offOk = adapter.disable()
+                Log.d("BluetoothCycle", "adapter.disable() → $offOk")
+                // Wait for the STATE_OFF broadcast (updates isBluetoothEnabled = false)
+                // before turning it back on, so the radio is genuinely off mid-cycle.
+                val offDeadline = System.currentTimeMillis() + 5_000L
+                while (isBluetoothEnabled && System.currentTimeMillis() < offDeadline) {
+                    delay(200L)
+                }
+                delay(1000L)
+                @Suppress("DEPRECATION")
+                val onOk = adapter.enable()
+                Log.d("BluetoothCycle", "adapter.enable() → $onOk")
+                // Wait for STATE_ON so callers that join() this job know the radio
+                // is actually back up, not just that enable() was queued.
+                val onDeadline = System.currentTimeMillis() + 8_000L
+                while (!isBluetoothEnabled && System.currentTimeMillis() < onDeadline) {
+                    delay(200L)
+                }
+                Log.d("BluetoothCycle", "Cycle complete — adapter ON: $isBluetoothEnabled")
+            } catch (e: SecurityException) {
+                Log.e("BluetoothCycle", "SecurityException toggling bluetooth: ${e.message}")
+            } catch (e: Exception) {
+                Log.e("BluetoothCycle", "Error toggling bluetooth: ${e.message}")
+            }
+        }
     }
 
     fun authenticate(affiliateKey: String, silent: Boolean = false) {
@@ -694,15 +761,15 @@ class MainActivity : FragmentActivity() {
         }
         maintenanceReason = MaintenanceReason.Reinitializing
 
-        // Explicitly disconnect the card reader transport via the SDK before reinit.
-        // The SDK keeps the BLE transport alive for Air/Solo readers (shouldKeepConnectionAlive=true),
-        // so without this, SumUpState.init() resets higher-level state while the transport remains,
-        // causing "transport already initialized" → TRANSPORT_ERROR loop on the next payment.
-        disconnectCardReader()
-        delay(1500L)
-
         authenticate(affiliateKey, silent = true)
         delay(5000L)
+
+        // Reorder rationale: do auth FIRST while BT is still up, then tear the
+        // card reader down and power-cycle the radio. This avoids the SumUp SDK
+        // re-authing against a freshly-cycled BT stack mid-bring-up.
+        disconnectCardReader() // fires the BT cycle (off → STATE_OFF → on → STATE_ON)
+        bluetoothCycleJob?.join() // wait until adapter is verifiably back ON
+        delay(2000L) // 2s grace after BT is up before prepareForCheckout
 
         // Don't clobber a NetworkOutage state — if connectivity died mid-reinit, keep showing
         // the offline screen instead of flashing back to the donation grid.
@@ -755,6 +822,7 @@ class MainActivity : FragmentActivity() {
                     Log.d("NetworkPoll", "Connectivity changed → online=$online")
                     if (online) {
                         wifiCycleJob?.cancel()
+                        savedNetworkFallbackJob?.cancel()
                         if (isReconnectingWifi) {
                             isReconnectingWifi = false
                             wifiReconnectJob?.cancel()
@@ -768,6 +836,7 @@ class MainActivity : FragmentActivity() {
                         autoPinJob?.cancel()
                         handleNetworkLost()
                         startWifiCyclingWhileOffline()
+                        startSavedNetworkFallback()
                     }
                 }
                 delay(1_000L)
@@ -805,6 +874,152 @@ class MainActivity : FragmentActivity() {
         } catch (e: Exception) {
             Log.e("WifiCycle", "Error toggling wifi: ${e.message}")
         }
+    }
+
+    /**
+     * Fallback for devices that stop attempting to reconnect to wifi on their own.
+     * 5 minutes after going offline (and every 5 minutes thereafter while still offline),
+     * scan for in-range networks and try each saved config one-by-one. Won't prompt for
+     * new networks or passwords — only attempts configs already saved on the device.
+     */
+    private fun startSavedNetworkFallback() {
+        savedNetworkFallbackJob?.cancel()
+        savedNetworkFallbackJob = lifecycleScope.launch {
+            delay(5 * 60 * 1000L)
+            while (!isNetworkAvailable) {
+                tryConnectToSavedInRangeNetworks()
+                if (isNetworkAvailable) break
+                delay(5 * 60 * 1000L)
+            }
+            Log.d("WifiFallback", "Stopped — network restored or job cancelled")
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun tryConnectToSavedInRangeNetworks() {
+        val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
+        if (wm == null) {
+            Log.w("WifiFallback", "WifiManager unavailable")
+            return
+        }
+
+        // Pause the radio-toggle cycle so it doesn't fight our scan / enableNetwork calls.
+        // Will be resumed below if we exit without restoring connectivity.
+        wifiCycleJob?.cancel()
+
+        if (!wm.isWifiEnabled) {
+            @Suppress("DEPRECATION")
+            wm.setWifiEnabled(true)
+            delay(3000L)
+        }
+
+        val savedConfigs: List<WifiConfiguration> = try {
+            @Suppress("DEPRECATION")
+            wm.configuredNetworks ?: emptyList()
+        } catch (e: Exception) {
+            Log.e("WifiFallback", "Cannot read configuredNetworks: ${e.message}")
+            if (!isNetworkAvailable) startWifiCyclingWhileOffline()
+            return
+        }
+        if (savedConfigs.isEmpty()) {
+            Log.d("WifiFallback", "No saved networks on device")
+            if (!isNetworkAvailable) startWifiCyclingWhileOffline()
+            return
+        }
+        Log.d("WifiFallback", "Device has ${savedConfigs.size} saved network configs")
+
+        val scanResults = scanForWifi(wm)
+        if (scanResults.isEmpty()) {
+            Log.d("WifiFallback", "Scan returned no in-range networks")
+            if (!isNetworkAvailable) startWifiCyclingWhileOffline()
+            return
+        }
+
+        val savedBySsid: Map<String, WifiConfiguration> = savedConfigs
+            .filter { !it.SSID.isNullOrBlank() }
+            .associateBy { it.SSID.removeSurrounding("\"") }
+
+        val candidates: List<Pair<String, WifiConfiguration>> = scanResults
+            .sortedByDescending { it.level }
+            .mapNotNull { sr ->
+                val ssid = sr.SSID?.removeSurrounding("\"") ?: return@mapNotNull null
+                savedBySsid[ssid]?.let { ssid to it }
+            }
+            .distinctBy { it.first }
+
+        if (candidates.isEmpty()) {
+            Log.d("WifiFallback", "No saved networks are currently in range")
+            if (!isNetworkAvailable) startWifiCyclingWhileOffline()
+            return
+        }
+        Log.d("WifiFallback", "Will try ${candidates.size} saved in-range networks: ${candidates.map { it.first }}")
+
+        for ((ssid, config) in candidates) {
+            if (isNetworkAvailable) {
+                Log.d("WifiFallback", "Network restored during attempts — stopping")
+                return
+            }
+            Log.d("WifiFallback", "Attempting $ssid (netId=${config.networkId})")
+            val enableOk = try {
+                @Suppress("DEPRECATION")
+                wm.enableNetwork(config.networkId, true)
+            } catch (e: Exception) {
+                Log.e("WifiFallback", "enableNetwork($ssid) threw: ${e.message}")
+                false
+            }
+            Log.d("WifiFallback", "enableNetwork($ssid) → $enableOk")
+            if (!enableOk) continue
+
+            var waited = 0L
+            while (waited < 25_000L) {
+                delay(2_000L)
+                waited += 2_000L
+                if (isNetworkAvailable) {
+                    Log.d("WifiFallback", "Connected via $ssid after ${waited}ms")
+                    return
+                }
+            }
+            Log.d("WifiFallback", "Timed out on $ssid (likely wrong password or weak signal) — trying next")
+        }
+
+        Log.d("WifiFallback", "Exhausted all saved in-range networks without success")
+        if (!isNetworkAvailable) startWifiCyclingWhileOffline()
+    }
+
+    @SuppressLint("MissingPermission")
+    private suspend fun scanForWifi(wm: WifiManager): List<ScanResult> {
+        val deferred = CompletableDeferred<List<ScanResult>>()
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                val success = intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, true)
+                val results: List<ScanResult> = try {
+                    if (success) wm.scanResults ?: emptyList() else emptyList()
+                } catch (e: Exception) {
+                    Log.e("WifiFallback", "scanResults read failed: ${e.message}")
+                    emptyList()
+                }
+                try { unregisterReceiver(this) } catch (_: Exception) {}
+                deferred.complete(results)
+            }
+        }
+        registerReceiver(receiver, IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION))
+
+        val started = try {
+            @Suppress("DEPRECATION")
+            wm.startScan()
+        } catch (e: Exception) {
+            Log.e("WifiFallback", "startScan threw: ${e.message}")
+            false
+        }
+        Log.d("WifiFallback", "startScan() → $started")
+
+        val result = withTimeoutOrNull(15_000L) { deferred.await() }
+        if (result == null) {
+            try { unregisterReceiver(receiver) } catch (_: Exception) {}
+            Log.w("WifiFallback", "Scan broadcast timed out — using cached scanResults")
+            return try { wm.scanResults ?: emptyList() } catch (_: Exception) { emptyList() }
+        }
+        return result
     }
 
     fun handleNetworkLost() {
@@ -896,6 +1111,8 @@ class MainActivity : FragmentActivity() {
         silentLoginWatchdogJob?.cancel()
         connectivityPollJob?.cancel()
         wifiCycleJob?.cancel()
+        bluetoothCycleJob?.cancel()
+        savedNetworkFallbackJob?.cancel()
     }
 
     private fun hideSystemBars() {
