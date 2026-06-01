@@ -59,7 +59,14 @@ fun SettingsScreen(
     onShowSetupStatus: () -> Unit,
     onActivateScreensaver: () -> Unit,
     onTestModeChange: (Boolean) -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    currentVersion: String = "",
+    latestVersion: String = "",
+    updateAvailable: Boolean = false,
+    availableReleases: List<com.sadaqah.kiosk.update.ReleaseInfo> = emptyList(),
+    scheduledInstallAtMs: Long? = null,
+    onCheckForUpdates: () -> Unit = {},
+    onUpdateNow: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val strings = rememberStrings()
@@ -445,6 +452,18 @@ fun SettingsScreen(
                             TimerInputRow(strings.thankYouDuration, thankYouDurationInput, strings.seconds, { thankYouDurationInput = it }, settings)
                         }
                     }
+
+                    UpdateSettingsSection(
+                        settings = settings,
+                        onSettingsChange = onSettingsChange,
+                        currentVersion = currentVersion,
+                        latestVersion = latestVersion,
+                        updateAvailable = updateAvailable,
+                        availableReleases = availableReleases,
+                        scheduledInstallAtMs = scheduledInstallAtMs,
+                        onCheckForUpdates = onCheckForUpdates,
+                        onUpdateNow = onUpdateNow
+                    )
                 }
 
                 Column(
@@ -1018,4 +1037,270 @@ fun ImportDialog(
             }
         }
     )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun UpdateSettingsSection(
+    settings: Settings,
+    onSettingsChange: (Settings) -> Unit,
+    currentVersion: String,
+    latestVersion: String,
+    updateAvailable: Boolean,
+    availableReleases: List<com.sadaqah.kiosk.update.ReleaseInfo>,
+    scheduledInstallAtMs: Long?,
+    onCheckForUpdates: () -> Unit,
+    onUpdateNow: () -> Unit
+) {
+    val context = LocalContext.current
+    val strings = rememberStrings()
+    val border = Color(settings.buttonBorderColor)
+    val button = Color(settings.buttonColor)
+    var repoUrlInput by remember(settings.updateRepoUrl) { mutableStateOf(settings.updateRepoUrl) }
+    var graceDaysInput by remember(settings.autoUpdateGraceDays) {
+        mutableStateOf(settings.autoUpdateGraceDays.toString())
+    }
+    var versionDropdownExpanded by remember { mutableStateOf(false) }
+
+    val targetOptions: List<String> = remember(availableReleases) {
+        buildList {
+            add("latest")
+            addAll(availableReleases.map { it.version.toString() })
+        }
+    }
+
+    SettingsSection(title = strings.updates, settings = settings) {
+        Column(verticalArrangement = Arrangement.spacedBy(responsiveDp(10.dp))) {
+
+            // Current / latest version line
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "${strings.currentVersion}: $currentVersion",
+                    color = border,
+                    fontSize = responsiveSp(13.0)
+                )
+                if (latestVersion.isNotBlank() && latestVersion != currentVersion) {
+                    Text(
+                        text = "${strings.latestVersion}: $latestVersion",
+                        color = if (updateAvailable) Color(0xFFE53935) else border,
+                        fontSize = responsiveSp(13.0),
+                        fontWeight = if (updateAvailable) FontWeight.Bold else FontWeight.Normal
+                    )
+                }
+            }
+
+            // Scheduled install date/time — only when auto-update is enabled
+            // and target is "latest" (UpdateManager.nextScheduledInstallTime
+            // returns null otherwise so this line stays hidden).
+            if (scheduledInstallAtMs != null) {
+                val formatted = remember(scheduledInstallAtMs) {
+                    val fmt = java.text.DateFormat.getDateTimeInstance(
+                        java.text.DateFormat.MEDIUM,
+                        java.text.DateFormat.SHORT
+                    )
+                    fmt.format(java.util.Date(scheduledInstallAtMs))
+                }
+                Text(
+                    text = "${strings.updateWillInstallOn} $formatted",
+                    color = border.copy(alpha = 0.8f),
+                    fontSize = responsiveSp(12.0),
+                    fontWeight = FontWeight.Bold
+                )
+            }
+
+            // Manual check + install buttons
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(responsiveDp(8.dp)),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Button(
+                    onClick = onCheckForUpdates,
+                    colors = ButtonDefaults.buttonColors(containerColor = button),
+                    shape = RoundedCornerShape(responsiveDp(8.dp)),
+                    border = BorderStroke(responsiveDp(2.dp), border),
+                    modifier = Modifier.weight(1f).height(responsiveDp(48.dp))
+                ) {
+                    Text(strings.checkForUpdates, color = border, fontSize = responsiveSp(12.0))
+                }
+                if (updateAvailable) {
+                    Button(
+                        onClick = onUpdateNow,
+                        colors = ButtonDefaults.buttonColors(containerColor = button),
+                        shape = RoundedCornerShape(responsiveDp(8.dp)),
+                        border = BorderStroke(responsiveDp(2.dp), Color(0xFFE53935)),
+                        modifier = Modifier.weight(1f).height(responsiveDp(48.dp))
+                    ) {
+                        Text(strings.updateNow, color = border, fontSize = responsiveSp(12.0), fontWeight = FontWeight.Bold)
+                    }
+                }
+            }
+
+            // Auto-update toggle (now reactive via mutableStateOf settings in MainActivity)
+            ToggleRow(
+                label = strings.autoUpdateEnabled,
+                description = strings.autoUpdateDesc,
+                checked = settings.autoUpdateEnabled,
+                onChange = { onSettingsChange(settings.copy(autoUpdateEnabled = it)) },
+                border = border
+            )
+
+            // Target version dropdown (Latest + each available release, newest first)
+            Text(
+                text = strings.targetVersion,
+                color = border,
+                fontSize = responsiveSp(13.0),
+                fontWeight = FontWeight.Bold
+            )
+            ExposedDropdownMenuBox(
+                expanded = versionDropdownExpanded,
+                onExpandedChange = { versionDropdownExpanded = !versionDropdownExpanded }
+            ) {
+                val currentLabel = if (settings.autoUpdateTargetVersion == "latest")
+                    strings.latestVersion
+                else
+                    "v${settings.autoUpdateTargetVersion}"
+                OutlinedTextField(
+                    value = currentLabel,
+                    onValueChange = {},
+                    readOnly = true,
+                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = versionDropdownExpanded) },
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = border, unfocusedBorderColor = border,
+                        cursorColor = border, focusedTextColor = border, unfocusedTextColor = border
+                    ),
+                    modifier = Modifier.menuAnchor().fillMaxWidth()
+                )
+                ExposedDropdownMenu(
+                    expanded = versionDropdownExpanded,
+                    onDismissRequest = { versionDropdownExpanded = false }
+                ) {
+                    targetOptions.forEach { opt ->
+                        DropdownMenuItem(
+                            text = {
+                                Text(if (opt == "latest") strings.latestVersion else "v$opt")
+                            },
+                            onClick = {
+                                onSettingsChange(settings.copy(autoUpdateTargetVersion = opt))
+                                versionDropdownExpanded = false
+                            }
+                        )
+                    }
+                }
+            }
+            if (availableReleases.isEmpty()) {
+                Text(
+                    text = strings.checkForUpdates + " →",
+                    color = border.copy(alpha = 0.6f),
+                    fontSize = responsiveSp(10.0)
+                )
+            }
+
+            // Hide update prompts
+            ToggleRow(
+                label = strings.hideUpdatePrompts,
+                description = strings.hideUpdatePromptsDesc,
+                checked = settings.hideUpdatePrompts,
+                onChange = { onSettingsChange(settings.copy(hideUpdatePrompts = it)) },
+                border = border
+            )
+
+            // Repo URL (single field, parsed on apply)
+            Text(
+                text = strings.updateRepository,
+                color = border,
+                fontSize = responsiveSp(13.0),
+                fontWeight = FontWeight.Bold
+            )
+            Text(
+                text = strings.updateRepositoryHelp,
+                color = border.copy(alpha = 0.6f),
+                fontSize = responsiveSp(10.0)
+            )
+            OutlinedTextField(
+                value = repoUrlInput,
+                onValueChange = { repoUrlInput = it },
+                placeholder = { Text("https://github.com/owner/repo", fontSize = responsiveSp(12.0)) },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedBorderColor = border, unfocusedBorderColor = border,
+                    cursorColor = border, focusedTextColor = border, unfocusedTextColor = border
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            Button(
+                onClick = {
+                    val trimmed = repoUrlInput.trim()
+                    if (com.sadaqah.kiosk.update.parseGitHubRepoUrl(trimmed) != null) {
+                        onSettingsChange(settings.copy(updateRepoUrl = trimmed))
+                        Toast.makeText(context, strings.apply, Toast.LENGTH_SHORT).show()
+                    } else {
+                        Toast.makeText(context, strings.invalidGitHubRepoUrl, Toast.LENGTH_LONG).show()
+                    }
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = button),
+                shape = RoundedCornerShape(responsiveDp(8.dp)),
+                border = BorderStroke(responsiveDp(2.dp), border),
+                modifier = Modifier.fillMaxWidth().height(responsiveDp(40.dp))
+            ) {
+                Text(strings.apply, color = border, fontSize = responsiveSp(12.0))
+            }
+
+            // One-time skip signature check
+            ToggleRow(
+                label = strings.skipSignatureCheckOnce,
+                description = strings.skipSignatureCheckOnceDesc,
+                checked = settings.skipApkSignatureCheckOnce,
+                onChange = { onSettingsChange(settings.copy(skipApkSignatureCheckOnce = it)) },
+                border = border
+            )
+
+            // Grace period
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = strings.updateReleasedOn + " grace (days):",
+                    color = border,
+                    fontSize = responsiveSp(12.0),
+                    modifier = Modifier.weight(1f)
+                )
+                OutlinedTextField(
+                    value = graceDaysInput,
+                    onValueChange = { v ->
+                        graceDaysInput = v
+                        v.toIntOrNull()?.let { onSettingsChange(settings.copy(autoUpdateGraceDays = it.coerceIn(0, 90))) }
+                    },
+                    singleLine = true,
+                    colors = OutlinedTextFieldDefaults.colors(
+                        focusedBorderColor = border, unfocusedBorderColor = border,
+                        cursorColor = border, focusedTextColor = border, unfocusedTextColor = border
+                    ),
+                    modifier = Modifier.width(responsiveDp(70.dp))
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToggleRow(
+    label: String,
+    description: String,
+    checked: Boolean,
+    onChange: (Boolean) -> Unit,
+    border: Color
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f).padding(end = responsiveDp(8.dp))) {
+            Text(label, color = border, fontSize = responsiveSp(13.0), fontWeight = FontWeight.Bold)
+            Text(description, color = border.copy(alpha = 0.6f), fontSize = responsiveSp(10.0), lineHeight = responsiveSp(12.0))
+        }
+        Switch(checked = checked, onCheckedChange = onChange)
+    }
 }

@@ -3,6 +3,7 @@ package com.sadaqah.kiosk.screens
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -33,7 +34,10 @@ fun DonationGridScreen(
     onSettingsClick: () -> Unit,
     settings: Settings,
     onShowCustomAmountScreen: (Boolean) -> Unit,
-    onReinitSumUp: () -> Unit
+    onReinitSumUp: () -> Unit,
+    versionLabel: String = "",
+    updateAvailable: Boolean = false,
+    onUpdateBadgeTap: () -> Unit = {}
 ) {
     val amounts = listOf("5", "10", "15", "20", "25", "30", "40", "50", "75", "100", "150")
     val columns = donationGridColumns()
@@ -61,26 +65,41 @@ fun DonationGridScreen(
             )
         )
 
-        Button(
-            onClick = onSettingsClick,
+        Box(
             modifier = Modifier
                 .padding(top = responsiveDp(16.dp), start = responsiveDp(8.dp))
-                .size(responsiveDp(96.dp)),
-            contentPadding = PaddingValues(0.dp),
-            colors = ButtonDefaults.buttonColors(
-                containerColor = Color.Transparent,
-                contentColor = buttonBorderColor
-            ),
+                .size(responsiveDp(96.dp))
         ) {
-            Image(
-                painter = painterResource(id = R.drawable.gear_icon),
-                contentDescription = "Instellingen",
+            Button(
+                onClick = onSettingsClick,
                 modifier = Modifier.fillMaxSize(),
-                colorFilter = ColorFilter.tint(
-                    buttonBorderColor,
-                    blendMode = BlendMode.Modulate
+                contentPadding = PaddingValues(0.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color.Transparent,
+                    contentColor = buttonBorderColor
+                ),
+            ) {
+                Image(
+                    painter = painterResource(id = R.drawable.gear_icon),
+                    contentDescription = "Instellingen",
+                    modifier = Modifier.fillMaxSize(),
+                    colorFilter = ColorFilter.tint(
+                        buttonBorderColor,
+                        blendMode = BlendMode.Modulate
+                    )
                 )
-            )
+            }
+            if (updateAvailable) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(responsiveDp(2.dp))
+                        .size(responsiveDp(18.dp))
+                        .clip(RoundedCornerShape(50))
+                        .background(Color(0xFFE53935))
+                        .clickable { onUpdateBadgeTap() }
+                )
+            }
         }
 
         IconButton(
@@ -174,6 +193,17 @@ Column(
                     textAlign = TextAlign.Center
                 )
             }
+        }
+
+        if (versionLabel.isNotBlank()) {
+            Text(
+                text = versionLabel,
+                color = buttonBorderColor.copy(alpha = 0.4f),
+                fontSize = responsiveSp(12.0),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(responsiveDp(8.dp))
+            )
         }
     }
 }

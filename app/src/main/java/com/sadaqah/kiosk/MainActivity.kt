@@ -42,6 +42,11 @@ import com.sadaqah.kiosk.ui.theme.SadaqahKioskTheme
 import com.google.gson.Gson
 import com.sadaqah.kiosk.recovery.*
 import com.sadaqah.kiosk.screens.*
+import com.sadaqah.kiosk.update.ReleaseInfo
+import com.sadaqah.kiosk.update.SemVer
+import com.sadaqah.kiosk.update.UpdateManager
+import com.sadaqah.kiosk.update.UpdateState
+import com.sadaqah.kiosk.update.UpdateWatchdogReceiver
 import com.sumup.merchant.reader.api.SumUpAPI
 import com.sumup.merchant.reader.api.SumUpLogin
 import com.sumup.merchant.reader.api.SumUpPayment
@@ -53,6 +58,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.math.BigDecimal
+
+private const val INACTIVITY_BOUNCE_MS = 5L * 60 * 1000 // 5 min on settings / custom-amount → back to donation
 
 class MainActivity : FragmentActivity() {
     private lateinit var prefs: SharedPreferences
@@ -74,7 +81,7 @@ class MainActivity : FragmentActivity() {
     private lateinit var restartManager: RestartManager
     private lateinit var networkRecoveryManager: NetworkRecoveryManager
 
-    var settings: Settings = Settings()
+    var settings: Settings by mutableStateOf(Settings())
     var isLoggedIn by mutableStateOf(false)
     var affiliateKey by mutableStateOf("")
     var isEditingSettings by mutableStateOf(false)
@@ -97,6 +104,10 @@ class MainActivity : FragmentActivity() {
     var isConnectingCardReader by mutableStateOf(false)
     var showSetupStatus by mutableStateOf(false)
     var setupStatusFromOffline by mutableStateOf(false)
+    var showUpdateConfirm by mutableStateOf(false)
+    var showUpdatingOverlay by mutableStateOf(false)
+    lateinit var updateManager: UpdateManager
+        private set
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -170,9 +181,64 @@ class MainActivity : FragmentActivity() {
             saveSettings(settings)
         }
 
+        // Migration: existing v1.3.0 installs saved settings JSON without the
+        // auto-update fields. GSON returns Boolean=false / String="" for those.
+        // Restore intended defaults if the saved JSON doesn't mention them.
+        var migrated = settings
+        var dirty = false
+        if (json != null) {
+            if (!json.contains("\"autoUpdateEnabled\"")) {
+                migrated = migrated.copy(autoUpdateEnabled = true); dirty = true
+            }
+            if (!json.contains("\"autoUpdateTargetVersion\"") || migrated.autoUpdateTargetVersion.isBlank()) {
+                migrated = migrated.copy(autoUpdateTargetVersion = "latest"); dirty = true
+            }
+            if (!json.contains("\"autoUpdateGraceDays\"") || migrated.autoUpdateGraceDays <= 0) {
+                migrated = migrated.copy(autoUpdateGraceDays = 14); dirty = true
+            }
+            if (!json.contains("\"updateRepoUrl\"") || migrated.updateRepoUrl.isBlank()) {
+                // Reconstruct from older split fields if they exist; otherwise default.
+                val ownerMatch = Regex("\"updateRepoOwner\"\\s*:\\s*\"([^\"]+)\"").find(json)
+                val nameMatch = Regex("\"updateRepoName\"\\s*:\\s*\"([^\"]+)\"").find(json)
+                val url = if (ownerMatch != null && nameMatch != null) {
+                    "https://github.com/${ownerMatch.groupValues[1]}/${nameMatch.groupValues[1]}"
+                } else {
+                    "https://github.com/HiIAmMoot/SadaqahKiosk"
+                }
+                migrated = migrated.copy(updateRepoUrl = url); dirty = true
+            }
+        }
+        if (dirty) {
+            settings = migrated
+            saveSettings(settings)
+        }
+
         val store = SharedPreferencesStore(prefs)
         restartManager = RestartManager(store, settings)
         networkRecoveryManager = NetworkRecoveryManager(settings)
+
+        // Heartbeat for the update watchdog: prove that the freshly-installed APK
+        // (or any startup, really) reached running state. The watchdog rolls back
+        // if this isn't bumped within 60s of an install attempt.
+        UpdateWatchdogReceiver.recordHeartbeat(this)
+
+        updateManager = UpdateManager(
+            context = this,
+            initialSettings = settings,
+            isNetworkAvailable = { isNetworkAvailable },
+            onStartInstall = { showUpdatingOverlay = true },
+            onFinishInstall = { restoreAfterFailedUpdate() },
+            persistSettings = { newSettings -> onSettingsChange(newSettings) },
+            onNotification = { n -> showUpdateNotification(n) },
+            prepareForInstall = { prepareForSelfUpdate() }
+        )
+
+        // Fire an initial check 30s after startup so we don't slow boot or step
+        // on the rest of the startup work.
+        lifecycleScope.launch {
+            delay(30_000L)
+            updateManager.checkForUpdate()
+        }
 
         enableEdgeToEdge()
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -218,6 +284,24 @@ class MainActivity : FragmentActivity() {
                             isScreensaverActive = true
                             Log.d("Screensaver", "Activated after idle")
                             disconnectCardReader()
+                        }
+
+                        // Inactivity bounce: after 5 min of no interaction on either
+                        // the settings stack or the custom-amount numpad, drop back
+                        // to the donation grid so a forgotten/abandoned session
+                        // doesn't hang the kiosk in those screens.
+                        val onSettingsStack = isEditingSettings
+                        val onCustomAmount = showCustomAmountScreen
+                        if (idleTime > INACTIVITY_BOUNCE_MS && (onSettingsStack || onCustomAmount)) {
+                            Log.d("InactivityBounce", "Returning to donation grid after ${idleTime}ms idle")
+                            showCustomAmountScreen = false
+                            customAmountInput = ""
+                            isEditingSettings = false
+                            isPickingColor = false
+                            showSetupStatus = false
+                            setupStatusFromOffline = false
+                            // Reset so the screensaver doesn't immediately fire on top of the bounce.
+                            lastInteractionTime = System.currentTimeMillis()
                         }
 
                         val onDonationScreen = isLoggedIn && !isEditingSettings && !showThankYou && maintenanceReason == null
@@ -291,7 +375,19 @@ class MainActivity : FragmentActivity() {
                             isCardReaderConnected = false
                         }
                     },
-                    onLogout = { logout() }
+                    onLogout = { logout() },
+                    updateState = updateManager.state,
+                    showUpdatingOverlay = showUpdatingOverlay,
+                    showUpdateConfirm = showUpdateConfirm,
+                    latestUpdate = updateManager.latestKnown,
+                    hasUpdateAvailable = updateManager.hasActionableUpdate() && !settings.hideUpdatePrompts,
+                    currentVersionLabel = updateManager.currentVersion,
+                    availableReleases = updateManager.availableReleases,
+                    scheduledInstallAtMs = updateManager.nextScheduledInstallTime(),
+                    onUpdateBadgeTapped = ::onUpdateBadgeTapped,
+                    onUpdateConfirmInstall = ::onUpdateConfirmInstall,
+                    onUpdateConfirmLater = ::onUpdateConfirmLater,
+                    onManualCheckForUpdates = ::manualCheckForUpdates
                 )
             }
         }
@@ -602,7 +698,7 @@ class MainActivity : FragmentActivity() {
     fun connectCardReader() {
         if (settings.testMode) {
             isCardReaderConnected = true
-            Toast.makeText(this, "Test mode: card reader simulated", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, TranslationManager.currentStrings().testModeCardReaderSimulated, Toast.LENGTH_SHORT).show()
             return
         }
         if (!isNetworkAvailable) {
@@ -644,6 +740,15 @@ class MainActivity : FragmentActivity() {
 
             Log.d("SumUpDebug", "Scheduled reinit at 2am")
             performReinit()
+            // After the nightly reinit, run update maintenance: check, download,
+            // install if grace expired / pinning differs. UpdateManager handles
+            // all preflight (battery, network, device-owner).
+            try {
+                updateManager.refreshSettings(settings)
+                updateManager.runDailyMaintenance()
+            } catch (e: Exception) {
+                Log.e("UpdateManager", "Daily maintenance threw: ${e.message}")
+            }
         }
     }
 
@@ -735,7 +840,7 @@ class MainActivity : FragmentActivity() {
 
     fun reinitSumUp() {
         if (settings.testMode) {
-            Toast.makeText(this, "Test mode: reinit skipped", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, TranslationManager.currentStrings().testModeReinitSkipped, Toast.LENGTH_SHORT).show()
             return
         }
         val strings = TranslationManager.currentStrings()
@@ -795,6 +900,17 @@ class MainActivity : FragmentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus && pairingUnpinJob == null) hideSystemBars()
+    }
+
+    override fun dispatchTouchEvent(ev: android.view.MotionEvent?): Boolean {
+        // Refresh the global idle timer on every touch DOWN so screen-level
+        // timeouts (screensaver, inactivity bounce) reflect actual user
+        // interaction rather than only the few buttons that explicitly call
+        // resetScreensaver().
+        if (ev?.action == android.view.MotionEvent.ACTION_DOWN) {
+            lastInteractionTime = System.currentTimeMillis()
+        }
+        return super.dispatchTouchEvent(ev)
     }
 
     // ── Network disconnect / restore handling ──────────────────────────────────
@@ -1113,6 +1229,7 @@ class MainActivity : FragmentActivity() {
         wifiCycleJob?.cancel()
         bluetoothCycleJob?.cancel()
         savedNetworkFallbackJob?.cancel()
+        if (::updateManager.isInitialized) updateManager.dispose()
     }
 
     private fun hideSystemBars() {
@@ -1252,6 +1369,99 @@ class MainActivity : FragmentActivity() {
     fun onSettingsChange(newSettings: Settings) {
         settings = newSettings
         saveSettings(settings)
+        if (::updateManager.isInitialized) updateManager.refreshSettings(settings)
+    }
+
+    // ── Update flow entry points (called from UI) ──────────────────────────────
+
+    fun onUpdateBadgeTapped() {
+        authenticateWithBiometrics(
+            this,
+            onSuccess = { showUpdateConfirm = true },
+            onError = { error -> Toast.makeText(this, error, Toast.LENGTH_SHORT).show() }
+        )
+    }
+
+    fun onUpdateConfirmInstall() {
+        showUpdateConfirm = false
+        // Show the overlay BEFORE startUpdateNow so the user doesn't see the
+        // settings screen briefly while preflight + download runs. Preflight
+        // failures will flip it back off via onFinishInstall.
+        showUpdatingOverlay = true
+        // Tear down any pinning/lock-task state and the jobs that would re-pin
+        // us, so the post-install relaunch isn't competing with a stale lock
+        // task. Without this, MY_PACKAGE_REPLACED can land while the screen
+        // is still in pinned mode and we end up at the lock screen.
+        prepareForSelfUpdate()
+        lifecycleScope.launch {
+            updateManager.startUpdateNow().join()
+        }
+    }
+
+    /**
+     * Drops anything that would interfere with a clean install + relaunch:
+     * - Cancels auto-pin and pairing-unpin coroutines so they can't fire mid-install.
+     * - Stops any active lock task (app-pinning) so MY_PACKAGE_REPLACED's startActivity
+     *   isn't blocked by a stale pinning state.
+     * - Shows system bars so the relaunched app starts in a known UI state.
+     */
+    fun prepareForSelfUpdate() {
+        Log.d("UpdatePrep", "Tearing down pinning/lock-task before self-install")
+        autoPinJob?.cancel()
+        pairingUnpinJob?.cancel()
+        pairingUnpinJob = null
+        if (isPinned) {
+            try { stopLockTask() } catch (e: Exception) {
+                Log.w("UpdatePrep", "stopLockTask failed: ${e.message}")
+            }
+            isPinned = false
+        }
+        showSystemBars()
+    }
+
+    /**
+     * Inverse of [prepareForSelfUpdate]: restores the kiosk UI + pin schedule
+     * after a failed install. The successful-install path doesn't need this
+     * (process dies and the new build re-establishes everything in onCreate).
+     */
+    fun restoreAfterFailedUpdate() {
+        Log.d("UpdatePrep", "Install failed — restoring system bars + auto-pin schedule")
+        showUpdatingOverlay = false
+        hideSystemBars()
+        scheduleAutoPinIfReady()
+    }
+
+    fun onUpdateConfirmLater() {
+        showUpdateConfirm = false
+    }
+
+    fun manualCheckForUpdates() {
+        updateManager.refreshSettings(settings)
+        updateManager.checkForUpdate(silent = false)
+    }
+
+    /** Translates [UpdateNotification] into a localised Toast on the main thread. */
+    fun showUpdateNotification(n: com.sadaqah.kiosk.update.UpdateNotification) {
+        runOnUiThread {
+            val s = TranslationManager.currentStrings()
+            val msg = when (n) {
+                is com.sadaqah.kiosk.update.UpdateNotification.AlreadyLatest ->
+                    s.noUpdatesAvailable
+                is com.sadaqah.kiosk.update.UpdateNotification.UpdateAvailable ->
+                    "${s.updateAvailable}: v${n.release.version}"
+                is com.sadaqah.kiosk.update.UpdateNotification.CheckFailed ->
+                    s.updateCheckFailedToast
+                is com.sadaqah.kiosk.update.UpdateNotification.BatteryTooLow ->
+                    s.updateBatteryTooLow
+                is com.sadaqah.kiosk.update.UpdateNotification.NoNetwork ->
+                    s.updateNoNetwork
+                is com.sadaqah.kiosk.update.UpdateNotification.NotDeviceOwner ->
+                    s.autoUpdateRequiresDeviceOwner
+                is com.sadaqah.kiosk.update.UpdateNotification.InstallFailed ->
+                    s.updateFailedToast
+            }
+            Toast.makeText(this, msg, Toast.LENGTH_LONG).show()
+        }
     }
 
     fun saveSettings(settings: Settings) {
@@ -1373,9 +1583,40 @@ fun AppUI(
     onDisableBluetooth: () -> Unit,
     onActivateScreensaver: () -> Unit,
     onTestModeChange: (Boolean) -> Unit,
-    onLogout: () -> Unit
+    onLogout: () -> Unit,
+    updateState: UpdateState,
+    showUpdatingOverlay: Boolean,
+    showUpdateConfirm: Boolean,
+    latestUpdate: ReleaseInfo?,
+    hasUpdateAvailable: Boolean,
+    currentVersionLabel: SemVer,
+    availableReleases: List<ReleaseInfo>,
+    scheduledInstallAtMs: Long?,
+    onUpdateBadgeTapped: () -> Unit,
+    onUpdateConfirmInstall: () -> Unit,
+    onUpdateConfirmLater: () -> Unit,
+    onManualCheckForUpdates: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
+
+    // Update overlays take priority over everything else — once we commit an
+    // install, the system will replace the app and kill the process; we want
+    // the user to see "updating" rather than the donation grid going dark.
+    if (showUpdatingOverlay) {
+        UpdatingScreen(settings = settings, state = updateState)
+        return
+    }
+    if (showUpdateConfirm && latestUpdate != null) {
+        UpdateAvailableConfirmScreen(
+            settings = settings,
+            currentVersion = currentVersionLabel,
+            currentVersionReleasedAt = "",
+            target = latestUpdate,
+            onInstallNow = onUpdateConfirmInstall,
+            onLater = onUpdateConfirmLater
+        )
+        return
+    }
 
     if (mustRefresh) {
         RefreshBackground(settings = settings, onRefresh = onRefresh)
@@ -1438,7 +1679,14 @@ fun AppUI(
                         onShowSetupStatus = { onShowSetupStatus(true) },
                         onActivateScreensaver = onActivateScreensaver,
                         onTestModeChange = onTestModeChange,
-                        onLogout = onLogout
+                        onLogout = onLogout,
+                        currentVersion = "v$currentVersionLabel",
+                        latestVersion = latestUpdate?.let { "v${it.version}" } ?: "",
+                        updateAvailable = hasUpdateAvailable,
+                        availableReleases = availableReleases,
+                        scheduledInstallAtMs = scheduledInstallAtMs,
+                        onCheckForUpdates = onManualCheckForUpdates,
+                        onUpdateNow = onUpdateBadgeTapped
                     )
                 }
             }
@@ -1456,7 +1704,8 @@ fun AppUI(
                             { error -> Toast.makeText(context, error, Toast.LENGTH_SHORT).show() }
                         )
                     },
-                    settings = settings
+                    settings = settings,
+                    versionLabel = "v$currentVersionLabel"
                 )
             }
             showCustomAmountScreen -> {
@@ -1516,6 +1765,12 @@ fun AppUI(
                         onReinitSumUp = {
                             onResetScreensaver()
                             reinitSumUp()
+                        },
+                        versionLabel = "v$currentVersionLabel",
+                        updateAvailable = hasUpdateAvailable,
+                        onUpdateBadgeTap = {
+                            onResetScreensaver()
+                            onUpdateBadgeTapped()
                         }
                     )
                 }

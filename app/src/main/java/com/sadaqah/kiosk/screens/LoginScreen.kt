@@ -39,7 +39,8 @@ fun AffiliateLoginScreen(
     authenticate: (String) -> Unit,
     connectCardReader: () -> Unit,
     onSettingsClick: () -> Unit,
-    settings: Settings
+    settings: Settings,
+    versionLabel: String = ""
 ) {
     val context = LocalContext.current
     val strings = rememberStrings()
@@ -192,6 +193,17 @@ fun AffiliateLoginScreen(
                 Spacer(modifier = Modifier.height(responsiveDp(400.dp)))
             }
             Spacer(modifier = Modifier.height(responsiveDp(32.dp)))
+        }
+
+        if (versionLabel.isNotBlank()) {
+            Text(
+                text = versionLabel,
+                color = Color(settings.buttonBorderColor).copy(alpha = 0.4f),
+                fontSize = responsiveSp(12.0),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(responsiveDp(8.dp))
+            )
         }
     }
 }

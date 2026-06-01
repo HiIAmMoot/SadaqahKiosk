@@ -33,6 +33,7 @@ An open-source Android donation kiosk app powered by the [SumUp](https://sumup.c
 - **Export / import settings** as JSON (including affiliate key, with permission)
 - **Offline awareness**: warns when internet is unavailable; auto-dismisses SumUp login screen on disconnect and auto-reinitialises after prolonged outage
 - **Auto-recovery**: automatic app restart on repeated card reader or reinit failures, with cooldown and max-restart guard to prevent loops
+- **Auto-update**: device polls a GitHub releases feed, silently installs updates during nightly maintenance, and rolls back via a 60-second watchdog if the new build crashes on startup. Requires device-owner provisioning. See [Auto-Update](#auto-update) below.
 - **Auto-start on boot**: launches automatically when the device powers on
 - **Device owner / kiosk mode**: optional silent lock-task mode (no blue notification bar) when set as device owner
 - **Screensaver** after configurable idle timeout
@@ -150,6 +151,91 @@ adb shell dpm remove-active-admin com.sadaqah.kiosk/.KioskDeviceAdminReceiver
 
 ---
 
+## Auto-Update
+
+The app can update itself directly from a GitHub releases feed — no Play Store, no MDM, no operator intervention. Designed for unattended kiosks. **Requires device-owner provisioning** (see above); a non-DO install will detect updates but never install them, since silent install isn't available without that privilege.
+
+### How it works
+
+End-to-end:
+
+1. **Check.** The app polls the configured GitHub repository's `/releases` API ~30 s after startup, again at 02:00 every day, and on demand when the operator opens Settings. Unauthenticated, 60 requests/hour (plenty for daily polling).
+2. **Filter.** Releases must be non-draft, non-prerelease, tagged as semver (`v1.3.0`, `1.3.5`, …), and have an `.apk` asset attached. Versions below `1.3.0` (the first release with this update system) are excluded. So are versions on a different `major.minor` track than what's installed — see [The versionCode convention](#the-versioncode-convention) below.
+3. **Notify (optional).** A red dot appears next to the gear icon on the donation screen, plus a row in Settings → Updates showing `Latest: vX.Y.Z`. Hideable via the **Hide update notifications** toggle.
+4. **Download (background).** During the 02:00 maintenance window, when auto-update is enabled, the target APK is fetched silently to the app's private cache. If a newer release appears mid-grace, the cached APK is discarded and the new one is fetched.
+5. **Validate.** Before installing, the new APK is checked:
+   - Same `packageName` as the installed app (`com.sadaqah.kiosk`)
+   - Not a versionCode downgrade
+   - Signing certificate fingerprint matches the installed app's (SHA-256). Mismatch rejects the install — this is the security boundary that stops a malicious mirror or wrong-keystore build from being silently installed.
+6. **Install.** A backup of the currently-installed APK is copied to internal storage, then a 60-second watchdog `AlarmManager` is armed. The app unpins itself, hides any pairing UI, and commits the install via `PackageInstaller` with `USER_ACTION_NOT_REQUIRED` (silent — device-owner only).
+7. **Relaunch.** The system replaces the APK and broadcasts `MY_PACKAGE_REPLACED`; a registered receiver immediately launches `MainActivity`, which writes a "fresh startup" heartbeat to disk.
+8. **Watchdog.** When the AlarmManager fires (60 s after install), the watchdog reads the heartbeat. If the new build wrote one, install was successful. If it didn't — the new build crashed on startup — the watchdog reinstalls the backup APK to recover the kiosk.
+
+### Update timing
+
+| Setting                      | Behaviour                                                                                                                                                  |
+|------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Auto-update **on**, target **Latest** | Update detected → notification shown → after the grace period elapses, install at the next 02:00 window. Settings shows the exact scheduled install date. |
+| Auto-update **on**, target **pinned** (e.g. `1.3.5`) | Install at the next 02:00 window (no grace — pinning is opt-in consent).                                                                                  |
+| Auto-update **off**          | Notifications still appear; install only happens when the operator taps **Install now** in Settings.                                                       |
+| **Install now** (manual)     | Operator taps the badge or the Settings button → biometric prompt → confirmation screen with the changelog → install begins immediately.                   |
+
+Preflight gates that block any install path:
+- Not device-owner
+- No internet
+- Battery below 30%
+
+### Configuring the source repository
+
+By default the app polls this repository (`https://github.com/HiIAmMoot/SadaqahKiosk`). If you fork and self-host releases:
+
+1. Open **Settings → Updates → Update source (GitHub repo)**
+2. Enter the full URL, e.g. `https://github.com/your-org/your-fork`
+3. Tap **Apply**. The next check uses the new source.
+
+If you're migrating from this repository to a fork signed with a different keystore, flip **Skip signature check on next install** before applying the update. The flag is single-use and clears itself after the next install attempt.
+
+### The versionCode convention
+
+> **Read this if you cut releases.**
+
+Android's `PackageInstaller` refuses silent downgrades for non-platform-signed callers. That includes the watchdog rollback path. To keep the kiosk recoverable, the project uses this rule:
+
+**All releases sharing the same `major.minor` share the same `versionCode`. Only bump `versionCode` when you cut a new minor or major.**
+
+| Releases on the same track | versionCode | Notes                                                                                                |
+|----------------------------|-------------|------------------------------------------------------------------------------------------------------|
+| `1.3.0`, `1.3.1`, … `1.3.N`| 15          | Any of these can be installed over any other (Android treats them as reinstalls, not downgrades).    |
+| `1.4.0`, `1.4.1`, …        | 16          | Same idea for the next minor track.                                                                  |
+| `2.0.0`, `2.0.1`, …        | 17          | And so on.                                                                                            |
+
+Why it matters:
+- **Watchdog rollback works** when a crashing update has the same versionCode as the backup APK. If a patch in the same minor track is broken, the watchdog can recover the kiosk autonomously.
+- **Cross-track upgrades still work** (`1.3.5 → 1.4.0`) because `1.4.0` has a higher versionCode — that's a real upgrade and Android accepts it.
+- **Cross-track downgrades don't work** by design. Once you ship a `1.4.0` to a device, you can't auto-roll-back to `1.3.X`. Plan minor cuts accordingly.
+
+When this rule is followed, the target-version dropdown in Settings shows all installable patches: every release in the same `major.minor` track as the current install, plus any higher-track releases as forward upgrades. Releases on lower tracks are hidden.
+
+### Caveats
+
+- **No silent cross-track downgrades.** As above — `1.4.X` can't auto-revert to `1.3.X`. Recovery requires a USB flash. Pick minor versions deliberately.
+- **The 02:00 maintenance window** is the only time auto-update installs unattended. If the device is off or offline at 02:00, the install is deferred to the following day.
+- **Signature pinning is the security boundary.** The skip-signature toggle exists only for forking the project to a new keystore. Anything more subtle (e.g. a malicious mirror keeping the same package name but a different signing cert) is rejected by default.
+- **Battery/network preflight is strict.** A device below 30% battery will keep deferring nightly until charged.
+- **GitHub rate limit.** 60 unauthenticated requests/hour per IP. A single device running normal cadence is nowhere near that, but mass repeated manual checks across a fleet can run into it.
+
+### Disabling auto-update
+
+If you want to disable updates entirely:
+
+1. Open **Settings → Updates**
+2. Turn off **Auto-update enabled**
+3. (Optional) Turn on **Hide update notifications** so the gear-icon dot doesn't surface
+
+The app will continue to check for updates so the Settings page can show what's available, but it will never install one without an explicit operator tap.
+
+---
+
 ## Architecture
 
 ```
@@ -166,6 +252,16 @@ app/src/main/java/com/sadaqah/kiosk/
 │   ├── KeyValueStore.kt         # SharedPreferences abstraction (testable)
 │   ├── RestartManager.kt        # Auto-restart decision logic with guards
 │   └── NetworkRecoveryManager.kt # Network outage detection and recovery
+├── update/
+│   ├── UpdateManager.kt              # Orchestrator: check, download, validate, install, schedule
+│   ├── UpdateTypes.kt                # SemVer, ReleaseInfo, UpdateState
+│   ├── GitHubReleasesClient.kt       # Unauthenticated GitHub releases REST client
+│   ├── ApkDownloader.kt              # APK download to app-private cache, cleanup
+│   ├── ApkValidator.kt               # packageName + versionCode + signing-cert checks
+│   ├── ApkInstaller.kt               # Silent install via PackageInstaller (device-owner)
+│   ├── BackupStore.kt                # Saves the current APK before each install
+│   ├── UpdateWatchdogReceiver.kt     # 60 s alarm + rollback if no heartbeat
+│   └── PackageReplacedReceiver.kt    # Relaunches the app after self-update
 ├── screens/
 │   ├── DonationScreen.kt        # Main donation grid
 │   ├── CustomAmountScreen.kt

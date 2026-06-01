@@ -26,5 +26,12 @@ data class Settings(
     val restartCooldownSec: Int = 300,           // 5 minutes
     val maxRestartsBeforeGiveUp: Int = 3,
     val longDowntimeThresholdSec: Int = 300,     // 5 minutes
-    val restartCountResetSec: Int = 1800         // 30 minutes
+    val restartCountResetSec: Int = 1800,        // 30 minutes
+    // Auto-update
+    val autoUpdateEnabled: Boolean = true,
+    val autoUpdateTargetVersion: String = "latest", // "latest" or pinned semver e.g. "1.3.5" (min 1.3.0)
+    val autoUpdateGraceDays: Int = 14,
+    val hideUpdatePrompts: Boolean = false,
+    val updateRepoUrl: String = "https://github.com/HiIAmMoot/SadaqahKiosk",
+    val skipApkSignatureCheckOnce: Boolean = false
 )
