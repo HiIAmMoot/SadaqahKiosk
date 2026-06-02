@@ -1,4 +1,4 @@
-package com.sadaqah.kiosk
+﻿package com.sadaqah.kiosk
 
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -172,15 +172,11 @@ interface Strings {
     val screensaver: String
     val previewNow: String
     val screensaverCustomMessage: String
-    val screensaverCycleMessages: String
-    val screensaverDefaultMessages: List<String>
 
     // Timers
     val timers: String
     val screensaverIdleTimeout: String
     val screensaverDuration: String
-    val screensaverCustomMessageHold: String
-    val screensaverMessageHold: String
     val thankYouDuration: String
     val minutes: String
     val seconds: String
@@ -245,6 +241,22 @@ interface Strings {
     val invalidGitHubRepoUrl: String get() = "Invalid GitHub repo URL"
     val testModeCardReaderSimulated: String get() = "Test mode: card reader simulated"
     val testModeReinitSkipped: String get() = "Test mode: reinit skipped"
+    // Settings screen bands + status
+    val bandBranding: String get() = "Branding"
+    val bandDonorExperience: String get() = "Donor experience"
+    val bandConnectivity: String get() = "Card reader & connectivity"
+    val bandDiagnostics: String get() = "Diagnostics"
+    val statusNetwork: String get() = "Network"
+    val statusBluetooth: String get() = "Bluetooth"
+    val statusReader: String get() = "Card reader"
+    val statusLoggedIn: String get() = "Logged in"
+    val cardReaderConnected: String get() = "Connected — ready for payments"
+    val cardReaderNotConnected: String get() = "Not connected — tap to pair"
+    val advanced: String get() = "Advanced"
+    val dangerZone: String get() = "Danger zone"
+    val screensaverCustomMessagePlaceholder: String get() = "e.g. Support Masjid Arrahman"
+    val updateGracePeriodLabel: String get() = "Auto-update grace period (days)"
+    val colorsFromLogo: String get() = "From your logo"
 }
 
 // ── Dutch ─────────────────────────────────────────────────────────────────────
@@ -354,21 +366,9 @@ object DutchStrings : Strings {
     override val screensaver = "Schermbeveiliging"
     override val previewNow = "Nu Activeren"
     override val screensaverCustomMessage = "Persoonlijk bericht"
-    override val screensaverCycleMessages = "Berichten wisselen"
-    override val screensaverDefaultMessages = listOf(
-        "Sadaqah Jariyah",
-        "Steun ons nu",
-        "Sadaqah vermeerdert uw rijkdom",
-        "Elke cent is een zaad van eindeloze beloning",
-        "Wees vrijgevig",
-        "Geef omwille van Allah",
-        "جزاك الله خيرا"
-    )
     override val timers = "Timers"
     override val screensaverIdleTimeout = "Schermbeveiliging na"
     override val screensaverDuration = "Duur schermbeveiliging"
-    override val screensaverCustomMessageHold = "Persoonlijk bericht"
-    override val screensaverMessageHold = "Berichten duur"
     override val thankYouDuration = "Bedankscherm"
     override val minutes = "min"
     override val seconds = "sec"
@@ -430,6 +430,21 @@ object DutchStrings : Strings {
     override val invalidGitHubRepoUrl = "Ongeldige GitHub repo-URL"
     override val testModeCardReaderSimulated = "Testmodus: kaartlezer gesimuleerd"
     override val testModeReinitSkipped = "Testmodus: reinit overgeslagen"
+    override val bandBranding = "Branding"
+    override val bandDonorExperience = "Donorervaring"
+    override val bandConnectivity = "Kaartlezer & verbindingen"
+    override val bandDiagnostics = "Diagnostiek"
+    override val statusNetwork = "Netwerk"
+    override val statusBluetooth = "Bluetooth"
+    override val statusReader = "Kaartlezer"
+    override val statusLoggedIn = "Ingelogd"
+    override val cardReaderConnected = "Verbonden — klaar voor betalingen"
+    override val cardReaderNotConnected = "Niet verbonden — tik om te koppelen"
+    override val advanced = "Geavanceerd"
+    override val dangerZone = "Risicovolle acties"
+    override val screensaverCustomMessagePlaceholder = "bijv. Steun Moskee Arrahman"
+    override val updateGracePeriodLabel = "Auto-update wachttijd (dagen)"
+    override val colorsFromLogo = "Uit uw logo"
 }
 
 // ── English ───────────────────────────────────────────────────────────────────
@@ -539,21 +554,9 @@ object EnglishStrings : Strings {
     override val screensaver = "Screensaver"
     override val previewNow = "Preview Now"
     override val screensaverCustomMessage = "Custom Message"
-    override val screensaverCycleMessages = "Cycle messages"
-    override val screensaverDefaultMessages = listOf(
-        "Sadaqah Jariyah",
-        "Support us now",
-        "Sadaqah grows your wealth",
-        "Every penny is a seed of endless reward",
-        "Be among the generous",
-        "Give for the sake of Allah",
-        "جزاك الله خيرا"
-    )
     override val timers = "Timers"
     override val screensaverIdleTimeout = "Idle before screensaver"
     override val screensaverDuration = "Screensaver duration"
-    override val screensaverCustomMessageHold = "Custom message hold"
-    override val screensaverMessageHold = "Message hold"
     override val thankYouDuration = "Thank you screen"
     override val minutes = "min"
     override val seconds = "sec"
@@ -684,21 +687,9 @@ object GermanStrings : Strings {
     override val screensaver = "Bildschirmschoner"
     override val previewNow = "Jetzt Anzeigen"
     override val screensaverCustomMessage = "Persönliche Nachricht"
-    override val screensaverCycleMessages = "Nachrichten wechseln"
-    override val screensaverDefaultMessages = listOf(
-        "Sadaqah Jariyah",
-        "Unterstützen Sie uns jetzt",
-        "Sadaqah mehrt Ihren Reichtum",
-        "Jeder Cent ist ein Samen endloser Belohnung",
-        "Seien Sie großzügig",
-        "Geben Sie um Allahs willen",
-        "جزاك الله خيرا"
-    )
     override val timers = "Timer"
     override val screensaverIdleTimeout = "Leerlauf vor Bildschirmschoner"
     override val screensaverDuration = "Bildschirmschoner-Dauer"
-    override val screensaverCustomMessageHold = "Eigene Nachricht"
-    override val screensaverMessageHold = "Nachrichtendauer"
     override val thankYouDuration = "Dankeschirm"
     override val minutes = "Min"
     override val seconds = "Sek"
@@ -760,6 +751,21 @@ object GermanStrings : Strings {
     override val invalidGitHubRepoUrl = "Ungültige GitHub-Repo-URL"
     override val testModeCardReaderSimulated = "Testmodus: Kartenleser simuliert"
     override val testModeReinitSkipped = "Testmodus: Neuinitialisierung übersprungen"
+    override val bandBranding = "Branding"
+    override val bandDonorExperience = "Spenderverhalten"
+    override val bandConnectivity = "Kartenleser & Verbindungen"
+    override val bandDiagnostics = "Diagnose"
+    override val statusNetwork = "Netzwerk"
+    override val statusBluetooth = "Bluetooth"
+    override val statusReader = "Kartenleser"
+    override val statusLoggedIn = "Angemeldet"
+    override val cardReaderConnected = "Verbunden — bereit für Zahlungen"
+    override val cardReaderNotConnected = "Nicht verbunden — zum Koppeln tippen"
+    override val advanced = "Erweitert"
+    override val dangerZone = "Gefahrenbereich"
+    override val screensaverCustomMessagePlaceholder = "z. B. Moschee Arrahman unterstützen"
+    override val updateGracePeriodLabel = "Automatische Update-Karenzzeit (Tage)"
+    override val colorsFromLogo = "Aus Ihrem Logo"
 }
 
 // ── French ────────────────────────────────────────────────────────────────────
@@ -869,21 +875,9 @@ object FrenchStrings : Strings {
     override val screensaver = "Économiseur d'écran"
     override val previewNow = "Prévisualiser"
     override val screensaverCustomMessage = "Message personnalisé"
-    override val screensaverCycleMessages = "Faire défiler les messages"
-    override val screensaverDefaultMessages = listOf(
-        "Sadaqah Jariyah",
-        "Soutenez-nous maintenant",
-        "La Sadaqah accroît votre richesse",
-        "Chaque centime est une graine de récompense infinie",
-        "Soyez parmi les généreux",
-        "Donnez pour l'amour d'Allah",
-        "جزاك الله خيرا"
-    )
     override val timers = "Minuteries"
     override val screensaverIdleTimeout = "Inactivité avant économiseur"
     override val screensaverDuration = "Durée économiseur"
-    override val screensaverCustomMessageHold = "Message personnalisé"
-    override val screensaverMessageHold = "Durée message"
     override val thankYouDuration = "Écran de remerciement"
     override val minutes = "min"
     override val seconds = "sec"
@@ -945,6 +939,21 @@ object FrenchStrings : Strings {
     override val invalidGitHubRepoUrl = "URL du dépôt GitHub invalide"
     override val testModeCardReaderSimulated = "Mode test : lecteur de carte simulé"
     override val testModeReinitSkipped = "Mode test : réinitialisation ignorée"
+    override val bandBranding = "Identité visuelle"
+    override val bandDonorExperience = "Expérience du donateur"
+    override val bandConnectivity = "Lecteur de carte & connexions"
+    override val bandDiagnostics = "Diagnostic"
+    override val statusNetwork = "Réseau"
+    override val statusBluetooth = "Bluetooth"
+    override val statusReader = "Lecteur de carte"
+    override val statusLoggedIn = "Connecté"
+    override val cardReaderConnected = "Connecté — prêt à recevoir des paiements"
+    override val cardReaderNotConnected = "Non connecté — toucher pour appairer"
+    override val advanced = "Avancé"
+    override val dangerZone = "Zone à risque"
+    override val screensaverCustomMessagePlaceholder = "ex. Soutenir la Mosquée Arrahman"
+    override val updateGracePeriodLabel = "Délai avant installation auto (jours)"
+    override val colorsFromLogo = "Depuis votre logo"
 }
 
 // ── Spanish ───────────────────────────────────────────────────────────────────
@@ -1054,21 +1063,9 @@ object SpanishStrings : Strings {
     override val screensaver = "Protector de pantalla"
     override val previewNow = "Vista Previa"
     override val screensaverCustomMessage = "Mensaje personalizado"
-    override val screensaverCycleMessages = "Alternar mensajes"
-    override val screensaverDefaultMessages = listOf(
-        "Sadaqah Jariyah",
-        "Apóyanos ahora",
-        "La Sadaqah aumenta tu riqueza",
-        "Cada centavo es una semilla de recompensa infinita",
-        "Sé generoso",
-        "Da por el amor de Allah",
-        "جزاك الله خيرا"
-    )
     override val timers = "Temporizadores"
     override val screensaverIdleTimeout = "Inactividad antes del protector"
     override val screensaverDuration = "Duración del protector"
-    override val screensaverCustomMessageHold = "Mensaje personalizado"
-    override val screensaverMessageHold = "Duración mensaje"
     override val thankYouDuration = "Pantalla de gracias"
     override val minutes = "min"
     override val seconds = "seg"
@@ -1130,6 +1127,21 @@ object SpanishStrings : Strings {
     override val invalidGitHubRepoUrl = "URL de repositorio GitHub no válida"
     override val testModeCardReaderSimulated = "Modo de prueba: lector de tarjetas simulado"
     override val testModeReinitSkipped = "Modo de prueba: reinicialización omitida"
+    override val bandBranding = "Identidad visual"
+    override val bandDonorExperience = "Experiencia del donante"
+    override val bandConnectivity = "Lector de tarjetas y conexiones"
+    override val bandDiagnostics = "Diagnóstico"
+    override val statusNetwork = "Red"
+    override val statusBluetooth = "Bluetooth"
+    override val statusReader = "Lector de tarjetas"
+    override val statusLoggedIn = "Sesión iniciada"
+    override val cardReaderConnected = "Conectado — listo para pagos"
+    override val cardReaderNotConnected = "No conectado — toque para vincular"
+    override val advanced = "Avanzado"
+    override val dangerZone = "Zona de riesgo"
+    override val screensaverCustomMessagePlaceholder = "p. ej. Apoya la Mezquita Arrahman"
+    override val updateGracePeriodLabel = "Periodo de espera de actualización (días)"
+    override val colorsFromLogo = "De su logotipo"
 }
 
 // ── Italian ───────────────────────────────────────────────────────────────────
@@ -1239,21 +1251,9 @@ object ItalianStrings : Strings {
     override val screensaver = "Salvaschermo"
     override val previewNow = "Anteprima"
     override val screensaverCustomMessage = "Messaggio personalizzato"
-    override val screensaverCycleMessages = "Alterna i messaggi"
-    override val screensaverDefaultMessages = listOf(
-        "Sadaqah Jariyah",
-        "Sostienici ora",
-        "La Sadaqah accresce la tua ricchezza",
-        "Ogni centesimo è un seme di ricompensa infinita",
-        "Sii generoso",
-        "Dai per amore di Allah",
-        "جزاك الله خيرا"
-    )
     override val timers = "Timer"
     override val screensaverIdleTimeout = "Inattività prima del salvaschermo"
     override val screensaverDuration = "Durata salvaschermo"
-    override val screensaverCustomMessageHold = "Messaggio personalizzato"
-    override val screensaverMessageHold = "Durata messaggio"
     override val thankYouDuration = "Schermata di ringraziamento"
     override val minutes = "min"
     override val seconds = "sec"
@@ -1315,6 +1315,21 @@ object ItalianStrings : Strings {
     override val invalidGitHubRepoUrl = "URL del repository GitHub non valido"
     override val testModeCardReaderSimulated = "Modalità test: lettore carte simulato"
     override val testModeReinitSkipped = "Modalità test: reinizializzazione saltata"
+    override val bandBranding = "Identità visiva"
+    override val bandDonorExperience = "Esperienza del donatore"
+    override val bandConnectivity = "Lettore di carte e connessioni"
+    override val bandDiagnostics = "Diagnostica"
+    override val statusNetwork = "Rete"
+    override val statusBluetooth = "Bluetooth"
+    override val statusReader = "Lettore di carte"
+    override val statusLoggedIn = "Accesso effettuato"
+    override val cardReaderConnected = "Connesso — pronto per i pagamenti"
+    override val cardReaderNotConnected = "Non connesso — tocca per accoppiare"
+    override val advanced = "Avanzate"
+    override val dangerZone = "Zona di rischio"
+    override val screensaverCustomMessagePlaceholder = "es. Sostieni la Moschea Arrahman"
+    override val updateGracePeriodLabel = "Periodo di attesa aggiornamento (giorni)"
+    override val colorsFromLogo = "Dal tuo logo"
 }
 
 // ── Turkish ───────────────────────────────────────────────────────────────────
@@ -1424,21 +1439,9 @@ object TurkishStrings : Strings {
     override val screensaver = "Ekran Koruyucu"
     override val previewNow = "Şimdi Önizle"
     override val screensaverCustomMessage = "Özel Mesaj"
-    override val screensaverCycleMessages = "Mesajları döndür"
-    override val screensaverDefaultMessages = listOf(
-        "Sadaqah Jariyah",
-        "Bize şimdi destek olun",
-        "Sadaka zenginliğinizi artırır",
-        "Her kuruş sonsuz ecrin tohumudur",
-        "Cömertler arasında olun",
-        "Allah rızası için verin",
-        "جزاك الله خيرا"
-    )
     override val timers = "Zamanlayıcılar"
     override val screensaverIdleTimeout = "Ekran koruyucu öncesi bekleme"
     override val screensaverDuration = "Ekran koruyucu süresi"
-    override val screensaverCustomMessageHold = "Özel mesaj süresi"
-    override val screensaverMessageHold = "Mesaj süresi"
     override val thankYouDuration = "Teşekkür ekranı"
     override val minutes = "dk"
     override val seconds = "sn"
@@ -1500,6 +1503,21 @@ object TurkishStrings : Strings {
     override val invalidGitHubRepoUrl = "Geçersiz GitHub depo URL'si"
     override val testModeCardReaderSimulated = "Test modu: kart okuyucu simüle edildi"
     override val testModeReinitSkipped = "Test modu: yeniden başlatma atlandı"
+    override val bandBranding = "Marka"
+    override val bandDonorExperience = "Bağışçı deneyimi"
+    override val bandConnectivity = "Kart okuyucu & bağlantılar"
+    override val bandDiagnostics = "Tanılama"
+    override val statusNetwork = "Ağ"
+    override val statusBluetooth = "Bluetooth"
+    override val statusReader = "Kart okuyucu"
+    override val statusLoggedIn = "Giriş yapıldı"
+    override val cardReaderConnected = "Bağlandı — ödemelere hazır"
+    override val cardReaderNotConnected = "Bağlı değil — eşleştirmek için dokunun"
+    override val advanced = "Gelişmiş"
+    override val dangerZone = "Tehlikeli bölge"
+    override val screensaverCustomMessagePlaceholder = "ör. Arrahman Camii'ni Destekle"
+    override val updateGracePeriodLabel = "Otomatik güncelleme bekleme süresi (gün)"
+    override val colorsFromLogo = "Logonuzdan"
 }
 
 // ── Arabic ────────────────────────────────────────────────────────────────────
@@ -1609,21 +1627,9 @@ object ArabicStrings : Strings {
     override val screensaver = "شاشة التوقف"
     override val previewNow = "معاينة الآن"
     override val screensaverCustomMessage = "رسالة مخصصة"
-    override val screensaverCycleMessages = "تبديل الرسائل"
-    override val screensaverDefaultMessages = listOf(
-        "صدقة جارية",
-        "ادعمنا الآن",
-        "الصدقة تُنمّي مالك",
-        "كل درهم بذرة أجر لا ينقطع",
-        "كن من الكرماء",
-        "أعطِ في سبيل الله",
-        "جزاك الله خيرا"
-    )
     override val timers = "المؤقتات"
     override val screensaverIdleTimeout = "الخمول قبل الشاشة"
     override val screensaverDuration = "مدة الشاشة"
-    override val screensaverCustomMessageHold = "مدة الرسالة المخصصة"
-    override val screensaverMessageHold = "مدة الرسالة"
     override val thankYouDuration = "شاشة الشكر"
     override val minutes = "د"
     override val seconds = "ث"
@@ -1685,4 +1691,19 @@ object ArabicStrings : Strings {
     override val invalidGitHubRepoUrl = "عنوان URL لمستودع GitHub غير صالح"
     override val testModeCardReaderSimulated = "وضع الاختبار: محاكاة قارئ البطاقات"
     override val testModeReinitSkipped = "وضع الاختبار: تم تخطي إعادة التهيئة"
+    override val bandBranding = "الهوية البصرية"
+    override val bandDonorExperience = "تجربة المتبرع"
+    override val bandConnectivity = "قارئ البطاقات والاتصالات"
+    override val bandDiagnostics = "التشخيص"
+    override val statusNetwork = "الشبكة"
+    override val statusBluetooth = "البلوتوث"
+    override val statusReader = "قارئ البطاقات"
+    override val statusLoggedIn = "تم تسجيل الدخول"
+    override val cardReaderConnected = "متصل — جاهز للمدفوعات"
+    override val cardReaderNotConnected = "غير متصل — اضغط للاقتران"
+    override val advanced = "متقدم"
+    override val dangerZone = "منطقة الخطر"
+    override val screensaverCustomMessagePlaceholder = "مثال: ادعم مسجد الرحمن"
+    override val updateGracePeriodLabel = "مهلة التحديث التلقائي (أيام)"
+    override val colorsFromLogo = "من شعارك"
 }

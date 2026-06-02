@@ -13,7 +13,7 @@ android {
         minSdk = 30
         targetSdk = 35
         versionCode = 15
-        versionName = "1.3.0"
+        versionName = "1.3.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -76,5 +76,8 @@ dependencies {
 
     // Gson
     implementation(libs.gson)
+
+    // Palette (logo colour extraction for the colour picker)
+    implementation(libs.androidx.palette)
 
 }

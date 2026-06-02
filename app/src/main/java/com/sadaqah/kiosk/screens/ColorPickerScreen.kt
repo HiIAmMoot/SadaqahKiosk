@@ -28,6 +28,7 @@ import androidx.compose.ui.unit.dp
 import com.sadaqah.kiosk.model.Settings
 import com.github.skydoves.colorpicker.compose.*
 import com.sadaqah.kiosk.ColorHistory
+import com.sadaqah.kiosk.LogoColorExtractor
 import com.sadaqah.kiosk.R
 import com.sadaqah.kiosk.rememberStrings
 import com.sadaqah.kiosk.responsiveDp
@@ -45,6 +46,7 @@ fun ColorPickerScreen(
     val controller = rememberColorPickerController()
     var newColor by remember { mutableStateOf(initialColor) }
     val historyColors by ColorHistory.colors.collectAsState()
+    val logoColors by LogoColorExtractor.colors.collectAsState()
 
     Box(
         modifier = Modifier
@@ -116,6 +118,20 @@ fun ColorPickerScreen(
                     controller.selectByColor(picked, false)
                 }
             )
+
+            if (logoColors.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(responsiveDp(12.dp)))
+                ColorSwatchRow(
+                    label = strings.colorsFromLogo,
+                    colors = logoColors,
+                    settings = settings,
+                    onColorPick = { colorLong ->
+                        val picked = Color(colorLong)
+                        newColor = picked
+                        controller.selectByColor(picked, false)
+                    }
+                )
+            }
 
             if (historyColors.isNotEmpty()) {
                 Spacer(modifier = Modifier.height(responsiveDp(12.dp)))

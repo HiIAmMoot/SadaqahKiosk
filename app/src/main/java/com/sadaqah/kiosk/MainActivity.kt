@@ -78,6 +78,7 @@ class MainActivity : FragmentActivity() {
     private var wifiCycleJob: Job? = null
     private var bluetoothCycleJob: Job? = null
     private var savedNetworkFallbackJob: Job? = null
+    private var cardReaderPageTimeoutJob: Job? = null
     private lateinit var restartManager: RestartManager
     private lateinit var networkRecoveryManager: NetworkRecoveryManager
 
@@ -172,6 +173,11 @@ class MainActivity : FragmentActivity() {
         } else {
             TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
         }
+
+        // Kick off logo colour extraction so the picker has swatches ready
+        // by the time the operator opens it. Idempotent — repeat calls on
+        // the same URI are no-ops.
+        LogoColorExtractor.refresh(this, settings.logoUri)
 
         // Migration: GSON ignores Kotlin data-class defaults when deserialising, so
         // existing installs may still have the old 120s threshold (or 0 if the field
@@ -430,6 +436,7 @@ class MainActivity : FragmentActivity() {
                 }
             }
             2 -> {
+                cardReaderPageTimeoutJob?.cancel()
                 val readerConnected = try {
                     ReaderModuleCoreState.Instance()?.mReaderCoreManager?.isCardReaderConnected() == true
                 } catch (e: Exception) { false }
@@ -726,6 +733,17 @@ class MainActivity : FragmentActivity() {
         startPairingUnpin()
         SumUpAPI.openCardReaderPage(this@MainActivity, 2)
         scheduleCardReaderPoll(btManager, gattBefore)
+        // 10-minute timeout: if the operator walks away from the SumUp pairing
+        // dialog, force-close it. prepareCardReader() runs every 5 min and
+        // will pick the reader up silently in the background once it's nearby.
+        cardReaderPageTimeoutJob?.cancel()
+        cardReaderPageTimeoutJob = lifecycleScope.launch {
+            delay(10 * 60 * 1000L)
+            if (isConnectingCardReader) {
+                Log.d("SumUpReader", "Card reader page timed out after 10 min — closing")
+                finishActivity(2)
+            }
+        }
     }
 
     fun scheduleDailyLoginReset(affiliateKey: String) {
@@ -1229,6 +1247,7 @@ class MainActivity : FragmentActivity() {
         wifiCycleJob?.cancel()
         bluetoothCycleJob?.cancel()
         savedNetworkFallbackJob?.cancel()
+        cardReaderPageTimeoutJob?.cancel()
         if (::updateManager.isInitialized) updateManager.dispose()
     }
 
@@ -1367,9 +1386,13 @@ class MainActivity : FragmentActivity() {
     }
 
     fun onSettingsChange(newSettings: Settings) {
+        val previousLogoUri = settings.logoUri
         settings = newSettings
         saveSettings(settings)
         if (::updateManager.isInitialized) updateManager.refreshSettings(settings)
+        if (newSettings.logoUri != previousLogoUri) {
+            LogoColorExtractor.refresh(this, newSettings.logoUri)
+        }
     }
 
     // ── Update flow entry points (called from UI) ──────────────────────────────
@@ -1680,6 +1703,9 @@ fun AppUI(
                         onActivateScreensaver = onActivateScreensaver,
                         onTestModeChange = onTestModeChange,
                         onLogout = onLogout,
+                        isNetworkAvailable = isNetworkAvailable,
+                        isBluetoothEnabled = isBluetoothEnabled,
+                        isCardReaderConnected = isCardReaderConnected,
                         currentVersion = "v$currentVersionLabel",
                         latestVersion = latestUpdate?.let { "v${it.version}" } ?: "",
                         updateAvailable = hasUpdateAvailable,

@@ -8,8 +8,10 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -60,6 +62,9 @@ fun SettingsScreen(
     onActivateScreensaver: () -> Unit,
     onTestModeChange: (Boolean) -> Unit,
     onLogout: () -> Unit,
+    isNetworkAvailable: Boolean = false,
+    isBluetoothEnabled: Boolean = false,
+    isCardReaderConnected: Boolean = false,
     currentVersion: String = "",
     latestVersion: String = "",
     updateAvailable: Boolean = false,
@@ -70,27 +75,22 @@ fun SettingsScreen(
 ) {
     val context = LocalContext.current
     val strings = rememberStrings()
-    var kioskNameInput by remember { mutableStateOf(settings.kioskName ?: "") }
 
-    // Track current language, currency and toggles locally for UI updates
-    var currentLanguage by remember { mutableStateOf(settings.language) }
-    var currentCurrency by remember { mutableStateOf(settings.currency) }
-    var useArabicThankYou by remember { mutableStateOf(settings.useArabicThankYou) }
-    var currentScreensaverStyle by remember { mutableStateOf(settings.screensaverStyle) }
-    var screensaverCustomMessageInput by remember { mutableStateOf(settings.screensaverCustomMessage) }
-    var screensaverCycleMessages by remember { mutableStateOf(settings.screensaverCycleMessages) }
-    var screensaverIdleTimeoutInput by remember { mutableStateOf(settings.screensaverIdleTimeoutSec.toString()) }
-    var screensaverDurationInput by remember { mutableStateOf(settings.screensaverDurationSec.toString()) }
-    var screensaverCustomMessageHoldInput by remember { mutableStateOf(settings.screensaverCustomMessageHoldSec.toString()) }
-    var screensaverMessageHoldInput by remember { mutableStateOf(settings.screensaverMessageHoldSec.toString()) }
-    var thankYouDurationInput by remember { mutableStateOf(settings.thankYouDurationSec.toString()) }
-
-    var usedUri: Uri = if (!settings.logoUri.isNullOrBlank()) {
-        remember(settings.logoUri) { settings.logoUri.toUri() }
-    } else {
-        "".toUri()
+    // Auto-save throughout — local input mirrors only exist for text/numeric
+    // fields that need validation on blur. Toggles, dropdowns, and selection
+    // buttons read directly from `settings` and write through onSettingsChange
+    // on every interaction.
+    var screensaverIdleTimeoutInput by remember(settings.screensaverIdleTimeoutSec) {
+        mutableStateOf(settings.screensaverIdleTimeoutSec.toString())
+    }
+    var screensaverDurationInput by remember(settings.screensaverDurationSec) {
+        mutableStateOf(settings.screensaverDurationSec.toString())
+    }
+    var thankYouDurationInput by remember(settings.thankYouDurationSec) {
+        mutableStateOf(settings.thankYouDurationSec.toString())
     }
 
+    var dangerZoneExpanded by remember { mutableStateOf(false) }
     var showLogoutDialog by remember { mutableStateOf(false) }
     var showExportDialog by remember { mutableStateOf(false) }
     var showImportDialog by remember { mutableStateOf(false) }
@@ -142,8 +142,7 @@ fun SettingsScreen(
             } catch (e: SecurityException) {
                 Log.e("ImagePicker", "Could not persist URI permission: ${e.message}")
             }
-            usedUri = it
-            onSettingsChange(settings.copy(logoUri = usedUri.toString()))
+            onSettingsChange(settings.copy(logoUri = it.toString()))
             onRefresh()
         }
     }
@@ -185,6 +184,7 @@ fun SettingsScreen(
                     .weight(1f),
                 horizontalArrangement = Arrangement.spacedBy(responsiveDp(32.dp))
             ) {
+                // ── LEFT COLUMN ─────────────────────────────────────────────
                 Column(
                     modifier = Modifier
                         .weight(1f)
@@ -192,10 +192,13 @@ fun SettingsScreen(
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(responsiveDp(20.dp))
                 ) {
+                    // ─ Branding ─────────────────────────────────────────────
+                    BandHeader(strings.bandBranding, settings)
+
                     SettingsSection(title = strings.kioskName, settings = settings) {
                         OutlinedTextField(
-                            value = kioskNameInput,
-                            onValueChange = { kioskNameInput = it },
+                            value = settings.kioskName ?: "",
+                            onValueChange = { onSettingsChange(settings.copy(kioskName = it)) },
                             placeholder = { Text(strings.kioskNamePlaceholder, fontSize = responsiveSp(14.0)) },
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
@@ -223,6 +226,18 @@ fun SettingsScreen(
                         }
                     }
 
+                    SettingsSection(title = strings.colors, settings = settings) {
+                        Column(verticalArrangement = Arrangement.spacedBy(responsiveDp(12.dp))) {
+                            ColorSettingRow(strings.background, Color(settings.backgroundColor), "backgroundColor", openColorPicker, settings)
+                            ColorSettingRow(strings.pattern, Color(settings.patternColor), "patternColor", openColorPicker, settings)
+                            ColorSettingRow(strings.buttons, Color(settings.buttonColor), "buttonColor", openColorPicker, settings)
+                            ColorSettingRow(strings.textBorder, Color(settings.buttonBorderColor), "buttonBorderColor", openColorPicker, settings)
+                        }
+                    }
+
+                    // ─ Donor experience ─────────────────────────────────────
+                    BandHeader(strings.bandDonorExperience, settings)
+
                     SettingsSection(title = strings.language, settings = settings) {
                         Column(verticalArrangement = Arrangement.spacedBy(responsiveDp(8.dp))) {
                             Language.entries.chunked(4).forEach { rowLanguages ->
@@ -233,10 +248,9 @@ fun SettingsScreen(
                                     rowLanguages.forEach { lang ->
                                         ActionButton(
                                             text = "${lang.flag} ${lang.shortCode}",
-                                            color = if (currentLanguage == lang.code) Color(settings.buttonColor) else Color.Gray,
+                                            color = if (settings.language == lang.code) Color(settings.buttonColor) else Color.Gray,
                                             borderColor = Color(settings.buttonBorderColor),
                                             onClick = {
-                                                currentLanguage = lang.code
                                                 TranslationManager.setLanguage(lang)
                                                 onSettingsChange(settings.copy(language = lang.code))
                                             },
@@ -256,100 +270,26 @@ fun SettingsScreen(
                             horizontalArrangement = Arrangement.spacedBy(responsiveDp(12.dp)),
                             modifier = Modifier.fillMaxWidth()
                         ) {
-                            ActionButton(
-                                text = "€",
-                                color = if (currentCurrency == "EUR") Color(settings.buttonColor) else Color.Gray,
-                                borderColor = Color(settings.buttonBorderColor),
-                                onClick = {
-                                    currentCurrency = "EUR"
-                                    onSettingsChange(settings.copy(currency = "EUR"))
-                                },
-                                modifier = Modifier.weight(1f)
-                            )
-                            ActionButton(
-                                text = "$",
-                                color = if (currentCurrency == "USD") Color(settings.buttonColor) else Color.Gray,
-                                borderColor = Color(settings.buttonBorderColor),
-                                onClick = {
-                                    currentCurrency = "USD"
-                                    onSettingsChange(settings.copy(currency = "USD"))
-                                },
-                                modifier = Modifier.weight(1f)
-                            )
-                            ActionButton(
-                                text = "£",
-                                color = if (currentCurrency == "GBP") Color(settings.buttonColor) else Color.Gray,
-                                borderColor = Color(settings.buttonBorderColor),
-                                onClick = {
-                                    currentCurrency = "GBP"
-                                    onSettingsChange(settings.copy(currency = "GBP"))
-                                },
-                                modifier = Modifier.weight(1f)
-                            )
-                        }
-                    }
-
-                    // Connect Card Reader Button - DISABLED if not logged in
-                    SettingsSection(title = strings.cardReader, settings = settings) {
-                        Button(
-                            onClick = { connectCardReader() },
-                            enabled = isLoggedIn,
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = if (isLoggedIn) Color(settings.buttonColor) else Color.Gray,
-                                disabledContainerColor = Color.Gray
-                            ),
-                            shape = RoundedCornerShape(responsiveDp(12.dp)),
-                            border = BorderStroke(responsiveDp(3.dp), Color(settings.buttonBorderColor)),
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .height(responsiveDp(60.dp).coerceAtLeast(40.dp))
-                        ) {
-                            Text(
-                                text = strings.connectCardReaderButton,
-                                color = if (isLoggedIn) Color(settings.buttonBorderColor) else Color.White,
-                                fontSize = responsiveSp(16.0),
-                                fontWeight = FontWeight.Bold
-                            )
-                        }
-                        if (!isLoggedIn) {
-                            Spacer(modifier = Modifier.height(responsiveDp(4.dp)))
-                            Text(
-                                text = strings.loginFirstToConnect,
-                                color = Color(settings.buttonBorderColor).copy(alpha = 0.7f),
-                                fontSize = responsiveSp(11.0),
-                                lineHeight = responsiveSp(13.0)
-                            )
-                        }
-                    }
-
-                    // Thank You Toggle
-                    SettingsSection(title = strings.thankYouToggleLabel, settings = settings) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = strings.thankYouToggleDesc,
-                                color = Color(settings.buttonBorderColor).copy(alpha = 0.7f),
-                                fontSize = responsiveSp(10.0),
-                                lineHeight = responsiveSp(12.0),
-                                modifier = Modifier.weight(1f).padding(end = responsiveDp(8.dp))
-                            )
-                            Switch(
-                                checked = useArabicThankYou,
-                                onCheckedChange = { enabled ->
-                                    useArabicThankYou = enabled
-                                    onSettingsChange(settings.copy(useArabicThankYou = enabled))
-                                },
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = Color(settings.buttonColor),
-                                    checkedTrackColor = Color(settings.buttonBorderColor),
-                                    uncheckedThumbColor = Color.Gray,
-                                    uncheckedTrackColor = Color.DarkGray
+                            listOf("EUR" to "€", "USD" to "$", "GBP" to "£").forEach { (code, symbol) ->
+                                ActionButton(
+                                    text = symbol,
+                                    color = if (settings.currency == code) Color(settings.buttonColor) else Color.Gray,
+                                    borderColor = Color(settings.buttonBorderColor),
+                                    onClick = { onSettingsChange(settings.copy(currency = code)) },
+                                    modifier = Modifier.weight(1f)
                                 )
-                            )
+                            }
                         }
+                    }
+
+                    SettingsSection(title = strings.thankYouToggleLabel, settings = settings) {
+                        ToggleRow(
+                            description = strings.thankYouToggleDesc,
+                            checked = settings.useArabicThankYou,
+                            onChange = { onSettingsChange(settings.copy(useArabicThankYou = it)) },
+                            border = Color(settings.buttonBorderColor),
+                            buttonColor = Color(settings.buttonColor)
+                        )
                     }
 
                     SettingsSection(title = strings.screensaver, settings = settings) {
@@ -362,12 +302,9 @@ fun SettingsScreen(
                                     rowStyles.forEach { style ->
                                         ActionButton(
                                             text = ScreensaverStyle.label(style),
-                                            color = if (currentScreensaverStyle == style) Color(settings.buttonColor) else Color.Gray,
+                                            color = if (settings.screensaverStyle == style) Color(settings.buttonColor) else Color.Gray,
                                             borderColor = Color(settings.buttonBorderColor),
-                                            onClick = {
-                                                currentScreensaverStyle = style
-                                                onSettingsChange(settings.copy(screensaverStyle = style))
-                                            },
+                                            onClick = { onSettingsChange(settings.copy(screensaverStyle = style)) },
                                             modifier = Modifier.weight(1f)
                                         )
                                     }
@@ -388,11 +325,11 @@ fun SettingsScreen(
                                 fontSize = responsiveSp(12.0)
                             )
                             OutlinedTextField(
-                                value = screensaverCustomMessageInput,
-                                onValueChange = { screensaverCustomMessageInput = it },
+                                value = settings.screensaverCustomMessage,
+                                onValueChange = { onSettingsChange(settings.copy(screensaverCustomMessage = it)) },
                                 placeholder = {
                                     Text(
-                                        "e.g. Support Masjid Arrahman",
+                                        strings.screensaverCustomMessagePlaceholder,
                                         fontSize = responsiveSp(12.0),
                                         color = Color(settings.buttonBorderColor).copy(alpha = 0.4f)
                                     )
@@ -407,51 +344,87 @@ fun SettingsScreen(
                                 ),
                                 modifier = Modifier.fillMaxWidth()
                             )
-                            if (screensaverCustomMessageInput.isNotBlank()) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.SpaceBetween,
-                                    verticalAlignment = Alignment.CenterVertically
-                                ) {
-                                    Text(
-                                        text = strings.screensaverCycleMessages,
-                                        color = Color(settings.buttonBorderColor).copy(alpha = 0.7f),
-                                        fontSize = responsiveSp(12.0),
-                                        modifier = Modifier.weight(1f).padding(end = responsiveDp(8.dp))
-                                    )
-                                    Switch(
-                                        checked = screensaverCycleMessages,
-                                        onCheckedChange = { screensaverCycleMessages = it },
-                                        colors = SwitchDefaults.colors(
-                                            checkedThumbColor = Color(settings.buttonColor),
-                                            checkedTrackColor = Color(settings.buttonBorderColor),
-                                            uncheckedThumbColor = Color.Gray,
-                                            uncheckedTrackColor = Color.DarkGray
-                                        )
-                                    )
-                                }
-                            }
-                        }
-                    }
-
-                    SettingsSection(title = strings.colors, settings = settings) {
-                        Column(verticalArrangement = Arrangement.spacedBy(responsiveDp(12.dp))) {
-                            ColorSettingRow(strings.background, Color(settings.backgroundColor), "backgroundColor", openColorPicker, settings)
-                            ColorSettingRow(strings.pattern, Color(settings.patternColor), "patternColor", openColorPicker, settings)
-                            ColorSettingRow(strings.buttons, Color(settings.buttonColor), "buttonColor", openColorPicker, settings)
-                            ColorSettingRow(strings.textBorder, Color(settings.buttonBorderColor), "buttonBorderColor", openColorPicker, settings)
                         }
                     }
 
                     SettingsSection(title = strings.timers, settings = settings) {
                         Column(verticalArrangement = Arrangement.spacedBy(responsiveDp(8.dp))) {
-                            TimerInputRow(strings.screensaverIdleTimeout, screensaverIdleTimeoutInput, strings.seconds, { screensaverIdleTimeoutInput = it }, settings)
-                            TimerInputRow(strings.screensaverDuration, screensaverDurationInput, strings.seconds, { screensaverDurationInput = it }, settings)
-                            TimerInputRow(strings.screensaverCustomMessageHold, screensaverCustomMessageHoldInput, strings.seconds, { screensaverCustomMessageHoldInput = it }, settings)
-                            TimerInputRow(strings.screensaverMessageHold, screensaverMessageHoldInput, strings.seconds, { screensaverMessageHoldInput = it }, settings)
-                            TimerInputRow(strings.thankYouDuration, thankYouDurationInput, strings.seconds, { thankYouDurationInput = it }, settings)
+                            TimerInputRow(
+                                strings.screensaverIdleTimeout, screensaverIdleTimeoutInput, strings.seconds, settings,
+                                onValueChange = { screensaverIdleTimeoutInput = it },
+                                onCommit = {
+                                    val v = screensaverIdleTimeoutInput.toIntOrNull()?.coerceIn(30, 3600) ?: 300
+                                    onSettingsChange(settings.copy(screensaverIdleTimeoutSec = v))
+                                    screensaverIdleTimeoutInput = v.toString()
+                                }
+                            )
+                            TimerInputRow(
+                                strings.screensaverDuration, screensaverDurationInput, strings.seconds, settings,
+                                onValueChange = { screensaverDurationInput = it },
+                                onCommit = {
+                                    val v = screensaverDurationInput.toIntOrNull()?.coerceIn(60, 7200) ?: 600
+                                    onSettingsChange(settings.copy(screensaverDurationSec = v))
+                                    screensaverDurationInput = v.toString()
+                                }
+                            )
+                            TimerInputRow(
+                                strings.thankYouDuration, thankYouDurationInput, strings.seconds, settings,
+                                onValueChange = { thankYouDurationInput = it },
+                                onCommit = {
+                                    val v = thankYouDurationInput.toIntOrNull()?.coerceIn(1, 30) ?: 3
+                                    onSettingsChange(settings.copy(thankYouDurationSec = v))
+                                    thankYouDurationInput = v.toString()
+                                }
+                            )
                         }
                     }
+
+                    // ─ Card reader & connectivity ───────────────────────────
+                    BandHeader(strings.bandConnectivity, settings)
+
+                    SettingsSection(title = strings.cardReader, settings = settings) {
+                        Column(verticalArrangement = Arrangement.spacedBy(responsiveDp(6.dp))) {
+                            Button(
+                                onClick = { connectCardReader() },
+                                enabled = isLoggedIn,
+                                colors = ButtonDefaults.buttonColors(
+                                    containerColor = if (isLoggedIn) Color(settings.buttonColor) else Color.Gray,
+                                    disabledContainerColor = Color.Gray
+                                ),
+                                shape = RoundedCornerShape(responsiveDp(12.dp)),
+                                border = BorderStroke(responsiveDp(3.dp), Color(settings.buttonBorderColor)),
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(responsiveDp(60.dp).coerceAtLeast(40.dp))
+                            ) {
+                                Text(
+                                    text = strings.connectCardReaderButton,
+                                    color = if (isLoggedIn) Color(settings.buttonBorderColor) else Color.White,
+                                    fontSize = responsiveSp(16.0),
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            val status = when {
+                                !isLoggedIn -> strings.loginFirstToConnect
+                                isCardReaderConnected -> strings.cardReaderConnected
+                                else -> strings.cardReaderNotConnected
+                            }
+                            val statusColor = when {
+                                !isLoggedIn -> Color(settings.buttonBorderColor).copy(alpha = 0.7f)
+                                isCardReaderConnected -> Color(0xFF2E7D32)
+                                else -> Color(settings.buttonBorderColor).copy(alpha = 0.7f)
+                            }
+                            Text(
+                                text = status,
+                                color = statusColor,
+                                fontSize = responsiveSp(11.0),
+                                lineHeight = responsiveSp(13.0)
+                            )
+                        }
+                    }
+
+                    // ─ Updates ──────────────────────────────────────────────
+                    BandHeader(strings.updates, settings)
 
                     UpdateSettingsSection(
                         settings = settings,
@@ -464,19 +437,51 @@ fun SettingsScreen(
                         onCheckForUpdates = onCheckForUpdates,
                         onUpdateNow = onUpdateNow
                     )
+
+                    // ─ Diagnostics ──────────────────────────────────────────
+                    BandHeader(strings.bandDiagnostics, settings)
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(responsiveDp(12.dp)))
+                            .background(Color(0xFFFF6F00).copy(alpha = 0.15f))
+                            .padding(horizontal = responsiveDp(16.dp), vertical = responsiveDp(10.dp)),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = strings.testMode,
+                            color = Color(0xFFFF6F00),
+                            fontSize = responsiveSp(14.0),
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f).padding(end = responsiveDp(8.dp))
+                        )
+                        Switch(
+                            checked = settings.testMode,
+                            onCheckedChange = { onTestModeChange(it) },
+                            colors = SwitchDefaults.colors(
+                                checkedThumbColor = Color.White,
+                                checkedTrackColor = Color(0xFFFF6F00),
+                                uncheckedThumbColor = Color.Gray,
+                                uncheckedTrackColor = Color.DarkGray
+                            )
+                        )
+                    }
                 }
 
+                // ── RIGHT COLUMN ────────────────────────────────────────────
                 Column(
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight(),
-                    verticalArrangement = Arrangement.spacedBy(responsiveDp(20.dp)),
+                    verticalArrangement = Arrangement.spacedBy(responsiveDp(16.dp)),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
                     if (!settings.logoUri.isNullOrBlank()) {
                         val logoUri = remember(settings.logoUri) { settings.logoUri.toUri() }
                         Card(
-                            modifier = Modifier.size(responsiveDp(300.dp)),
+                            modifier = Modifier.size(responsiveDp(220.dp)),
                             shape = RoundedCornerShape(responsiveDp(16.dp)),
                             border = BorderStroke(responsiveDp(3.dp), Color(settings.buttonBorderColor))
                         ) {
@@ -493,7 +498,7 @@ fun SettingsScreen(
                     } else {
                         Box(
                             modifier = Modifier
-                                .size(responsiveDp(300.dp))
+                                .size(responsiveDp(220.dp))
                                 .border(
                                     responsiveDp(3.dp),
                                     Color(settings.buttonBorderColor).copy(alpha = 0.3f),
@@ -504,47 +509,27 @@ fun SettingsScreen(
                             Text(
                                 strings.noLogoSelected,
                                 color = Color(settings.buttonBorderColor).copy(alpha = 0.5f),
-                                fontSize = responsiveSp(16.0),
+                                fontSize = responsiveSp(14.0),
                                 textAlign = TextAlign.Center
                             )
                         }
                     }
 
+                    StatusPanel(
+                        isNetworkAvailable = isNetworkAvailable,
+                        isBluetoothEnabled = isBluetoothEnabled,
+                        isCardReaderConnected = isCardReaderConnected,
+                        isLoggedIn = isLoggedIn,
+                        settings = settings,
+                        strings = strings
+                    )
+
                     Spacer(modifier = Modifier.weight(1f))
 
                     Column(
-                        verticalArrangement = Arrangement.spacedBy(responsiveDp(12.dp)),
+                        verticalArrangement = Arrangement.spacedBy(responsiveDp(10.dp)),
                         modifier = Modifier.fillMaxWidth()
                     ) {
-                        // Test mode at the top
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(responsiveDp(12.dp)))
-                                .background(Color(0xFFFF6F00).copy(alpha = 0.15f))
-                                .padding(horizontal = responsiveDp(16.dp), vertical = responsiveDp(10.dp)),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = strings.testMode,
-                                color = Color(0xFFFF6F00),
-                                fontSize = responsiveSp(14.0),
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.weight(1f).padding(end = responsiveDp(8.dp))
-                            )
-                            Switch(
-                                checked = settings.testMode,
-                                onCheckedChange = { onTestModeChange(it) },
-                                colors = SwitchDefaults.colors(
-                                    checkedThumbColor = Color.White,
-                                    checkedTrackColor = Color(0xFFFF6F00),
-                                    uncheckedThumbColor = Color.Gray,
-                                    uncheckedTrackColor = Color.DarkGray
-                                )
-                            )
-                        }
-
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(responsiveDp(12.dp)),
                             modifier = Modifier.fillMaxWidth()
@@ -586,43 +571,60 @@ fun SettingsScreen(
                         }
 
                         ActionButton(
-                            text = strings.saveAndBack,
+                            text = strings.back,
                             color = Color(settings.buttonColor),
                             borderColor = Color(settings.buttonBorderColor),
-                            onClick = {
-                                onSettingsChange(settings.copy(
-                                    logoUri = usedUri.toString(),
-                                    kioskName = kioskNameInput,
-                                    language = currentLanguage,
-                                    currency = currentCurrency,
-                                    screensaverCustomMessage = screensaverCustomMessageInput.trim(),
-                                    screensaverCycleMessages = screensaverCycleMessages,
-                                    screensaverIdleTimeoutSec = screensaverIdleTimeoutInput.toIntOrNull()?.coerceIn(30, 3600) ?: 300,
-                                    screensaverDurationSec = screensaverDurationInput.toIntOrNull()?.coerceIn(60, 7200) ?: 600,
-                                    screensaverCustomMessageHoldSec = screensaverCustomMessageHoldInput.toIntOrNull()?.coerceIn(10, 600) ?: 120,
-                                    screensaverMessageHoldSec = screensaverMessageHoldInput.toIntOrNull()?.coerceIn(3, 60) ?: 6,
-                                    thankYouDurationSec = thankYouDurationInput.toIntOrNull()?.coerceIn(1, 30) ?: 3
-                                ))
-                                onBack()
-                            },
+                            onClick = onBack,
                             modifier = Modifier.fillMaxWidth()
                         )
 
-                        ActionButton(
-                            text = strings.logOut,
-                            color = Color.Red,
-                            borderColor = Color.White,
-                            onClick = { showLogoutDialog = true },
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        // Danger zone — collapsed by default so Log Out / Reset App
+                        // need a deliberate reveal tap before they can be touched.
+                        Spacer(modifier = Modifier.height(responsiveDp(12.dp)))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { dangerZoneExpanded = !dangerZoneExpanded }
+                                .padding(vertical = responsiveDp(4.dp))
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(responsiveDp(1.dp))
+                                    .background(Color.Red.copy(alpha = 0.4f))
+                            )
+                            Text(
+                                text = "  ${if (dangerZoneExpanded) "▾" else "▸"} ${strings.dangerZone}  ",
+                                color = Color.Red.copy(alpha = 0.8f),
+                                fontSize = responsiveSp(11.0),
+                                fontWeight = FontWeight.Bold
+                            )
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(responsiveDp(1.dp))
+                                    .background(Color.Red.copy(alpha = 0.4f))
+                            )
+                        }
 
-                        ActionButton(
-                            text = strings.resetApp,
-                            color = Color.Red,
-                            borderColor = Color.White,
-                            onClick = onResetApp,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        if (dangerZoneExpanded) {
+                            ActionButton(
+                                text = strings.logOut,
+                                color = Color.Red,
+                                borderColor = Color.White,
+                                onClick = { showLogoutDialog = true },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+
+                            ActionButton(
+                                text = strings.resetApp,
+                                color = Color.Red,
+                                borderColor = Color.White,
+                                onClick = onResetApp,
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
                 }
             }
@@ -710,8 +712,9 @@ fun TimerInputRow(
     label: String,
     value: String,
     unit: String,
+    settings: Settings,
     onValueChange: (String) -> Unit,
-    settings: Settings
+    onCommit: () -> Unit
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -736,12 +739,81 @@ fun TimerInputRow(
                 focusedTextColor = Color(settings.buttonBorderColor),
                 unfocusedTextColor = Color(settings.buttonBorderColor)
             ),
-            modifier = Modifier.width(responsiveDp(80.dp))
+            modifier = Modifier
+                .width(responsiveDp(80.dp))
+                .onFocusChanged { state -> if (!state.isFocused) onCommit() }
         )
         Text(
             text = unit,
             color = Color(settings.buttonBorderColor).copy(alpha = 0.7f),
             fontSize = responsiveSp(12.0)
+        )
+    }
+}
+
+@Composable
+fun BandHeader(title: String, settings: Settings) {
+    val border = Color(settings.buttonBorderColor)
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = responsiveDp(8.dp))
+    ) {
+        Text(
+            text = title.uppercase(),
+            color = border,
+            fontSize = responsiveSp(13.0),
+            fontWeight = FontWeight.Black,
+            letterSpacing = androidx.compose.ui.unit.TextUnit(1.5f, androidx.compose.ui.unit.TextUnitType.Sp)
+        )
+        Spacer(modifier = Modifier.width(responsiveDp(12.dp)))
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .height(responsiveDp(1.dp))
+                .background(border.copy(alpha = 0.3f))
+        )
+    }
+}
+
+@Composable
+fun StatusPanel(
+    isNetworkAvailable: Boolean,
+    isBluetoothEnabled: Boolean,
+    isCardReaderConnected: Boolean,
+    isLoggedIn: Boolean,
+    settings: Settings,
+    strings: Strings
+) {
+    val border = Color(settings.buttonBorderColor)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .border(BorderStroke(responsiveDp(2.dp), border.copy(alpha = 0.5f)), RoundedCornerShape(responsiveDp(12.dp)))
+            .padding(horizontal = responsiveDp(16.dp), vertical = responsiveDp(10.dp)),
+        verticalArrangement = Arrangement.spacedBy(responsiveDp(4.dp))
+    ) {
+        StatusRow(strings.statusNetwork, isNetworkAvailable, border)
+        StatusRow(strings.statusBluetooth, isBluetoothEnabled, border)
+        StatusRow(strings.statusReader, isCardReaderConnected, border)
+        StatusRow(strings.statusLoggedIn, isLoggedIn, border)
+    }
+}
+
+@Composable
+private fun StatusRow(label: String, ok: Boolean, border: Color) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = border, fontSize = responsiveSp(12.0))
+        Text(
+            text = if (ok) "✓" else "✗",
+            color = if (ok) Color(0xFF2E7D32) else Color(0xFFC62828),
+            fontWeight = FontWeight.Black,
+            fontSize = responsiveSp(16.0)
         )
     }
 }
@@ -1069,228 +1141,277 @@ fun UpdateSettingsSection(
         }
     }
 
-    SettingsSection(title = strings.updates, settings = settings) {
-        Column(verticalArrangement = Arrangement.spacedBy(responsiveDp(10.dp))) {
+    var advancedExpanded by remember { mutableStateOf(false) }
+    var repoUrlError by remember { mutableStateOf(false) }
 
-            // Current / latest version line
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "${strings.currentVersion}: $currentVersion",
-                    color = border,
-                    fontSize = responsiveSp(13.0)
-                )
-                if (latestVersion.isNotBlank() && latestVersion != currentVersion) {
-                    Text(
-                        text = "${strings.latestVersion}: $latestVersion",
-                        color = if (updateAvailable) Color(0xFFE53935) else border,
-                        fontSize = responsiveSp(13.0),
-                        fontWeight = if (updateAvailable) FontWeight.Bold else FontWeight.Normal
-                    )
-                }
-            }
+    Column(verticalArrangement = Arrangement.spacedBy(responsiveDp(10.dp))) {
 
-            // Scheduled install date/time — only when auto-update is enabled
-            // and target is "latest" (UpdateManager.nextScheduledInstallTime
-            // returns null otherwise so this line stays hidden).
-            if (scheduledInstallAtMs != null) {
-                val formatted = remember(scheduledInstallAtMs) {
-                    val fmt = java.text.DateFormat.getDateTimeInstance(
-                        java.text.DateFormat.MEDIUM,
-                        java.text.DateFormat.SHORT
-                    )
-                    fmt.format(java.util.Date(scheduledInstallAtMs))
-                }
+        // Current / latest version line
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "${strings.currentVersion}: $currentVersion",
+                color = border,
+                fontSize = responsiveSp(13.0)
+            )
+            if (latestVersion.isNotBlank() && latestVersion != currentVersion) {
                 Text(
-                    text = "${strings.updateWillInstallOn} $formatted",
-                    color = border.copy(alpha = 0.8f),
-                    fontSize = responsiveSp(12.0),
-                    fontWeight = FontWeight.Bold
+                    text = "${strings.latestVersion}: $latestVersion",
+                    color = if (updateAvailable) Color(0xFFE53935) else border,
+                    fontSize = responsiveSp(13.0),
+                    fontWeight = if (updateAvailable) FontWeight.Bold else FontWeight.Normal
                 )
             }
+        }
 
-            // Manual check + install buttons
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(responsiveDp(8.dp)),
-                modifier = Modifier.fillMaxWidth()
+        // Scheduled install date/time — only when auto-update is on and target is "latest".
+        if (scheduledInstallAtMs != null) {
+            val formatted = remember(scheduledInstallAtMs) {
+                val fmt = java.text.DateFormat.getDateTimeInstance(
+                    java.text.DateFormat.MEDIUM,
+                    java.text.DateFormat.SHORT
+                )
+                fmt.format(java.util.Date(scheduledInstallAtMs))
+            }
+            Text(
+                text = "${strings.updateWillInstallOn} $formatted",
+                color = border.copy(alpha = 0.8f),
+                fontSize = responsiveSp(12.0),
+                fontWeight = FontWeight.Bold
+            )
+        }
+
+        // Manual check + install buttons
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(responsiveDp(8.dp)),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Button(
+                onClick = onCheckForUpdates,
+                colors = ButtonDefaults.buttonColors(containerColor = button),
+                shape = RoundedCornerShape(responsiveDp(8.dp)),
+                border = BorderStroke(responsiveDp(2.dp), border),
+                modifier = Modifier.weight(1f).height(responsiveDp(48.dp))
             ) {
+                Text(strings.checkForUpdates, color = border, fontSize = responsiveSp(12.0))
+            }
+            if (updateAvailable) {
                 Button(
-                    onClick = onCheckForUpdates,
+                    onClick = onUpdateNow,
                     colors = ButtonDefaults.buttonColors(containerColor = button),
                     shape = RoundedCornerShape(responsiveDp(8.dp)),
-                    border = BorderStroke(responsiveDp(2.dp), border),
+                    border = BorderStroke(responsiveDp(2.dp), Color(0xFFE53935)),
                     modifier = Modifier.weight(1f).height(responsiveDp(48.dp))
                 ) {
-                    Text(strings.checkForUpdates, color = border, fontSize = responsiveSp(12.0))
-                }
-                if (updateAvailable) {
-                    Button(
-                        onClick = onUpdateNow,
-                        colors = ButtonDefaults.buttonColors(containerColor = button),
-                        shape = RoundedCornerShape(responsiveDp(8.dp)),
-                        border = BorderStroke(responsiveDp(2.dp), Color(0xFFE53935)),
-                        modifier = Modifier.weight(1f).height(responsiveDp(48.dp))
-                    ) {
-                        Text(strings.updateNow, color = border, fontSize = responsiveSp(12.0), fontWeight = FontWeight.Bold)
-                    }
+                    Text(strings.updateNow, color = border, fontSize = responsiveSp(12.0), fontWeight = FontWeight.Bold)
                 }
             }
+        }
 
-            // Auto-update toggle (now reactive via mutableStateOf settings in MainActivity)
-            ToggleRow(
-                label = strings.autoUpdateEnabled,
-                description = strings.autoUpdateDesc,
-                checked = settings.autoUpdateEnabled,
-                onChange = { onSettingsChange(settings.copy(autoUpdateEnabled = it)) },
-                border = border
-            )
+        ToggleRow(
+            label = strings.autoUpdateEnabled,
+            description = strings.autoUpdateDesc,
+            checked = settings.autoUpdateEnabled,
+            onChange = { onSettingsChange(settings.copy(autoUpdateEnabled = it)) },
+            border = border,
+            buttonColor = button
+        )
 
-            // Target version dropdown (Latest + each available release, newest first)
-            Text(
-                text = strings.targetVersion,
-                color = border,
-                fontSize = responsiveSp(13.0),
-                fontWeight = FontWeight.Bold
-            )
-            ExposedDropdownMenuBox(
-                expanded = versionDropdownExpanded,
-                onExpandedChange = { versionDropdownExpanded = !versionDropdownExpanded }
-            ) {
-                val currentLabel = if (settings.autoUpdateTargetVersion == "latest")
-                    strings.latestVersion
-                else
-                    "v${settings.autoUpdateTargetVersion}"
-                OutlinedTextField(
-                    value = currentLabel,
-                    onValueChange = {},
-                    readOnly = true,
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = versionDropdownExpanded) },
-                    colors = OutlinedTextFieldDefaults.colors(
-                        focusedBorderColor = border, unfocusedBorderColor = border,
-                        cursorColor = border, focusedTextColor = border, unfocusedTextColor = border
-                    ),
-                    modifier = Modifier.menuAnchor().fillMaxWidth()
-                )
-                ExposedDropdownMenu(
-                    expanded = versionDropdownExpanded,
-                    onDismissRequest = { versionDropdownExpanded = false }
-                ) {
-                    targetOptions.forEach { opt ->
-                        DropdownMenuItem(
-                            text = {
-                                Text(if (opt == "latest") strings.latestVersion else "v$opt")
-                            },
-                            onClick = {
-                                onSettingsChange(settings.copy(autoUpdateTargetVersion = opt))
-                                versionDropdownExpanded = false
-                            }
-                        )
-                    }
-                }
-            }
-            if (availableReleases.isEmpty()) {
-                Text(
-                    text = strings.checkForUpdates + " →",
-                    color = border.copy(alpha = 0.6f),
-                    fontSize = responsiveSp(10.0)
-                )
-            }
-
-            // Hide update prompts
-            ToggleRow(
-                label = strings.hideUpdatePrompts,
-                description = strings.hideUpdatePromptsDesc,
-                checked = settings.hideUpdatePrompts,
-                onChange = { onSettingsChange(settings.copy(hideUpdatePrompts = it)) },
-                border = border
-            )
-
-            // Repo URL (single field, parsed on apply)
-            Text(
-                text = strings.updateRepository,
-                color = border,
-                fontSize = responsiveSp(13.0),
-                fontWeight = FontWeight.Bold
-            )
-            Text(
-                text = strings.updateRepositoryHelp,
-                color = border.copy(alpha = 0.6f),
-                fontSize = responsiveSp(10.0)
-            )
+        // Target version dropdown
+        Text(
+            text = strings.targetVersion,
+            color = border,
+            fontSize = responsiveSp(13.0),
+            fontWeight = FontWeight.Bold
+        )
+        ExposedDropdownMenuBox(
+            expanded = versionDropdownExpanded,
+            onExpandedChange = { versionDropdownExpanded = !versionDropdownExpanded }
+        ) {
+            val currentLabel = if (settings.autoUpdateTargetVersion == "latest")
+                strings.latestVersion
+            else
+                "v${settings.autoUpdateTargetVersion}"
             OutlinedTextField(
-                value = repoUrlInput,
-                onValueChange = { repoUrlInput = it },
-                placeholder = { Text("https://github.com/owner/repo", fontSize = responsiveSp(12.0)) },
-                singleLine = true,
+                value = currentLabel,
+                onValueChange = {},
+                readOnly = true,
+                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = versionDropdownExpanded) },
                 colors = OutlinedTextFieldDefaults.colors(
                     focusedBorderColor = border, unfocusedBorderColor = border,
                     cursorColor = border, focusedTextColor = border, unfocusedTextColor = border
                 ),
-                modifier = Modifier.fillMaxWidth()
+                modifier = Modifier.menuAnchor().fillMaxWidth()
             )
-            Button(
-                onClick = {
-                    val trimmed = repoUrlInput.trim()
-                    if (com.sadaqah.kiosk.update.parseGitHubRepoUrl(trimmed) != null) {
-                        onSettingsChange(settings.copy(updateRepoUrl = trimmed))
-                        Toast.makeText(context, strings.apply, Toast.LENGTH_SHORT).show()
-                    } else {
-                        Toast.makeText(context, strings.invalidGitHubRepoUrl, Toast.LENGTH_LONG).show()
-                    }
-                },
-                colors = ButtonDefaults.buttonColors(containerColor = button),
-                shape = RoundedCornerShape(responsiveDp(8.dp)),
-                border = BorderStroke(responsiveDp(2.dp), border),
-                modifier = Modifier.fillMaxWidth().height(responsiveDp(40.dp))
+            ExposedDropdownMenu(
+                expanded = versionDropdownExpanded,
+                onDismissRequest = { versionDropdownExpanded = false }
             ) {
-                Text(strings.apply, color = border, fontSize = responsiveSp(12.0))
+                targetOptions.forEach { opt ->
+                    DropdownMenuItem(
+                        text = {
+                            Text(if (opt == "latest") strings.latestVersion else "v$opt")
+                        },
+                        onClick = {
+                            onSettingsChange(settings.copy(autoUpdateTargetVersion = opt))
+                            versionDropdownExpanded = false
+                        }
+                    )
+                }
             }
-
-            // One-time skip signature check
-            ToggleRow(
-                label = strings.skipSignatureCheckOnce,
-                description = strings.skipSignatureCheckOnceDesc,
-                checked = settings.skipApkSignatureCheckOnce,
-                onChange = { onSettingsChange(settings.copy(skipApkSignatureCheckOnce = it)) },
-                border = border
+        }
+        if (availableReleases.isEmpty()) {
+            Text(
+                text = strings.checkForUpdates + " →",
+                color = border.copy(alpha = 0.6f),
+                fontSize = responsiveSp(10.0)
             )
+        }
 
-            // Grace period
-            Row(verticalAlignment = Alignment.CenterVertically) {
+        ToggleRow(
+            label = strings.hideUpdatePrompts,
+            description = strings.hideUpdatePromptsDesc,
+            checked = settings.hideUpdatePrompts,
+            onChange = { onSettingsChange(settings.copy(hideUpdatePrompts = it)) },
+            border = border,
+            buttonColor = button
+        )
+
+        // Advanced — collapsed by default; holds the dangerous / rarely-changed bits
+        CollapsibleHeader(
+            title = strings.advanced,
+            expanded = advancedExpanded,
+            onToggle = { advancedExpanded = !advancedExpanded },
+            border = border
+        )
+        if (advancedExpanded) {
+            Column(
+                verticalArrangement = Arrangement.spacedBy(responsiveDp(10.dp)),
+                modifier = Modifier.padding(start = responsiveDp(12.dp))
+            ) {
+                // Repo URL — auto-save on blur with inline validation feedback
                 Text(
-                    text = strings.updateReleasedOn + " grace (days):",
+                    text = strings.updateRepository,
                     color = border,
-                    fontSize = responsiveSp(12.0),
-                    modifier = Modifier.weight(1f)
+                    fontSize = responsiveSp(13.0),
+                    fontWeight = FontWeight.Bold
+                )
+                Text(
+                    text = strings.updateRepositoryHelp,
+                    color = border.copy(alpha = 0.6f),
+                    fontSize = responsiveSp(10.0)
                 )
                 OutlinedTextField(
-                    value = graceDaysInput,
-                    onValueChange = { v ->
-                        graceDaysInput = v
-                        v.toIntOrNull()?.let { onSettingsChange(settings.copy(autoUpdateGraceDays = it.coerceIn(0, 90))) }
-                    },
+                    value = repoUrlInput,
+                    onValueChange = { repoUrlInput = it; repoUrlError = false },
+                    placeholder = { Text("https://github.com/owner/repo", fontSize = responsiveSp(12.0)) },
                     singleLine = true,
+                    isError = repoUrlError,
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedBorderColor = border, unfocusedBorderColor = border,
-                        cursorColor = border, focusedTextColor = border, unfocusedTextColor = border
+                        cursorColor = border, focusedTextColor = border, unfocusedTextColor = border,
+                        errorBorderColor = Color.Red
                     ),
-                    modifier = Modifier.width(responsiveDp(70.dp))
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onFocusChanged { state ->
+                            if (!state.isFocused) {
+                                val trimmed = repoUrlInput.trim()
+                                if (trimmed == settings.updateRepoUrl) return@onFocusChanged
+                                if (com.sadaqah.kiosk.update.parseGitHubRepoUrl(trimmed) != null) {
+                                    onSettingsChange(settings.copy(updateRepoUrl = trimmed))
+                                    repoUrlError = false
+                                } else if (trimmed.isNotBlank()) {
+                                    repoUrlError = true
+                                    Toast.makeText(context, strings.invalidGitHubRepoUrl, Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
                 )
+
+                ToggleRow(
+                    label = strings.skipSignatureCheckOnce,
+                    description = strings.skipSignatureCheckOnceDesc,
+                    checked = settings.skipApkSignatureCheckOnce,
+                    onChange = { onSettingsChange(settings.copy(skipApkSignatureCheckOnce = it)) },
+                    border = border,
+                    buttonColor = button
+                )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = strings.updateGracePeriodLabel,
+                        color = border,
+                        fontSize = responsiveSp(12.0),
+                        modifier = Modifier.weight(1f)
+                    )
+                    OutlinedTextField(
+                        value = graceDaysInput,
+                        onValueChange = { v ->
+                            if (v.length <= 3 && v.all { c -> c.isDigit() }) graceDaysInput = v
+                        },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        colors = OutlinedTextFieldDefaults.colors(
+                            focusedBorderColor = border, unfocusedBorderColor = border,
+                            cursorColor = border, focusedTextColor = border, unfocusedTextColor = border
+                        ),
+                        modifier = Modifier
+                            .width(responsiveDp(70.dp))
+                            .onFocusChanged { state ->
+                                if (!state.isFocused) {
+                                    val v = graceDaysInput.toIntOrNull()?.coerceIn(0, 90) ?: 14
+                                    onSettingsChange(settings.copy(autoUpdateGraceDays = v))
+                                    graceDaysInput = v.toString()
+                                }
+                            }
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
+private fun CollapsibleHeader(
+    title: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    border: Color
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { onToggle() }
+            .padding(vertical = responsiveDp(6.dp)),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = if (expanded) "▾" else "▸",
+            color = border.copy(alpha = 0.6f),
+            fontSize = responsiveSp(14.0),
+            modifier = Modifier.padding(end = responsiveDp(8.dp))
+        )
+        Text(
+            text = title,
+            color = border.copy(alpha = 0.8f),
+            fontSize = responsiveSp(13.0),
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
+@Composable
 private fun ToggleRow(
-    label: String,
     description: String,
     checked: Boolean,
     onChange: (Boolean) -> Unit,
-    border: Color
+    border: Color,
+    buttonColor: Color = Color.Unspecified,
+    label: String = ""
 ) {
     Row(
         modifier = Modifier.fillMaxWidth(),
@@ -1298,9 +1419,18 @@ private fun ToggleRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Column(modifier = Modifier.weight(1f).padding(end = responsiveDp(8.dp))) {
-            Text(label, color = border, fontSize = responsiveSp(13.0), fontWeight = FontWeight.Bold)
+            if (label.isNotBlank()) {
+                Text(label, color = border, fontSize = responsiveSp(13.0), fontWeight = FontWeight.Bold)
+            }
             Text(description, color = border.copy(alpha = 0.6f), fontSize = responsiveSp(10.0), lineHeight = responsiveSp(12.0))
         }
-        Switch(checked = checked, onCheckedChange = onChange)
+        val switchColors = if (buttonColor == Color.Unspecified) SwitchDefaults.colors()
+            else SwitchDefaults.colors(
+                checkedThumbColor = buttonColor,
+                checkedTrackColor = border,
+                uncheckedThumbColor = Color.Gray,
+                uncheckedTrackColor = Color.DarkGray
+            )
+        Switch(checked = checked, onCheckedChange = onChange, colors = switchColors)
     }
 }

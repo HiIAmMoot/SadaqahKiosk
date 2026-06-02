@@ -14,11 +14,8 @@ data class Settings(
     val useArabicThankYou: Boolean = true,
     val screensaverStyle: String = "scrolling",
     val screensaverCustomMessage: String = "",
-    val screensaverCycleMessages: Boolean = false,
     val screensaverIdleTimeoutSec: Int = 600,
     val screensaverDurationSec: Int = 60,
-    val screensaverCustomMessageHoldSec: Int = 20,
-    val screensaverMessageHoldSec: Int = 5,
     val thankYouDurationSec: Int = 3,
     val testMode: Boolean = false,
     // Resilience / auto-recovery

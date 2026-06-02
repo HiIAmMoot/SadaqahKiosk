@@ -166,12 +166,12 @@ Column(
                     painter = rememberAsyncImagePainter(logoUri),
                     contentDescription = "Logo",
                     modifier = Modifier
-                        .size(responsiveDp(200.dp))
+                        .size(responsiveDp(320.dp))
                         .clip(RoundedCornerShape(responsiveDp(12.dp))),
                     contentScale = ContentScale.Crop
                 )
             } else {
-                Spacer(modifier = Modifier.height(responsiveDp(200.dp)))
+                Spacer(modifier = Modifier.height(responsiveDp(320.dp)))
             }
             Spacer(modifier = Modifier.height(responsiveDp(50.dp)))
         }

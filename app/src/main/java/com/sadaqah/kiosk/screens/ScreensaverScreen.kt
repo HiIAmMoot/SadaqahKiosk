@@ -231,60 +231,32 @@ fun ParticleStarfieldScreensaver(settings: Settings) {
 }
 
 // ── Message + Logo overlay (applied to all styles) ───────────────────────────
-// Messages cycle with a fade-in (1.2s) → hold (5.5s) → fade-out (0.8s) rhythm.
-// The logo (if set) is shown below the message, centred on screen.
+// Shows the logo (if set) above the custom message (if set). Both fade in
+// together when the screensaver activates and hold until the configured
+// total duration elapses, then fade out and dismiss.
 
 @Composable
 fun ScreensaverOverlay(settings: Settings, onDismiss: () -> Unit) {
-    val strings = rememberStrings()
     val customMessage = settings.screensaverCustomMessage.trim()
     val hasCustom = customMessage.isNotBlank()
-    val cycleMessages = settings.screensaverCycleMessages
-    val defaultMessages = strings.screensaverDefaultMessages
+    val hasLogo = !settings.logoUri.isNullOrBlank()
 
-    if (!hasCustom && settings.logoUri.isNullOrBlank() && defaultMessages.isEmpty()) return
+    // Nothing to show — caller will still treat this as the screensaver, the
+    // background animation just runs without an overlay.
+    if (!hasCustom && !hasLogo) return
 
     val alpha = remember { Animatable(0f) }
-    var currentMessage by remember { mutableStateOf(if (hasCustom) customMessage else defaultMessages.firstOrNull() ?: "") }
-
     val config = LocalConfiguration.current
     val scale = (config.screenWidthDp / 800f).coerceIn(0.5f, 1.5f)
     val messageFontSize = 68f * scale
     val textColor = Color(settings.buttonBorderColor)
-
     val totalDurationMs = settings.screensaverDurationSec * 1000L
-    val customHoldMs    = settings.screensaverCustomMessageHoldSec * 1000L
-    val messageHoldMs   = settings.screensaverMessageHoldSec * 1000L
 
-    // Always return to donation screen after the configured duration
     LaunchedEffect(Unit) {
+        alpha.animateTo(1f, tween(1200))
         delay(totalDurationMs)
         alpha.animateTo(0f, tween(800))
         onDismiss()
-    }
-
-    LaunchedEffect(hasCustom, cycleMessages) {
-        if (!cycleMessages) {
-            if (hasCustom) currentMessage = customMessage
-            alpha.animateTo(1f, tween(1200))
-            // Holds until the total-duration timeout above fires
-        } else {
-            // Cycling: custom first (configurable hold), then rotate defaults, repeat
-            while (true) {
-                if (hasCustom) {
-                    currentMessage = customMessage
-                    alpha.animateTo(1f, tween(1200))
-                    delay(customHoldMs)
-                    alpha.animateTo(0f, tween(800))
-                }
-                for (msg in defaultMessages) {
-                    currentMessage = msg
-                    alpha.animateTo(1f, tween(1200))
-                    delay(messageHoldMs)
-                    alpha.animateTo(0f, tween(800))
-                }
-            }
-        }
     }
 
     Box(
@@ -295,24 +267,24 @@ fun ScreensaverOverlay(settings: Settings, onDismiss: () -> Unit) {
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.spacedBy(40.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
             modifier = Modifier.padding(horizontal = 48.dp)
         ) {
-            if (!settings.logoUri.isNullOrBlank()) {
+            if (hasLogo) {
                 val logoUri = remember(settings.logoUri) { settings.logoUri.toUri() }
                 Image(
                     painter = rememberAsyncImagePainter(logoUri),
                     contentDescription = "Logo",
                     modifier = Modifier
-                        .size((400f * scale).dp)
+                        .size((480f * scale).dp)
                         .clip(RoundedCornerShape(20.dp)),
                     contentScale = ContentScale.Fit
                 )
             }
 
-            if (currentMessage.isNotBlank()) {
+            if (hasCustom) {
                 Text(
-                    text = currentMessage,
+                    text = customMessage.uppercase(),
                     color = textColor,
                     fontSize = messageFontSize.sp,
                     fontWeight = FontWeight.Bold,
