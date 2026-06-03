@@ -1351,7 +1351,19 @@ fun UpdateSettingsSection(
                     OutlinedTextField(
                         value = graceDaysInput,
                         onValueChange = { v ->
-                            if (v.length <= 3 && v.all { c -> c.isDigit() }) graceDaysInput = v
+                            // Save on every valid keystroke. Blur-based save was
+                            // unreliable when the operator navigated away
+                            // (Back button, section collapse) before the field
+                            // lost focus — the typed value got dropped and the
+                            // field reverted to whatever was last persisted.
+                            if (v.length <= 3 && v.all { c -> c.isDigit() }) {
+                                graceDaysInput = v
+                                val parsed = v.toIntOrNull()
+                                if (parsed != null && parsed in 0..90 &&
+                                    parsed != settings.autoUpdateGraceDays) {
+                                    onSettingsChange(settings.copy(autoUpdateGraceDays = parsed))
+                                }
+                            }
                         },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -1359,15 +1371,7 @@ fun UpdateSettingsSection(
                             focusedBorderColor = border, unfocusedBorderColor = border,
                             cursorColor = border, focusedTextColor = border, unfocusedTextColor = border
                         ),
-                        modifier = Modifier
-                            .width(responsiveDp(70.dp))
-                            .onFocusChanged { state ->
-                                if (!state.isFocused) {
-                                    val v = graceDaysInput.toIntOrNull()?.coerceIn(0, 90) ?: 14
-                                    onSettingsChange(settings.copy(autoUpdateGraceDays = v))
-                                    graceDaysInput = v.toString()
-                                }
-                            }
+                        modifier = Modifier.width(responsiveDp(70.dp))
                     )
                 }
             }
