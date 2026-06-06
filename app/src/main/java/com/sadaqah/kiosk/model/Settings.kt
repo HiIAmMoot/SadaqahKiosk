@@ -30,5 +30,9 @@ data class Settings(
     val autoUpdateGraceDays: Int = 14,
     val hideUpdatePrompts: Boolean = false,
     val updateRepoUrl: String = "https://github.com/HiIAmMoot/SadaqahKiosk",
-    val skipApkSignatureCheckOnce: Boolean = false
+    val skipApkSignatureCheckOnce: Boolean = false,
+    // Donation history
+    val donationTrackingEnabled: Boolean = true,
+    /** Wall-clock instant the averages are computed from. 0 = uninitialised; MainActivity bootstraps it to "now" on first start. */
+    val donationStatsStartedAtMs: Long = 0L
 )

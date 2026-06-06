@@ -59,6 +59,7 @@ fun SettingsScreen(
     onUnpinApp: () -> Unit,
     onPinApp: () -> Unit,
     onShowSetupStatus: () -> Unit,
+    onShowDonationHistory: () -> Unit = {},
     onActivateScreensaver: () -> Unit,
     onTestModeChange: (Boolean) -> Unit,
     onLogout: () -> Unit,
@@ -549,6 +550,14 @@ fun SettingsScreen(
                                 modifier = Modifier.weight(1f)
                             )
                         }
+
+                        ActionButton(
+                            text = strings.donationHistory,
+                            color = Color(settings.buttonColor),
+                            borderColor = Color(settings.buttonBorderColor),
+                            onClick = onShowDonationHistory,
+                            modifier = Modifier.fillMaxWidth()
+                        )
 
                         Row(
                             horizontalArrangement = Arrangement.spacedBy(responsiveDp(12.dp)),

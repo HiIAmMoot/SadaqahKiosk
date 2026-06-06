@@ -40,6 +40,7 @@ import androidx.lifecycle.lifecycleScope
 import com.sadaqah.kiosk.model.Settings
 import com.sadaqah.kiosk.ui.theme.SadaqahKioskTheme
 import com.google.gson.Gson
+import com.sadaqah.kiosk.donations.DonationHistory
 import com.sadaqah.kiosk.recovery.*
 import com.sadaqah.kiosk.screens.*
 import com.sadaqah.kiosk.update.ReleaseInfo
@@ -79,6 +80,11 @@ class MainActivity : FragmentActivity() {
     private var bluetoothCycleJob: Job? = null
     private var savedNetworkFallbackJob: Job? = null
     private var cardReaderPageTimeoutJob: Job? = null
+
+    /** Amount of the most recently initiated payment, stashed at makePayment() time. */
+    private var lastPaymentAmount: BigDecimal? = null
+    lateinit var donationHistory: DonationHistory
+        private set
     private lateinit var restartManager: RestartManager
     private lateinit var networkRecoveryManager: NetworkRecoveryManager
 
@@ -104,6 +110,7 @@ class MainActivity : FragmentActivity() {
     var isReconnectingWifi by mutableStateOf(false)
     var isConnectingCardReader by mutableStateOf(false)
     var showSetupStatus by mutableStateOf(false)
+    var showDonationHistory by mutableStateOf(false)
     var setupStatusFromOffline by mutableStateOf(false)
     var showUpdateConfirm by mutableStateOf(false)
     var showUpdatingOverlay by mutableStateOf(false)
@@ -178,6 +185,15 @@ class MainActivity : FragmentActivity() {
         // by the time the operator opens it. Idempotent — repeat calls on
         // the same URI are no-ops.
         LogoColorExtractor.refresh(this, settings.logoUri)
+
+        donationHistory = DonationHistory(this)
+        // Lazy-init the donation-stats anchor. If never set, fix it to "now" so
+        // throughput averages have a defined denominator. Reset Averages will
+        // re-set it later.
+        if (settings.donationStatsStartedAtMs == 0L) {
+            settings = settings.copy(donationStatsStartedAtMs = System.currentTimeMillis())
+            saveSettings(settings)
+        }
 
         // Migration: GSON ignores Kotlin data-class defaults when deserialising, so
         // existing installs may still have the old 120s threshold (or 0 if the field
@@ -363,6 +379,9 @@ class MainActivity : FragmentActivity() {
                     isCardReaderConnected = isCardReaderConnected,
                     showSetupStatus = showSetupStatus,
                     onShowSetupStatus = { showSetupStatus = it },
+                    showDonationHistory = showDonationHistory,
+                    onShowDonationHistory = { showDonationHistory = it },
+                    donationHistory = donationHistory,
                     setupStatusFromOffline = setupStatusFromOffline,
                     onExitSetupStatus = ::exitSetupStatus,
                     onUnpinApp = ::unpinApp,
@@ -473,6 +492,11 @@ class MainActivity : FragmentActivity() {
                     Toast.makeText(this, strings.paymentSuccessful, Toast.LENGTH_SHORT).show()
                     restartManager.clearCounters()
                     scheduleRestartCounterReset()
+                    // Append to donation history if tracking is on.
+                    if (settings.donationTrackingEnabled) {
+                        lastPaymentAmount?.let { donationHistory.append(it) }
+                    }
+                    lastPaymentAmount = null
                     showThankYouScreen()
                 } else {
                     val errorMessage = data?.getStringExtra(SumUpAPI.Response.MESSAGE) ?: "Unknown error"
@@ -820,6 +844,9 @@ class MainActivity : FragmentActivity() {
             "GBP" -> SumUpPayment.Currency.GBP
             else -> SumUpPayment.Currency.EUR
         }
+
+        // Stash so the success callback can append to the history log.
+        lastPaymentAmount = runCatching { BigDecimal(amount) }.getOrNull()
 
         val paymentBuilder = SumUpPayment.builder()
             .total(BigDecimal(amount))
@@ -1596,6 +1623,9 @@ fun AppUI(
     isBluetoothEnabled: Boolean,
     isCardReaderConnected: Boolean,
     showSetupStatus: Boolean,
+    showDonationHistory: Boolean,
+    onShowDonationHistory: (Boolean) -> Unit,
+    donationHistory: DonationHistory,
     onShowSetupStatus: (Boolean) -> Unit,
     setupStatusFromOffline: Boolean,
     onExitSetupStatus: () -> Unit,
@@ -1661,6 +1691,13 @@ fun AppUI(
                         onBack = { openColorPicker(colorLabel) },
                         settings = settings
                     )
+                    showDonationHistory -> DonationHistoryScreen(
+                        settings = settings,
+                        history = donationHistory,
+                        onSettingsChange = onSettingsChange,
+                        onClearHistory = { donationHistory.clearAll() },
+                        onBack = { onShowDonationHistory(false) }
+                    )
                     showSetupStatus -> SetupStatusScreen(
                         isNetworkAvailable = isNetworkAvailable,
                         isBluetoothEnabled = isBluetoothEnabled,
@@ -1700,6 +1737,7 @@ fun AppUI(
                         onUnpinApp = onUnpinApp,
                         onPinApp = onPinApp,
                         onShowSetupStatus = { onShowSetupStatus(true) },
+                        onShowDonationHistory = { onShowDonationHistory(true) },
                         onActivateScreensaver = onActivateScreensaver,
                         onTestModeChange = onTestModeChange,
                         onLogout = onLogout,
