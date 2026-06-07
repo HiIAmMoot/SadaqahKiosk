@@ -322,6 +322,7 @@ class MainActivity : FragmentActivity() {
                             isPickingColor = false
                             showSetupStatus = false
                             setupStatusFromOffline = false
+                            showDonationHistory = false
                             // Reset so the screensaver doesn't immediately fire on top of the bounce.
                             lastInteractionTime = System.currentTimeMillis()
                         }
@@ -1297,6 +1298,16 @@ class MainActivity : FragmentActivity() {
             isScreensaverActive = false
             Log.d("Screensaver", "Deactivated by user interaction")
             finishActivity(2)
+            // Always land on the donation grid when dismissing the screensaver,
+            // regardless of where the operator had navigated to before walking
+            // away. Anything left open in the settings stack is dropped.
+            showCustomAmountScreen = false
+            customAmountInput = ""
+            isEditingSettings = false
+            isPickingColor = false
+            showSetupStatus = false
+            setupStatusFromOffline = false
+            showDonationHistory = false
             prepareCardReader()
         }
     }
