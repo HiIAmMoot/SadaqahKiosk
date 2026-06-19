@@ -799,7 +799,10 @@ class MainActivity : FragmentActivity() {
         authenticateWithBiometrics(
             this,
             onSuccess = {
-                maintenanceReason = null
+                // Leave maintenanceReason untouched — AppUI now renders the
+                // settings tree above the NoInternet branch, so this open is
+                // non-destructive and exiting settings lands back on
+                // NoInternetScreen until the network is restored.
                 isEditingSettings = true
                 showSetupStatus = true
                 setupStatusFromOffline = true
@@ -1570,8 +1573,11 @@ class MainActivity : FragmentActivity() {
     }
 
     fun logout() {
-        prefs.edit() { remove("affiliate_key") }
-        affiliateKey = ""
+        // Clear SumUp's cached email/password but keep the affiliate key —
+        // operators almost always log back in under the same merchant, so
+        // re-entering the key would be needless friction. The next login
+        // attempt will still prompt for SumUp credentials.
+        SumUpAPI.logout()
         isLoggedIn = false
         isCardReaderConnected = false
         firstLogIn = true
@@ -1686,171 +1692,166 @@ fun AppUI(
         RefreshBackground(settings = settings, onRefresh = onRefresh)
     } else if (maintenanceReason == MaintenanceReason.Reinitializing) {
         MaintenanceScreen(settings = settings)
+    } else if (isEditingSettings) {
+        // Settings outranks the NoInternet overlay so the operator can navigate
+        // into Settings from the NoInternetScreen and back out again without
+        // dropping through to the login/donation tree. Exiting settings leaves
+        // maintenanceReason intact, so the NoInternetScreen reappears
+        // automatically until the network is restored.
+        when {
+            isPickingColor -> ColorPickerScreen(
+                initialColor = getColorSetting(colorLabel),
+                label = colorLabel,
+                onColorSelected = { label, color -> setColorSetting(label, color) },
+                onBack = { openColorPicker(colorLabel) },
+                settings = settings
+            )
+            showDonationHistory -> DonationHistoryScreen(
+                settings = settings,
+                history = donationHistory,
+                onSettingsChange = onSettingsChange,
+                onClearHistory = { donationHistory.clearAll() },
+                onBack = { onShowDonationHistory(false) }
+            )
+            showSetupStatus -> SetupStatusScreen(
+                isNetworkAvailable = isNetworkAvailable,
+                isBluetoothEnabled = isBluetoothEnabled,
+                isLoggedIn = isLoggedIn,
+                isCardReaderConnected = isCardReaderConnected,
+                settings = settings,
+                onBack = {
+                    // When opened from the offline screen, "back" should
+                    // exit the settings stack entirely (back to NoInternet
+                    // or DonationGrid depending on connectivity), not drop
+                    // into the regular SettingsScreen the user never asked for.
+                    if (setupStatusFromOffline) onExitSetupStatus()
+                    else onShowSetupStatus(false)
+                },
+                onConfigureWifi = {
+                    onShowSetupStatus(false)
+                    onReconnectWifi()
+                },
+                onEnableBluetooth = {
+                    onShowSetupStatus(false)
+                    onEnableBluetooth()
+                },
+                onDisableBluetooth = onDisableBluetooth
+            )
+            else -> SettingsScreen(
+                settings = settings,
+                onSettingsChange = onSettingsChange,
+                openColorPicker = openColorPicker,
+                onResetApp = onResetApp,
+                onBack = onToggleSettings,
+                onRefresh = onRefresh,
+                onExportSettings = onExportSettings,
+                onImportSettings = onImportSettings,
+                connectCardReader = connectCardReader,
+                isLoggedIn = isLoggedIn,
+                isPinned = isPinned,
+                onUnpinApp = onUnpinApp,
+                onPinApp = onPinApp,
+                onShowSetupStatus = { onShowSetupStatus(true) },
+                onShowDonationHistory = { onShowDonationHistory(true) },
+                onActivateScreensaver = onActivateScreensaver,
+                onTestModeChange = onTestModeChange,
+                onLogout = onLogout,
+                isNetworkAvailable = isNetworkAvailable,
+                isBluetoothEnabled = isBluetoothEnabled,
+                isCardReaderConnected = isCardReaderConnected,
+                currentVersion = "v$currentVersionLabel",
+                latestVersion = latestUpdate?.let { "v${it.version}" } ?: "",
+                updateAvailable = hasUpdateAvailable,
+                availableReleases = availableReleases,
+                scheduledInstallAtMs = scheduledInstallAtMs,
+                onCheckForUpdates = onManualCheckForUpdates,
+                onUpdateNow = onUpdateBadgeTapped
+            )
+        }
     } else if (maintenanceReason == MaintenanceReason.NetworkOutage) {
         NoInternetScreen(
             settings = settings,
             onOpenSettings = onOfflineSettingsClick
         )
+    } else if (!isLoggedIn) {
+        AffiliateLoginScreen(
+            affiliateKey = affiliateKey,
+            onKeyChange = onAffiliateKeyChange,
+            onLogin = onLogin,
+            authenticate = authenticate,
+            connectCardReader = connectCardReader,
+            onSettingsClick = {
+                authenticateWithBiometrics(
+                    context,
+                    { onToggleSettings() },
+                    { error -> Toast.makeText(context, error, Toast.LENGTH_SHORT).show() }
+                )
+            },
+            settings = settings,
+            versionLabel = "v$currentVersionLabel"
+        )
+    } else if (showCustomAmountScreen) {
+        CustomAmountNumpadScreen(
+            amount = customAmountInput,
+            onAmountChange = onCustomAmountChange,
+            onConfirm = { onCustomAmountSubmit(customAmountInput) },
+            onCancel = {
+                onShowCustomAmountScreen(false)
+                onCustomAmountChange("")
+            },
+            settings = settings
+        )
+    } else if (showThankYou) {
+        ThankYouScreen(settings = settings)
+    } else if (isScreensaverActive) {
+        ScreensaverScreen(
+            style = settings.screensaverStyle,
+            settings = settings,
+            onTouch = onResetScreensaver
+        )
+    } else if (!isNetworkAvailable || !isBluetoothEnabled) {
+        SetupStatusScreen(
+            isNetworkAvailable = isNetworkAvailable,
+            isBluetoothEnabled = isBluetoothEnabled,
+            isLoggedIn = isLoggedIn,
+            isCardReaderConnected = isCardReaderConnected,
+            settings = settings,
+            showBack = false,
+            onBack = {},
+            onConfigureWifi = onReconnectWifi,
+            onEnableBluetooth = onEnableBluetooth,
+            onDisableBluetooth = onDisableBluetooth
+        )
     } else {
-        when {
-            isEditingSettings -> {
-                when {
-                    isPickingColor -> ColorPickerScreen(
-                        initialColor = getColorSetting(colorLabel),
-                        label = colorLabel,
-                        onColorSelected = { label, color -> setColorSetting(label, color) },
-                        onBack = { openColorPicker(colorLabel) },
-                        settings = settings
-                    )
-                    showDonationHistory -> DonationHistoryScreen(
-                        settings = settings,
-                        history = donationHistory,
-                        onSettingsChange = onSettingsChange,
-                        onClearHistory = { donationHistory.clearAll() },
-                        onBack = { onShowDonationHistory(false) }
-                    )
-                    showSetupStatus -> SetupStatusScreen(
-                        isNetworkAvailable = isNetworkAvailable,
-                        isBluetoothEnabled = isBluetoothEnabled,
-                        isLoggedIn = isLoggedIn,
-                        isCardReaderConnected = isCardReaderConnected,
-                        settings = settings,
-                        onBack = {
-                            // When opened from the offline screen, "back" should
-                            // exit the settings stack entirely (back to NoInternet
-                            // or DonationGrid depending on connectivity), not drop
-                            // into the regular SettingsScreen the user never asked for.
-                            if (setupStatusFromOffline) onExitSetupStatus()
-                            else onShowSetupStatus(false)
-                        },
-                        onConfigureWifi = {
-                            onShowSetupStatus(false)
-                            onReconnectWifi()
-                        },
-                        onEnableBluetooth = {
-                            onShowSetupStatus(false)
-                            onEnableBluetooth()
-                        },
-                        onDisableBluetooth = onDisableBluetooth
-                    )
-                    else -> SettingsScreen(
-                        settings = settings,
-                        onSettingsChange = onSettingsChange,
-                        openColorPicker = openColorPicker,
-                        onResetApp = onResetApp,
-                        onBack = onToggleSettings,
-                        onRefresh = onRefresh,
-                        onExportSettings = onExportSettings,
-                        onImportSettings = onImportSettings,
-                        connectCardReader = connectCardReader,
-                        isLoggedIn = isLoggedIn,
-                        isPinned = isPinned,
-                        onUnpinApp = onUnpinApp,
-                        onPinApp = onPinApp,
-                        onShowSetupStatus = { onShowSetupStatus(true) },
-                        onShowDonationHistory = { onShowDonationHistory(true) },
-                        onActivateScreensaver = onActivateScreensaver,
-                        onTestModeChange = onTestModeChange,
-                        onLogout = onLogout,
-                        isNetworkAvailable = isNetworkAvailable,
-                        isBluetoothEnabled = isBluetoothEnabled,
-                        isCardReaderConnected = isCardReaderConnected,
-                        currentVersion = "v$currentVersionLabel",
-                        latestVersion = latestUpdate?.let { "v${it.version}" } ?: "",
-                        updateAvailable = hasUpdateAvailable,
-                        availableReleases = availableReleases,
-                        scheduledInstallAtMs = scheduledInstallAtMs,
-                        onCheckForUpdates = onManualCheckForUpdates,
-                        onUpdateNow = onUpdateBadgeTapped
-                    )
-                }
-            }
-            !isLoggedIn -> {
-                AffiliateLoginScreen(
-                    affiliateKey = affiliateKey,
-                    onKeyChange = onAffiliateKeyChange,
-                    onLogin = onLogin,
-                    authenticate = authenticate,
-                    connectCardReader = connectCardReader,
-                    onSettingsClick = {
-                        authenticateWithBiometrics(
-                            context,
-                            { onToggleSettings() },
-                            { error -> Toast.makeText(context, error, Toast.LENGTH_SHORT).show() }
-                        )
-                    },
-                    settings = settings,
-                    versionLabel = "v$currentVersionLabel"
+        DonationGridScreen(
+            onAmountSelected = { amount ->
+                onResetScreensaver()
+                makePayment(amount)
+            },
+            onSettingsClick = {
+                onResetScreensaver()
+                authenticateWithBiometrics(
+                    context,
+                    { onToggleSettings() },
+                    { error -> Toast.makeText(context, error, Toast.LENGTH_SHORT).show() }
                 )
+            },
+            settings = settings,
+            onShowCustomAmountScreen = {
+                onResetScreensaver()
+                onShowCustomAmountScreen(it)
+            },
+            onReinitSumUp = {
+                onResetScreensaver()
+                reinitSumUp()
+            },
+            versionLabel = "v$currentVersionLabel",
+            updateAvailable = hasUpdateAvailable,
+            onUpdateBadgeTap = {
+                onResetScreensaver()
+                onUpdateBadgeTapped()
             }
-            showCustomAmountScreen -> {
-                CustomAmountNumpadScreen(
-                    amount = customAmountInput,
-                    onAmountChange = onCustomAmountChange,
-                    onConfirm = { onCustomAmountSubmit(customAmountInput) },
-                    onCancel = {
-                        onShowCustomAmountScreen(false)
-                        onCustomAmountChange("")
-                    },
-                    settings = settings
-                )
-            }
-            showThankYou -> {
-                ThankYouScreen(settings = settings)
-            }
-            else -> {
-                if (isScreensaverActive) {
-                    ScreensaverScreen(
-                        style = settings.screensaverStyle,
-                        settings = settings,
-                        onTouch = onResetScreensaver
-                    )
-                } else if (!isNetworkAvailable || !isBluetoothEnabled) {
-                    SetupStatusScreen(
-                        isNetworkAvailable = isNetworkAvailable,
-                        isBluetoothEnabled = isBluetoothEnabled,
-                        isLoggedIn = isLoggedIn,
-                        isCardReaderConnected = isCardReaderConnected,
-                        settings = settings,
-                        showBack = false,
-                        onBack = {},
-                        onConfigureWifi = onReconnectWifi,
-                        onEnableBluetooth = onEnableBluetooth,
-                        onDisableBluetooth = onDisableBluetooth
-                    )
-                } else {
-                    DonationGridScreen(
-                        onAmountSelected = { amount ->
-                            onResetScreensaver()
-                            makePayment(amount)
-                        },
-                        onSettingsClick = {
-                            onResetScreensaver()
-                            authenticateWithBiometrics(
-                                context,
-                                { onToggleSettings() },
-                                { error -> Toast.makeText(context, error, Toast.LENGTH_SHORT).show() }
-                            )
-                        },
-                        settings = settings,
-                        onShowCustomAmountScreen = {
-                            onResetScreensaver()
-                            onShowCustomAmountScreen(it)
-                        },
-                        onReinitSumUp = {
-                            onResetScreensaver()
-                            reinitSumUp()
-                        },
-                        versionLabel = "v$currentVersionLabel",
-                        updateAvailable = hasUpdateAvailable,
-                        onUpdateBadgeTap = {
-                            onResetScreensaver()
-                            onUpdateBadgeTapped()
-                        }
-                    )
-                }
-            }
-        }
+        )
     }
 }
 

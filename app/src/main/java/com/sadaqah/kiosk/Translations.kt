@@ -303,8 +303,8 @@ object DutchStrings : Strings {
     override val logIn = "LOG IN"
 
     override val chooseAmount = "KIES UW BEDRAG"
-    override val customAmount = "AANGEPAST BEDRAG"
-    override val customAmountLine1 = "AANGEPAST"
+    override val customAmount = "ANDER BEDRAG"
+    override val customAmountLine1 = "ANDER"
     override val customAmountLine2 = "BEDRAG"
 
     override val enterAmount = "Voer bedrag in"

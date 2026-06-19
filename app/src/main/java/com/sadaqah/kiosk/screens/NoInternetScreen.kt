@@ -69,9 +69,10 @@ fun NoInternetScreen(
             Spacer(modifier = Modifier.height(responsiveDp(40.dp)))
 
             Text(
-                text = strings.noInternetConnection,
+                text = strings.noInternetConnection.uppercase(),
                 color = accent,
                 fontSize = responsiveSp(64.0),
+                lineHeight = responsiveSp(72.0),
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center
             )

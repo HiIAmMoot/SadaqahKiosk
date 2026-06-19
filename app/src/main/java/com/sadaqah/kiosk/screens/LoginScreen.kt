@@ -19,7 +19,6 @@ import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
-import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -131,7 +130,7 @@ fun AffiliateLoginScreen(
                             )
                         }
                     },
-                    textStyle = TextStyle(
+                    textStyle = LocalTextStyle.current.copy(
                         color = Color(settings.buttonBorderColor),
                         fontWeight = FontWeight.Bold,
                         textAlign = TextAlign.Center
