@@ -399,13 +399,6 @@ class MainActivity : FragmentActivity() {
                         } else {
                             isLoggedIn = false
                             isCardReaderConnected = false
-                            // If a real affiliate key is still cached and we're
-                            // online, kick a SumUp login so leaving test mode
-                            // drops the operator back onto the live grid instead
-                            // of into the offline / login fallback.
-                            if (affiliateKey.isNotBlank() && isNetworkAvailable) {
-                                authenticate(affiliateKey)
-                            }
                         }
                     },
                     onLogout = { logout() },
@@ -1001,13 +994,6 @@ class MainActivity : FragmentActivity() {
                             scheduleAutoPinIfReady()
                         }
                         handleNetworkRestored()
-                        // Booted offline (or test mode was toggled off offline)
-                        // with a cached key — now that we have internet, try the
-                        // login that we deliberately skipped when we were offline.
-                        if (!isLoggedIn && affiliateKey.isNotBlank() && !settings.testMode) {
-                            Log.d("NetworkPoll", "Network restored — authenticating cached key")
-                            authenticate(affiliateKey)
-                        }
                     } else {
                         autoPinJob?.cancel()
                         handleNetworkLost()
@@ -1779,21 +1765,7 @@ fun AppUI(
                     )
                 }
             }
-            // Offline guard: never show the login screen when we have no internet.
-            // We can't validate a key offline anyway, and a SumUp login attempt
-            // here would clobber the cached session. Test mode bypasses this so
-            // the operator can demo the kiosk without WiFi.
-            !isNetworkAvailable && !settings.testMode -> {
-                NoInternetScreen(
-                    settings = settings,
-                    onOpenSettings = onOfflineSettingsClick
-                )
-            }
-            // Login screen is only meaningful when there is no affiliate key.
-            // A cached key + isLoggedIn=false (e.g. booted offline, just came
-            // online) is handled by the auto-authenticate path in the polling
-            // loop — we don't bounce the operator through a manual login form.
-            affiliateKey.isBlank() && !settings.testMode -> {
+            !isLoggedIn -> {
                 AffiliateLoginScreen(
                     affiliateKey = affiliateKey,
                     onKeyChange = onAffiliateKeyChange,
