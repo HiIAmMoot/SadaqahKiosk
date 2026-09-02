@@ -74,17 +74,67 @@ Therefore the real boundary is server-side:
 - Rate-limit inserts server-side so a leaked key means spam, not a denial of
   service.
 
-### Fleet provisioning forces plaintext through the export file
+### Fleet provisioning: password-encrypted secrets in the export file
 
-A Keystore key is per-device, so credentials cannot be exported as ciphertext and
-imported elsewhere. To clone configuration across a fleet, the settings export
-must carry them **in plaintext**, behind an explicit opt-in checkbox — exactly how
-the SumUp affiliate key already works.
+A Keystore key is per-device, so credentials cannot be exported as Keystore
+ciphertext and imported elsewhere. Rather than exporting them in the clear, the
+export encrypts them under a **password the operator types at export time**, and
+import requires that same password.
 
-Consequence: **an exported settings JSON is a secret-bearing artifact** and must
-be labelled as such in the UI and the README. This is why the insert-only RLS
-policy does the real security work; the on-device encryption only narrows the
-window.
+This keeps fleet cloning practical — configure one kiosk, export, import onto the
+rest — without the exported file being a bearer secret. A leaked export is then
+only as weak as the chosen password, rather than immediately usable.
+
+**Scope: this covers the SumUp affiliate key too.** The affiliate key is exported
+in plaintext today; once this mechanism exists there is no reason to keep a second,
+weaker path for a secret of the same sensitivity. Both secrets move into one
+encrypted blob.
+
+**File format.** Non-secret settings stay in plaintext so the file remains
+inspectable and diffable. Secrets go into a single encrypted envelope:
+
+```json
+{
+  "settings": { ... },
+  "secrets": {
+    "v": 1,
+    "kdf": "PBKDF2WithHmacSHA256",
+    "iterations": 600000,
+    "salt": "<base64, 16 random bytes>",
+    "iv": "<base64, 12 random bytes>",
+    "ciphertext": "<base64, AES-256-GCM, 128-bit tag>"
+  }
+}
+```
+
+The plaintext inside the envelope is a JSON object of secret key/values, so new
+secrets can be added later without another format change. `v` allows the KDF
+parameters to be raised in future without breaking old files.
+
+**Parameters.** PBKDF2-HMAC-SHA256 at 600,000 iterations (OWASP guidance),
+AES-256-GCM. Derivation takes a few seconds on a Lenovo M9 — acceptable for a
+one-off operation, but it **must run off the UI thread** with a progress
+indicator, or it will read as a frozen kiosk.
+
+**Import behaviour:**
+
+- Decrypt and validate *before* applying anything. A wrong password must leave the
+  device untouched — the current import applies settings first and reads the
+  affiliate key afterwards, which would half-apply on failure.
+- A wrong password fails GCM authentication and reports plainly. It is not
+  silently treated as "no secrets".
+- Importing without the password is still allowed as an **explicit** separate
+  action ("import settings only"), for cloning theme and configuration without
+  credentials. Never a silent downgrade.
+
+**Backward compatibility.** Exports created before this change carry
+`affiliateKey` as a plaintext field. Import must continue to accept that shape so
+existing operator backups keep working. New exports always use the encrypted
+envelope.
+
+This narrows the window but does not change where the real boundary sits: a
+determined attacker with root on a running kiosk still reaches the credential, so
+the insert-only RLS policy remains what actually contains the damage.
 
 ### Redaction
 
@@ -193,6 +243,7 @@ telemetry/
 ├── TelemetryOutbox.kt      # Append-only JSONL queue: append, peek batch, remove, cap
 ├── TelemetryRedactor.kt    # Scrubs secrets before anything reaches disk
 ├── TelemetryCredentials.kt # AndroidKeyStore-encrypted Supabase URL + anon key
+├── SecretsEnvelope.kt      # Password-based encrypt/decrypt for the settings export
 ├── TelemetryGate.kt        # Pure: may we flush right now?
 ├── TelemetryUploader.kt    # Supabase REST insert over HttpURLConnection
 └── TelemetryManager.kt     # Orchestrator: enqueue, schedule, flush
@@ -263,7 +314,8 @@ without a device.
 carry restrictions and privacy baggage for no benefit here.
 
 Credentials are **not** in `Settings`; they live in `TelemetryCredentials` so they
-are never written to the settings JSON except through the deliberate export path.
+are never written to the settings JSON except through the deliberate export path,
+where they are password-encrypted.
 
 Migration follows the existing pattern in `MainActivity.onCreate`: GSON ignores
 Kotlin defaults for absent fields, so absent keys are detected against the raw
@@ -303,6 +355,9 @@ Unit-testable without a device:
 - `TelemetryRedactor` — affiliate key and token-shaped strings never survive
 - `TelemetryEvent` — JSON round-trip for every kind
 - `TelemetryGate` — every combination of enabled/configured/consented/network/backoff
+- `SecretsEnvelope` — encrypt/decrypt round-trip; wrong password fails cleanly;
+  tampered ciphertext fails GCM authentication; a legacy plaintext export still
+  imports; a failed import leaves settings untouched
 
 Not unit-testable, and must be labelled as such:
 
@@ -321,9 +376,11 @@ the feature is trusted.
   endpoint and transmits nothing by default; the optional feature, the exact
   fields, and the consent requirement are documented plainly.
 - Features list gains the optional analytics entry.
-- New Analytics section: setup, the RLS policy operators must apply, the exact
-  schema, and a clear warning that an exported settings JSON containing
-  credentials is a secret.
+- New Analytics section: setup, the RLS policy operators must apply, and the exact
+  schema.
+- Export/import documentation updated: secrets are now password-encrypted, the
+  password is unrecoverable if lost, and pre-existing plaintext exports still
+  import.
 
 ---
 
@@ -333,8 +390,10 @@ Each phase leaves the app shippable.
 
 1. **Outbox, events, redaction, gate.** Inert — nothing enqueues, nothing uploads.
    Fully unit-tested.
-2. **Credentials + uploader + `AnalyticsSettingsScreen`.** Configurable and
-   testable by hand; still nothing enqueues.
+2. **Credentials + password-encrypted export + uploader + `AnalyticsSettingsScreen`.**
+   Configurable and testable by hand; still nothing enqueues. The export change
+   also moves the affiliate key into the encrypted envelope, so it ships with
+   legacy-import compatibility.
 3. **Instrumentation.** Donation events, diagnostic events, crash handler,
    update outcome reporting.
 4. **Consent gate + translations.** `ConsentScreen` across eight languages.
