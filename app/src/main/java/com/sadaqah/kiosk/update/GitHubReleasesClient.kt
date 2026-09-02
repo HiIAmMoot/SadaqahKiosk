@@ -30,7 +30,9 @@ class GitHubReleasesClient(
 
     private fun parseRelease(o: com.google.gson.JsonObject): ReleaseInfo? {
         if (o.get("draft")?.asBoolean == true) return null
-        if (o.get("prerelease")?.asBoolean == true) return null
+        // GitHub's pre-release checkbox is carried through rather than filtered:
+        // it marks the release as a preview, same as a "-preview" tag suffix.
+        val flaggedPreRelease = o.get("prerelease")?.asBoolean == true
         val tag = o.get("tag_name")?.asString ?: return null
         val version = SemVer.parse(tag) ?: return null
 
@@ -49,7 +51,8 @@ class GitHubReleasesClient(
             body = o.get("body")?.asString.orEmpty(),
             publishedAtIso = o.get("published_at")?.asString.orEmpty(),
             apkUrl = apkUrl,
-            apkSizeBytes = apkSize
+            apkSizeBytes = apkSize,
+            isPreview = version.isPreview || flaggedPreRelease
         )
     }
 

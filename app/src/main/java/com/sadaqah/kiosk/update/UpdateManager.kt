@@ -37,6 +37,45 @@ data class RepoCoords(val owner: String, val name: String) {
     fun toUrl() = "https://github.com/$owner/$name"
 }
 
+data class TargetResolution(
+    val target: ReleaseInfo?,
+    /**
+     * True when a preview pin has been superseded and the caller must reset
+     * `autoUpdateTargetVersion` to "latest". Skipping that write would leave the
+     * pin matching the preview again on the next check, swinging the kiosk
+     * between preview and stable every night.
+     */
+    val pinExpired: Boolean = false
+)
+
+/**
+ * Picks the release every automatic path targets — the update badge, the 02:00
+ * maintenance install, the grace-period schedule and "Install now" all read the
+ * result via [UpdateManager.latestKnown].
+ *
+ * Previews are skipped when resolving "latest", so publishing one never reaches
+ * the fleet. Pinning to a preview still selects it: a pin is explicit operator
+ * consent, which is what makes testing a build on one kiosk possible.
+ *
+ * A preview pin is deliberately temporary. It expires as soon as a non-preview
+ * release *newer than the preview* exists, so a test kiosk rejoins the stable
+ * track by itself. Comparing against the preview rather than against the newest
+ * stable is what lets you pin a preview that runs ahead of the current stable
+ * (`1.3.7-preview` while `1.3.6` is live) without it immediately undoing itself.
+ *
+ * [eligible] must already be filtered to installable releases, sorted newest-first.
+ */
+fun resolveUpdateTarget(eligible: List<ReleaseInfo>, pinned: SemVer?): TargetResolution {
+    if (pinned == null) {
+        return TargetResolution(eligible.firstOrNull { !it.isPreview })
+    }
+    if (pinned.isPreview) {
+        val supersededBy = eligible.firstOrNull { !it.isPreview && it.version > pinned }
+        if (supersededBy != null) return TargetResolution(supersededBy, pinExpired = true)
+    }
+    return TargetResolution(eligible.firstOrNull { it.version == pinned })
+}
+
 fun parseGitHubRepoUrl(url: String): RepoCoords? {
     val cleaned = url.trim().removeSuffix("/").removeSuffix(".git")
     val regex = Regex("^https?://(?:www\\.)?github\\.com/([^/\\s]+)/([^/\\s]+)$")
@@ -190,12 +229,15 @@ class UpdateManager(
                     .sortedByDescending { it.version }
                 availableReleases = eligible
 
-                val pinned = pinnedTarget()
-                val target = if (pinned != null) {
-                    eligible.firstOrNull { it.version == pinned }
-                } else {
-                    eligible.firstOrNull()
+                val resolution = resolveUpdateTarget(eligible, pinnedTarget())
+                if (resolution.pinExpired) {
+                    Log.d("UpdateManager", "Preview pin '${settings.autoUpdateTargetVersion}' superseded — reverting to latest")
+                    settings = settings.copy(autoUpdateTargetVersion = "latest")
+                    try { persistSettings(settings) } catch (e: Exception) {
+                        Log.e("UpdateManager", "persistSettings (expire preview pin) failed: ${e.message}")
+                    }
                 }
+                val target = resolution.target
                 if (target == null) {
                     Log.d("UpdateManager", "No eligible release found")
                     latestKnown = null
