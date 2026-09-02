@@ -160,7 +160,7 @@ The app can update itself directly from a GitHub releases feed — no Play Store
 End-to-end:
 
 1. **Check.** The app polls the configured GitHub repository's `/releases` API ~30 s after startup, again at 02:00 every day, and on demand when the operator opens Settings. Unauthenticated, 60 requests/hour (plenty for daily polling).
-2. **Filter.** Releases must be non-draft, non-prerelease, tagged as semver (`v1.3.0`, `1.3.5`, …), and have an `.apk` asset attached. Versions below `1.3.0` (the first release with this update system) are excluded. So are versions on a different `major.minor` track than what's installed — see [The versionCode convention](#the-versioncode-convention) below.
+2. **Filter.** Releases must be non-draft, tagged as semver (`v1.3.0`, `1.3.5`, `1.3.5-preview`, …), and have an `.apk` asset attached. Versions below `1.3.0` (the first release with this update system) are excluded. So are versions on a different `major.minor` track than what's installed — see [The versionCode convention](#the-versioncode-convention) below. Previews are listed but never auto-installed — see [Preview releases](#preview-releases).
 3. **Notify (optional).** A red dot appears next to the gear icon on the donation screen, plus a row in Settings → Updates showing `Latest: vX.Y.Z`. Hideable via the **Hide update notifications** toggle.
 4. **Download (background).** During the 02:00 maintenance window, when auto-update is enabled, the target APK is fetched silently to the app's private cache. If a newer release appears mid-grace, the cached APK is discarded and the new one is fetched.
 5. **Validate.** Before installing, the new APK is checked:
@@ -184,6 +184,36 @@ Preflight gates that block any install path:
 - Not device-owner
 - No internet
 - Battery below 30%
+
+### Preview releases
+
+To test a build on one or two kiosks without shipping it to every device in the field, publish it as a **preview**. A release counts as a preview if either:
+
+- its tag carries a pre-release suffix — `v1.3.5-preview`, `v1.4.0-rc.1`, anything after a `-`; or
+- it's marked **Set as a pre-release** on GitHub.
+
+Either marker is enough, so ticking GitHub's checkbox and tagging `-preview` are both fine, together or apart.
+
+A preview is **never** chosen automatically. It doesn't resolve as "Latest", doesn't raise the red dot next to the gear icon, and won't be installed by the 02:00 maintenance window. Kiosks left on the default settings will not see it.
+
+To put a preview on a specific kiosk, open **Settings → Updates → Target version** and pin that kiosk to the preview (e.g. `1.3.5-preview`). Pinning is explicit consent, so the pinned kiosk installs it at the next 02:00 window with no grace period — or immediately via **Install now**.
+
+**Preview pins expire by themselves.** A kiosk never has to be collected from preview by hand: as soon as a non-preview release *newer than the pinned preview* appears, the pin resets to **Latest** and the kiosk rejoins the fleet on the normal grace-period schedule.
+
+The comparison is against the preview, not against the newest stable, so pinning a preview that runs ahead of the current stable still works:
+
+| Pinned | Newest stable | What happens |
+|--------|---------------|--------------|
+| `1.3.5-preview` | `1.3.5` | Pin expires, kiosk targets `1.3.5` |
+| `1.3.7-preview` | `1.3.6` | Pin holds — `1.3.6` is older than the preview, testing continues |
+| `1.3.7-preview` | `1.4.0` | Pin expires, kiosk targets `1.4.0` |
+| `1.3.7-preview` | `1.3.8-preview` | Pin holds — only a stable release expires a pin |
+
+A pin to a stable version never expires; it stays until an operator changes it.
+
+> **Note:** preview builds must still follow [the versionCode convention](#the-versioncode-convention) — `1.3.5-preview` shares versionCode 15 with the rest of the `1.3.x` track. A preview on a *new* minor track can't be rolled back to the old track.
+
+> **Requires 1.3.5 or later.** Builds before `1.3.5` can't parse a pre-release tag at all — they silently ignore any release tagged `-preview`, which is safe but means those kiosks can't be pinned to one. Ship `1.3.5` to the fleet before relying on previews.
 
 ### Configuring the source repository
 
@@ -214,7 +244,7 @@ Why it matters:
 - **Cross-track upgrades still work** (`1.3.5 → 1.4.0`) because `1.4.0` has a higher versionCode — that's a real upgrade and Android accepts it.
 - **Cross-track downgrades don't work** by design. Once you ship a `1.4.0` to a device, you can't auto-roll-back to `1.3.X`. Plan minor cuts accordingly.
 
-When this rule is followed, the target-version dropdown in Settings shows all installable patches: every release in the same `major.minor` track as the current install, plus any higher-track releases as forward upgrades. Releases on lower tracks are hidden.
+When this rule is followed, the target-version dropdown in Settings shows all installable patches: every release in the same `major.minor` track as the current install, plus any higher-track releases as forward upgrades. Releases on lower tracks are hidden. Previews appear in this dropdown too, so they can be pinned by hand.
 
 ### Caveats
 
@@ -243,6 +273,7 @@ app/src/main/java/com/sadaqah/kiosk/
 ├── MainActivity.kt              # Activity, SumUp API integration, state management
 ├── Translations.kt              # Language enum, TranslationManager, all 8 Strings objects
 ├── ColorHistory.kt              # Recently picked and suggested colors singleton
+├── LogoColorExtractor.kt        # Palette-based dominant colours from the logo, for the picker
 ├── Utils.kt                     # responsiveDp / responsiveSp helpers, grid column logic
 ├── BootReceiver.kt              # Launches app on BOOT_COMPLETED
 ├── KioskDeviceAdminReceiver.kt  # Device admin receiver for silent lock-task mode
@@ -252,6 +283,10 @@ app/src/main/java/com/sadaqah/kiosk/
 │   ├── KeyValueStore.kt         # SharedPreferences abstraction (testable)
 │   ├── RestartManager.kt        # Auto-restart decision logic with guards
 │   └── NetworkRecoveryManager.kt # Network outage detection and recovery
+├── donations/
+│   ├── DonationHistory.kt       # Append-only JSON-lines log, sharded by calendar year
+│   ├── DonationStats.kt         # Pure timeframe / throughput-average calculations
+│   └── DonationCsvExporter.kt   # Writes the full history to public Downloads as CSV
 ├── update/
 │   ├── UpdateManager.kt              # Orchestrator: check, download, validate, install, schedule
 │   ├── UpdateTypes.kt                # SemVer, ReleaseInfo, UpdateState
@@ -267,17 +302,29 @@ app/src/main/java/com/sadaqah/kiosk/
 │   ├── CustomAmountScreen.kt
 │   ├── SettingsScreen.kt
 │   ├── SetupStatusScreen.kt     # Network/Bluetooth/reader status checklist
+│   ├── DonationHistoryScreen.kt # Donation totals, averages, CSV export
 │   ├── ColorPickerScreen.kt
 │   ├── LoginScreen.kt
 │   ├── ScreensaverScreen.kt
 │   ├── ThankYouScreen.kt
-│   └── MaintenanceScreen.kt
-└── components/
-    ├── NumpadButton.kt
-    └── ColorComponents.kt
+│   ├── NoInternetScreen.kt      # Offline overlay with a route into Settings
+│   ├── MaintenanceScreen.kt
+│   ├── UpdateAvailableConfirmScreen.kt  # Changelog + confirm before a manual install
+│   └── UpdatingScreen.kt        # Progress overlay while an update installs
+├── components/
+│   ├── NumpadButton.kt
+│   └── ColorComponents.kt
+└── ui/theme/
+    ├── Theme.kt                 # Static light scheme — dark/dynamic colour never applies
+    ├── Type.kt                  # Bundled Inter / Noto Naskh Arabic, picked per language
+    └── Color.kt
 ```
 
-Settings are persisted to `SharedPreferences` as JSON (Gson). The SumUp SDK handles all payment processing; this app never touches card data.
+Settings are persisted to `SharedPreferences` as JSON (Gson). Donation history lives in app-private internal storage as year-sharded JSON-lines files. The SumUp SDK handles all payment processing; this app never touches card data.
+
+### SumUp SDK version
+
+The project is **deliberately pinned to merchant-sdk 5.0.4**. Newer versions (6.x, 7.x) crash the app during the reinitialise cycle the kiosk runs at 02:00 and after a network outage, which makes them unusable for unattended operation. The pin will be revisited once a release after 7.1.0 ships with that fixed.
 
 ---
 

@@ -62,6 +62,11 @@ import java.math.BigDecimal
 
 private const val INACTIVITY_BOUNCE_MS = 5L * 60 * 1000 // 5 min on settings / custom-amount → back to donation
 
+/** How long the Bluetooth radio may stay off before the watchdog switches it back on.
+ *  The kiosk cannot take donations without it, so recovery is worth more than patience.
+ *  Comfortably clear of the ~5 s deliberate cycle in [MainActivity.cycleBluetoothAdapter]. */
+private const val BLUETOOTH_OFF_RECOVERY_MS = 60L * 1000
+
 class MainActivity : FragmentActivity() {
     private lateinit var prefs: SharedPreferences
 
@@ -80,6 +85,9 @@ class MainActivity : FragmentActivity() {
     private var bluetoothCycleJob: Job? = null
     private var savedNetworkFallbackJob: Job? = null
     private var cardReaderPageTimeoutJob: Job? = null
+    private var bluetoothWatchdogJob: Job? = null
+
+    private val bluetoothRecoveryManager = BluetoothRecoveryManager(BLUETOOTH_OFF_RECOVERY_MS)
 
     /** Amount of the most recently initiated payment, stashed at makePayment() time. */
     private var lastPaymentAmount: BigDecimal? = null
@@ -272,18 +280,26 @@ class MainActivity : FragmentActivity() {
             startSavedNetworkFallback()
         }
 
-        isBluetoothEnabled = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)
-            ?.adapter?.isEnabled == true
+        isBluetoothEnabled = bluetoothAdapter()?.isEnabled == true
+        // Seed the watchdog so a device that boots with the radio already off
+        // still recovers, rather than waiting for a STATE_OFF that never comes.
+        if (!isBluetoothEnabled) bluetoothRecoveryManager.onBluetoothOff()
 
         bluetoothReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, -1)
                 isBluetoothEnabled = state == BluetoothAdapter.STATE_ON
-                if (!isBluetoothEnabled) autoPinJob?.cancel()
-                else scheduleAutoPinIfReady()
+                if (!isBluetoothEnabled) {
+                    autoPinJob?.cancel()
+                    bluetoothRecoveryManager.onBluetoothOff()
+                } else {
+                    bluetoothRecoveryManager.onBluetoothOn()
+                    scheduleAutoPinIfReady()
+                }
             }
         }
         registerReceiver(bluetoothReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
+        startBluetoothWatchdog()
 
         scheduleAutoPinIfReady()
 
@@ -388,7 +404,7 @@ class MainActivity : FragmentActivity() {
                     onUnpinApp = ::unpinApp,
                     onPinApp = ::startAppPinning,
                     onReconnectWifi = ::startWifiReconnectFlow,
-                    onEnableBluetooth = ::openBluetoothSettings,
+                    onEnableBluetooth = ::enableBluetooth,
                     onDisableBluetooth = ::disableBluetooth,
                     onActivateScreensaver = ::activateScreensaver,
                     onTestModeChange = { enabled ->
@@ -616,15 +632,79 @@ class MainActivity : FragmentActivity() {
         openSystemSettings(Intent(AndroidSettings.Panel.ACTION_WIFI))
     }
 
-    fun openBluetoothSettings() {
+    private fun isDeviceOwner(): Boolean =
+        (getSystemService(Context.DEVICE_POLICY_SERVICE) as? DevicePolicyManager)
+            ?.isDeviceOwnerApp(packageName) == true
+
+    private fun bluetoothAdapter(): BluetoothAdapter? =
+        (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
+
+    /**
+     * Flips the radio without any UI. Only device owners may do this silently,
+     * so callers that can't fall back gracefully must check [isDeviceOwner]
+     * first. Returns whether the adapter accepted the request.
+     */
+    @SuppressLint("MissingPermission")
+    private fun setBluetoothEnabledHeadless(enabled: Boolean): Boolean {
+        val adapter = bluetoothAdapter()
+        if (adapter == null) {
+            Log.w("Bluetooth", "BluetoothAdapter unavailable")
+            return false
+        }
+        return try {
+            @Suppress("DEPRECATION")
+            val ok = if (enabled) adapter.enable() else adapter.disable()
+            Log.d("Bluetooth", "adapter.${if (enabled) "enable" else "disable"}() → $ok")
+            ok
+        } catch (e: SecurityException) {
+            Log.e("Bluetooth", "SecurityException toggling bluetooth: ${e.message}")
+            false
+        } catch (e: Exception) {
+            Log.e("Bluetooth", "Error toggling bluetooth: ${e.message}")
+            false
+        }
+    }
+
+    /**
+     * Operator tapped the Bluetooth button on the setup-status screen. On a
+     * device-owner install this flips the radio in place; otherwise we hand off
+     * to the system Bluetooth panel exactly as before, since a plain install
+     * has no way to do it silently.
+     */
+    private fun onBluetoothToggleRequested(enable: Boolean) {
+        if (isDeviceOwner() && setBluetoothEnabledHeadless(enable)) return
         openSystemSettings(Intent(AndroidSettings.ACTION_BLUETOOTH_SETTINGS))
     }
 
-    @SuppressLint("MissingPermission")
-    fun disableBluetooth() {
-        val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
-        @Suppress("DEPRECATION")
-        adapter?.disable()
+    fun enableBluetooth() = onBluetoothToggleRequested(enable = true)
+
+    fun disableBluetooth() = onBluetoothToggleRequested(enable = false)
+
+    /**
+     * Switches the radio back on when it has been off longer than
+     * [BLUETOOTH_OFF_RECOVERY_MS]. Runs only on device-owner installs — without
+     * that privilege the only recovery is the system panel, and opening it
+     * unattended would drop an unmanned kiosk onto an Android settings screen.
+     */
+    private fun startBluetoothWatchdog() {
+        if (!isDeviceOwner()) {
+            Log.d("BluetoothWatchdog", "Not device owner — auto re-enable unavailable")
+            return
+        }
+        bluetoothWatchdogJob?.cancel()
+        bluetoothWatchdogJob = lifecycleScope.launch {
+            while (true) {
+                delay(10_000L)
+                // Never race the deliberate off → on cycle; it re-enables by itself.
+                val action = bluetoothRecoveryManager.evaluate(
+                    cycleInProgress = bluetoothCycleJob?.isActive == true
+                )
+                if (action == BluetoothRecoveryAction.ReEnable) {
+                    Log.w("BluetoothWatchdog", "Bluetooth off too long — re-enabling")
+                    setBluetoothEnabledHeadless(true)
+                }
+            }
+        }
     }
 
     fun unpinApp() {
@@ -652,41 +732,29 @@ class MainActivity : FragmentActivity() {
         cycleBluetoothAdapter()
     }
 
-    @SuppressLint("MissingPermission")
     private fun cycleBluetoothAdapter() {
         bluetoothCycleJob?.cancel()
         bluetoothCycleJob = lifecycleScope.launch {
-            val adapter = (getSystemService(Context.BLUETOOTH_SERVICE) as? android.bluetooth.BluetoothManager)?.adapter
-            if (adapter == null) {
+            if (bluetoothAdapter() == null) {
                 Log.w("BluetoothCycle", "BluetoothAdapter unavailable — skip cycle")
                 return@launch
             }
-            try {
-                @Suppress("DEPRECATION")
-                val offOk = adapter.disable()
-                Log.d("BluetoothCycle", "adapter.disable() → $offOk")
-                // Wait for the STATE_OFF broadcast (updates isBluetoothEnabled = false)
-                // before turning it back on, so the radio is genuinely off mid-cycle.
-                val offDeadline = System.currentTimeMillis() + 5_000L
-                while (isBluetoothEnabled && System.currentTimeMillis() < offDeadline) {
-                    delay(200L)
-                }
-                delay(1000L)
-                @Suppress("DEPRECATION")
-                val onOk = adapter.enable()
-                Log.d("BluetoothCycle", "adapter.enable() → $onOk")
-                // Wait for STATE_ON so callers that join() this job know the radio
-                // is actually back up, not just that enable() was queued.
-                val onDeadline = System.currentTimeMillis() + 8_000L
-                while (!isBluetoothEnabled && System.currentTimeMillis() < onDeadline) {
-                    delay(200L)
-                }
-                Log.d("BluetoothCycle", "Cycle complete — adapter ON: $isBluetoothEnabled")
-            } catch (e: SecurityException) {
-                Log.e("BluetoothCycle", "SecurityException toggling bluetooth: ${e.message}")
-            } catch (e: Exception) {
-                Log.e("BluetoothCycle", "Error toggling bluetooth: ${e.message}")
+            setBluetoothEnabledHeadless(false)
+            // Wait for the STATE_OFF broadcast (updates isBluetoothEnabled = false)
+            // before turning it back on, so the radio is genuinely off mid-cycle.
+            val offDeadline = System.currentTimeMillis() + 5_000L
+            while (isBluetoothEnabled && System.currentTimeMillis() < offDeadline) {
+                delay(200L)
             }
+            delay(1000L)
+            setBluetoothEnabledHeadless(true)
+            // Wait for STATE_ON so callers that join() this job know the radio
+            // is actually back up, not just that enable() was queued.
+            val onDeadline = System.currentTimeMillis() + 8_000L
+            while (!isBluetoothEnabled && System.currentTimeMillis() < onDeadline) {
+                delay(200L)
+            }
+            Log.d("BluetoothCycle", "Cycle complete — adapter ON: $isBluetoothEnabled")
         }
     }
 
@@ -1279,6 +1347,7 @@ class MainActivity : FragmentActivity() {
         bluetoothCycleJob?.cancel()
         savedNetworkFallbackJob?.cancel()
         cardReaderPageTimeoutJob?.cancel()
+        bluetoothWatchdogJob?.cancel()
         if (::updateManager.isInitialized) updateManager.dispose()
     }
 
@@ -1731,10 +1800,10 @@ fun AppUI(
                     onShowSetupStatus(false)
                     onReconnectWifi()
                 },
-                onEnableBluetooth = {
-                    onShowSetupStatus(false)
-                    onEnableBluetooth()
-                },
+                // Both toggles now flip the radio in place on a device-owner
+                // install, so the operator stays on the checklist and watches
+                // the row update instead of being bounced out of it.
+                onEnableBluetooth = onEnableBluetooth,
                 onDisableBluetooth = onDisableBluetooth
             )
             else -> SettingsScreen(
