@@ -114,4 +114,31 @@ class SettingsExportFileTest {
     fun emptyString_returnsMalformed() {
         assertEquals(ImportResult.Malformed, SettingsExportFile.parse("", null))
     }
+
+    // ── Fix verification tests ───────────────────────────────────────────────
+
+    @Test
+    fun malformedEnvelope_missingRequiredField_returnsMalformed() {
+        val malformed = """
+            {"settings":{"kioskName":"Test","currency":"GBP","language":"en"},
+             "secrets":{"v":1,"kdf":"pbkdf2-sha256","iterations":1000}}
+        """.trimIndent()
+        assertEquals(ImportResult.Malformed, SettingsExportFile.parse(malformed, "anypassword"))
+    }
+
+    @Test
+    fun decryptedPayloadWithNonStringValues_returnsMalformed() {
+        val secrets = mapOf("string_key" to "string_value")
+        val envelope = SecretsCrypto.encrypt("""{"nested":{"inner":1}}""", "pw", fast)
+        val json = """{"settings":{"kioskName":"Test","currency":"GBP","language":"en"},"secrets":${com.google.gson.Gson().toJson(envelope)}}"""
+        assertEquals(ImportResult.Malformed, SettingsExportFile.parse(json, "pw"))
+    }
+
+    @Test
+    fun buildWithNullPassword_producesNoSecretsBlock() {
+        val json = SettingsExportFile.build(settings, mapOf("k" to "v"), password = null)
+        assertFalse(json.contains("secrets"))
+        val result = success(SettingsExportFile.parse(json, password = null))
+        assertTrue(result.secrets.isEmpty())
+    }
 }

@@ -3,6 +3,7 @@ package com.sadaqah.kiosk.settingsio
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.google.gson.JsonPrimitive
 import com.sadaqah.kiosk.model.Settings
 
 sealed class ImportResult {
@@ -26,6 +27,10 @@ object SettingsExportFile {
 
     private val gson = Gson()
 
+    /**
+     * Builds an export JSON with settings and optionally encrypted secrets.
+     * Secrets are omitted entirely when no password is supplied, preventing plaintext leakage.
+     */
     fun build(
         settings: Settings,
         secrets: Map<String, String>,
@@ -60,12 +65,29 @@ object SettingsExportFile {
             return ImportResult.Malformed
         } ?: return ImportResult.Malformed
 
+        // Validate envelope before attempting decryption to distinguish malformed from wrong password.
+        @Suppress("SENSELESS_COMPARISON")
+        if (envelope.kdf == null || envelope.salt == null || envelope.iv == null || envelope.ciphertext == null ||
+            envelope.kdf.isBlank() || envelope.salt.isBlank() ||
+            envelope.iv.isBlank() || envelope.ciphertext.isBlank() ||
+            envelope.v == 0 || envelope.iterations == 0) {
+            return ImportResult.Malformed
+        }
+
         val plaintext = SecretsCrypto.decrypt(envelope, password) ?: return ImportResult.WrongPassword
-        val secrets = try {
-            @Suppress("UNCHECKED_CAST")
-            gson.fromJson(plaintext, Map::class.java) as Map<String, String>
+        val secretsObject = try {
+            JsonParser.parseString(plaintext) as? JsonObject
         } catch (e: Exception) {
             return ImportResult.Malformed
+        } ?: return ImportResult.Malformed
+
+        // Verify all values are strings before returning Success.
+        val secrets = mutableMapOf<String, String>()
+        for ((key, value) in secretsObject.entrySet()) {
+            if (!value.isJsonPrimitive || !value.asJsonPrimitive.isString) {
+                return ImportResult.Malformed
+            }
+            secrets[key] = value.asString
         }
         return ImportResult.Success(settings, secrets)
     }
