@@ -141,4 +141,44 @@ class SettingsExportFileTest {
         val result = success(SettingsExportFile.parse(json, password = null))
         assertTrue(result.secrets.isEmpty())
     }
+
+    // ── Review fix-wave tests ────────────────────────────────────────────────
+
+    private fun jsonWithMutatedEnvelope(mutate: (com.google.gson.JsonObject) -> Unit): String {
+        val envelope = SecretsCrypto.encrypt("""{"k":"v"}""", "pw", fast)
+        val envelopeJson = com.google.gson.Gson().toJsonTree(envelope).asJsonObject
+        mutate(envelopeJson)
+        return """{"settings":{"kioskName":"Test","currency":"GBP","language":"en"},"secrets":$envelopeJson}"""
+    }
+
+    @Test
+    fun envelopeWithUnsupportedVersion_returnsMalformedNotWrongPassword() {
+        val json = jsonWithMutatedEnvelope { it.addProperty("v", 99) }
+        assertEquals(ImportResult.Malformed, SettingsExportFile.parse(json, "pw"))
+    }
+
+    @Test
+    fun envelopeWithUnrecognisedKdf_returnsMalformedNotWrongPassword() {
+        val json = jsonWithMutatedEnvelope { it.addProperty("kdf", "MD5") }
+        assertEquals(ImportResult.Malformed, SettingsExportFile.parse(json, "pw"))
+    }
+
+    /** Must be rejected by envelope validation, before any key derivation is attempted. */
+    @Test
+    fun envelopeWithIterationsAboveCap_returnsMalformedWithoutDerivingKey() {
+        val json = jsonWithMutatedEnvelope { it.addProperty("iterations", 2_000_001) }
+        assertEquals(ImportResult.Malformed, SettingsExportFile.parse(json, "pw"))
+    }
+
+    @Test
+    fun envelopeWithNegativeIterations_returnsMalformed() {
+        val json = jsonWithMutatedEnvelope { it.addProperty("iterations", -5) }
+        assertEquals(ImportResult.Malformed, SettingsExportFile.parse(json, "pw"))
+    }
+
+    @Test
+    fun secretsPresentButNotJsonObject_returnsMalformedNotSuccess() {
+        val json = """{"settings":{"kioskName":"Test","currency":"GBP","language":"en"},"secrets":"corrupted"}"""
+        assertEquals(ImportResult.Malformed, SettingsExportFile.parse(json, null))
+    }
 }
