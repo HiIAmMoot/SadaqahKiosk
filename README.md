@@ -30,7 +30,7 @@ An open-source Android donation kiosk app powered by the [SumUp](https://sumup.c
 - **Logo upload**: display your organisation's logo on the donation screen
 - **Islamic thank-you screen**: toggle between an Arabic blessing (بارك الله فيكم) and a localised "thank you"
 - **Biometric / PIN gate** on the settings screen
-- **Export / import settings** as JSON (including affiliate key, with permission)
+- **Export / import settings** as JSON — configuration in the clear, secrets encrypted under a password you set at export time
 - **Offline awareness**: warns when internet is unavailable; auto-dismisses SumUp login screen on disconnect and auto-reinitialises after prolonged outage
 - **Auto-recovery**: automatic app restart on repeated card reader or reinit failures, with cooldown and max-restart guard to prevent loops
 - **Auto-update**: device polls a GitHub releases feed, silently installs updates during nightly maintenance, and rolls back via a 60-second watchdog if the new build crashes on startup. Requires device-owner provisioning. See [Auto-Update](#auto-update) below.
@@ -146,8 +146,33 @@ adb shell dpm remove-active-admin com.sadaqah.kiosk/.KioskDeviceAdminReceiver
 | Background / Pattern / Button / Text colors | Full RGBA color picker with history and suggested colors     |
 | Connect Card Reader                         | Pairs the SumUp reader (must be logged in first)             |
 | Islamic Blessing when donating              | Toggle between Arabic بارك الله فيكم and localised "thank you" |
-| Export / Import Settings                    | Back up or copy settings between devices as JSON             |
+| Export / Import Settings                    | Back up or copy settings between devices as JSON. Secrets are encrypted under a password you choose at export time |
 | Reset App                                   | Clears all stored data and restarts (double-tap to confirm)  |
+
+### Export format
+
+An exported file keeps configuration in plaintext so it can be inspected and
+diffed, and puts secrets — currently the SumUp affiliate key — into a single
+encrypted block:
+
+```json
+{
+  "settings": { "kioskName": "...", "currency": "EUR" },
+  "secrets": { "v": 1, "kdf": "PBKDF2WithHmacSHA256", "iterations": 600000,
+               "salt": "...", "iv": "...", "ciphertext": "..." }
+}
+```
+
+Encryption is AES-256-GCM with a key derived by PBKDF2-HMAC-SHA256. Deriving the
+key takes a few seconds on kiosk hardware — that is intentional, and it is why
+the dialog shows a progress indicator.
+
+**The password cannot be recovered.** If it is lost, the settings in the file are
+still importable via **Import settings only**, but the secrets are gone and the
+affiliate key must be re-entered by hand.
+
+Exports created by version 1.3.5 and earlier stored the affiliate key in
+plaintext. Those files still import, with no password.
 
 ---
 
