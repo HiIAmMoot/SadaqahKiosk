@@ -43,6 +43,8 @@ import com.google.gson.Gson
 import com.sadaqah.kiosk.donations.DonationHistory
 import com.sadaqah.kiosk.recovery.*
 import com.sadaqah.kiosk.screens.*
+import com.sadaqah.kiosk.settingsio.ImportResult
+import com.sadaqah.kiosk.settingsio.SettingsExportFile
 import com.sadaqah.kiosk.update.ReleaseInfo
 import com.sadaqah.kiosk.update.SemVer
 import com.sadaqah.kiosk.update.UpdateManager
@@ -388,8 +390,9 @@ class MainActivity : FragmentActivity() {
                     onOfflineSettingsClick = ::onOfflineSettingsClick,
                     isScreensaverActive = isScreensaverActive,
                     onResetScreensaver = ::resetScreensaver,
-                    onExportSettings = ::exportSettings,
-                    onImportSettings = ::importSettings,
+                    onExportSettings = { include, password -> exportSettings(include, password) },
+                    onImportSettings = { json, password -> importSettings(json, password) },
+                    onImportSettingsOnly = { json -> importSettingsOnly(json) },
                     isNetworkAvailable = isNetworkAvailable,
                     isPinned = isPinned,
                     isBluetoothEnabled = isBluetoothEnabled,
@@ -1391,42 +1394,47 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    fun exportSettings(includeAffiliateKey: Boolean): String {
-        val exportData = if (includeAffiliateKey) {
-            mapOf(
-                "settings" to settings,
-                "affiliateKey" to affiliateKey
-            )
+    /**
+     * Serialises settings, encrypting secrets under [password] when
+     * [includeSecrets] is set. Runs key derivation, so call it off the UI thread.
+     */
+    fun exportSettings(includeSecrets: Boolean, password: String): String {
+        val secrets = if (includeSecrets && affiliateKey.isNotBlank()) {
+            mapOf(SettingsExportFile.KEY_AFFILIATE to affiliateKey)
         } else {
-            mapOf(
-                "settings" to settings
-            )
+            emptyMap()
         }
-        return Gson().toJson(exportData)
+        return SettingsExportFile.build(settings, secrets, password.ifBlank { null })
     }
 
-    fun importSettings(jsonString: String): Boolean {
-        return try {
-            val importData = Gson().fromJson(jsonString, Map::class.java)
+    /**
+     * Applies an exported file. Nothing is written until the whole file has been
+     * parsed and decrypted, so a wrong password leaves the device untouched.
+     * Runs key derivation, so call it off the UI thread.
+     */
+    fun importSettings(jsonString: String, password: String?): ImportResult {
+        val result = SettingsExportFile.parse(jsonString, password)
+        if (result !is ImportResult.Success) return result
 
-            val settingsJson = Gson().toJson(importData["settings"])
-            val importedSettings = Gson().fromJson(settingsJson, Settings::class.java)
-            settings = importedSettings.copy(logoUri = null)
-            saveSettings(settings)
+        settings = result.settings.copy(logoUri = null)
+        saveSettings(settings)
+        TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
 
-            TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
-
-            val importedKey = importData["affiliateKey"] as? String
-            if (!importedKey.isNullOrBlank()) {
-                affiliateKey = importedKey
-                prefs.edit() { putString("affiliate_key", affiliateKey) }
-            }
-
-            true
-        } catch (e: Exception) {
-            Log.e("SettingsImport", "Error importing settings: ${e.message}")
-            false
+        result.secrets[SettingsExportFile.KEY_AFFILIATE]?.takeIf { it.isNotBlank() }?.let { key ->
+            affiliateKey = key
+            prefs.edit { putString("affiliate_key", key) }
         }
+        return result
+    }
+
+    /** Applies configuration from an export while leaving its encrypted secrets behind. */
+    fun importSettingsOnly(jsonString: String): ImportResult {
+        val result = SettingsExportFile.parseSettingsOnly(jsonString)
+        if (result !is ImportResult.Success) return result
+        settings = result.settings.copy(logoUri = null)
+        saveSettings(settings)
+        TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
+        return result
     }
 
     fun authenticateWithBiometrics(context: Context, onSuccess: () -> Unit, onError: (String) -> Unit) {
@@ -1702,8 +1710,9 @@ fun AppUI(
     onOfflineSettingsClick: () -> Unit,
     isScreensaverActive: Boolean,
     onResetScreensaver: () -> Unit,
-    onExportSettings: (Boolean) -> String,
-    onImportSettings: (String) -> Boolean,
+    onExportSettings: (Boolean, String) -> String,
+    onImportSettings: (String, String?) -> ImportResult,
+    onImportSettingsOnly: (String) -> ImportResult,
     isNetworkAvailable: Boolean,
     isPinned: Boolean,
     isBluetoothEnabled: Boolean,
@@ -1815,6 +1824,7 @@ fun AppUI(
                 onRefresh = onRefresh,
                 onExportSettings = onExportSettings,
                 onImportSettings = onImportSettings,
+                onImportSettingsOnly = onImportSettingsOnly,
                 connectCardReader = connectCardReader,
                 isLoggedIn = isLoggedIn,
                 isPinned = isPinned,
