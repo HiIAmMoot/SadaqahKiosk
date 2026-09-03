@@ -3,7 +3,6 @@ package com.sadaqah.kiosk.settingsio
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
-import com.google.gson.JsonPrimitive
 import com.sadaqah.kiosk.model.Settings
 
 sealed class ImportResult {
@@ -53,9 +52,15 @@ object SettingsExportFile {
         val settings = readSettings(root) ?: return ImportResult.Malformed
 
         val secretsElement = root.get("secrets")
-        if (secretsElement == null || !secretsElement.isJsonObject) {
+        if (secretsElement == null) {
             // No envelope: either a clean export, or the legacy plaintext shape.
             return ImportResult.Success(settings, legacySecrets(root))
+        }
+        if (!secretsElement.isJsonObject) {
+            // "secrets" present but not an object — the block was corrupted, not absent.
+            // Falling through to the legacy path here would silently report Success
+            // with an empty secrets map.
+            return ImportResult.Malformed
         }
         if (password == null) return ImportResult.PasswordRequired
 
@@ -70,7 +75,14 @@ object SettingsExportFile {
         if (envelope.kdf == null || envelope.salt == null || envelope.iv == null || envelope.ciphertext == null ||
             envelope.kdf.isBlank() || envelope.salt.isBlank() ||
             envelope.iv.isBlank() || envelope.ciphertext.isBlank() ||
-            envelope.v == 0 || envelope.iterations == 0) {
+            envelope.v == 0 || envelope.iterations !in 1..2_000_000) {
+            return ImportResult.Malformed
+        }
+
+        // A version or KDF we don't understand is not the same failure as a bad
+        // password — SecretsCrypto.decrypt would return null for both, which
+        // would tell the operator to retype a password that was never wrong.
+        if (envelope.v != SecretsCrypto.FORMAT_VERSION || envelope.kdf != SecretsCrypto.KDF) {
             return ImportResult.Malformed
         }
 

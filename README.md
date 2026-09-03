@@ -172,7 +172,11 @@ still importable via **Import settings only**, but the secrets are gone and the
 affiliate key must be re-entered by hand.
 
 Exports created by version 1.3.5 and earlier stored the affiliate key in
-plaintext. Those files still import, with no password.
+plaintext. Those files still import, with no password. The reverse is not
+true: a new-format export imported on version 1.3.5 or earlier will apply the
+settings but silently discard the secrets, since those builds don't know to
+look inside the encrypted block — worth keeping in mind during a mixed-version
+fleet rollout.
 
 ---
 

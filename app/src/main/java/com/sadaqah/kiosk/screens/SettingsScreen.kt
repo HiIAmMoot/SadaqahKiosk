@@ -662,15 +662,22 @@ fun SettingsScreen(
             onPasswordChange = { exportPassword = it },
             isBusy = isProcessingSecrets,
             onConfirm = {
+                // Captured before the coroutine starts — a dismiss mid-derivation
+                // must not be able to clear these out from under the running export.
+                val includeKeyAtConfirm = includeAffiliateKey
+                val passwordAtConfirm = exportPassword
                 isProcessingSecrets = true
                 scope.launch {
-                    // Key derivation is deliberately slow — keep it off the UI thread.
-                    val jsonData = withContext(Dispatchers.Default) {
-                        onExportSettings(includeAffiliateKey, exportPassword)
+                    try {
+                        // Key derivation is deliberately slow — keep it off the UI thread.
+                        val jsonData = withContext(Dispatchers.Default) {
+                            onExportSettings(includeKeyAtConfirm, passwordAtConfirm)
+                        }
+                        pendingExportJson = jsonData
+                        exportFileLauncher.launch("kiosk_settings.json")
+                    } finally {
+                        isProcessingSecrets = false
                     }
-                    isProcessingSecrets = false
-                    pendingExportJson = jsonData
-                    exportFileLauncher.launch("kiosk_settings.json")
                 }
             },
             onDismiss = {
@@ -691,23 +698,26 @@ fun SettingsScreen(
             onImport = { jsonInput ->
                 isProcessingSecrets = true
                 scope.launch {
-                    val result = withContext(Dispatchers.Default) {
-                        onImportSettings(jsonInput, importPassword.ifBlank { null })
-                    }
-                    isProcessingSecrets = false
-                    when (result) {
-                        is ImportResult.Success -> {
-                            Toast.makeText(context, strings.settingsImportedSuccessfully, Toast.LENGTH_SHORT).show()
-                            importPassword = ""
-                            onRefresh()
-                            showImportDialog = false
+                    try {
+                        val result = withContext(Dispatchers.Default) {
+                            onImportSettings(jsonInput, importPassword.ifBlank { null })
                         }
-                        ImportResult.PasswordRequired ->
-                            Toast.makeText(context, strings.importPasswordRequired, Toast.LENGTH_LONG).show()
-                        ImportResult.WrongPassword ->
-                            Toast.makeText(context, strings.importWrongPassword, Toast.LENGTH_LONG).show()
-                        ImportResult.Malformed ->
-                            Toast.makeText(context, strings.failedToImportSettings, Toast.LENGTH_LONG).show()
+                        when (result) {
+                            is ImportResult.Success -> {
+                                Toast.makeText(context, strings.settingsImportedSuccessfully, Toast.LENGTH_SHORT).show()
+                                importPassword = ""
+                                onRefresh()
+                                showImportDialog = false
+                            }
+                            ImportResult.PasswordRequired ->
+                                Toast.makeText(context, strings.importPasswordRequired, Toast.LENGTH_LONG).show()
+                            ImportResult.WrongPassword ->
+                                Toast.makeText(context, strings.importWrongPassword, Toast.LENGTH_LONG).show()
+                            ImportResult.Malformed ->
+                                Toast.makeText(context, strings.failedToImportSettings, Toast.LENGTH_LONG).show()
+                        }
+                    } finally {
+                        isProcessingSecrets = false
                     }
                 }
             },
@@ -892,7 +902,7 @@ fun ExportDialog(
     onDismiss: () -> Unit
 ) {
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isBusy) onDismiss() },
         containerColor = Color(settings.backgroundColor),
         title = {
             Text(
@@ -949,7 +959,11 @@ fun ExportDialog(
                 ),
                 border = BorderStroke(responsiveDp(2.dp), Color(settings.buttonBorderColor))
             ) {
-                Text(strings.export, color = Color(settings.buttonBorderColor))
+                if (isBusy) {
+                    Text(strings.importing, color = Color(settings.buttonBorderColor))
+                } else {
+                    Text(strings.export, color = Color(settings.buttonBorderColor))
+                }
             }
         },
         dismissButton = {
@@ -1034,7 +1048,7 @@ fun ImportDialog(
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isBusy) onDismiss() },
         containerColor = Color(settings.backgroundColor),
         title = {
             Text(
