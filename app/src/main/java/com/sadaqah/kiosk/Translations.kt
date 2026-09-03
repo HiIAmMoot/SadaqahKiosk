@@ -123,6 +123,7 @@ interface Strings {
     val exportPassword: String
     val exportPasswordHint: String
     val importPassword: String
+    val importPasswordRequired: String
     val importWrongPassword: String
     val importSettingsOnly: String
     val importTitle: String
@@ -355,6 +356,7 @@ object DutchStrings : Strings {
     override val exportPassword = "Wachtwoord"
     override val exportPasswordHint = "Nodig om dit bestand te importeren. Kan niet worden hersteld."
     override val importPassword = "Importwachtwoord"
+    override val importPasswordRequired = "Dit bestand is beveiligd met een wachtwoord. Voer het wachtwoord in om te importeren."
     override val importWrongPassword = "Onjuist wachtwoord"
     override val importSettingsOnly = "Alleen instellingen importeren"
     override val importTitle = "Instellingen Importeren"
@@ -577,6 +579,7 @@ object EnglishStrings : Strings {
     override val exportPassword = "Password"
     override val exportPasswordHint = "Needed to import this file. It cannot be recovered if lost."
     override val importPassword = "Import password"
+    override val importPasswordRequired = "This file is password protected. Enter its password to import."
     override val importWrongPassword = "Wrong password"
     override val importSettingsOnly = "Import settings only"
     override val importTitle = "Import Settings"
@@ -715,6 +718,7 @@ object GermanStrings : Strings {
     override val exportPassword = "Passwort"
     override val exportPasswordHint = "Zum Importieren dieser Datei erforderlich. Kann nicht wiederhergestellt werden."
     override val importPassword = "Import-Passwort"
+    override val importPasswordRequired = "Diese Datei ist passwortgeschützt. Geben Sie das Passwort ein, um zu importieren."
     override val importWrongPassword = "Falsches Passwort"
     override val importSettingsOnly = "Nur Einstellungen importieren"
     override val importTitle = "Einstellungen Importieren"
@@ -937,6 +941,7 @@ object FrenchStrings : Strings {
     override val exportPassword = "Mot de passe"
     override val exportPasswordHint = "Requis pour importer ce fichier. Irrécupérable en cas de perte."
     override val importPassword = "Mot de passe d'importation"
+    override val importPasswordRequired = "Ce fichier est protégé par un mot de passe. Saisissez-le pour importer."
     override val importWrongPassword = "Mot de passe incorrect"
     override val importSettingsOnly = "Importer uniquement les paramètres"
     override val importTitle = "Importer Paramètres"
@@ -1159,6 +1164,7 @@ object SpanishStrings : Strings {
     override val exportPassword = "Contraseña"
     override val exportPasswordHint = "Necesaria para importar este archivo. No se puede recuperar."
     override val importPassword = "Contraseña de importación"
+    override val importPasswordRequired = "Este archivo está protegido con contraseña. Introdúzcala para importar."
     override val importWrongPassword = "Contraseña incorrecta"
     override val importSettingsOnly = "Importar solo ajustes"
     override val importTitle = "Importar Configuración"
@@ -1381,6 +1387,7 @@ object ItalianStrings : Strings {
     override val exportPassword = "Password"
     override val exportPasswordHint = "Necessaria per importare questo file. Non è recuperabile."
     override val importPassword = "Password di importazione"
+    override val importPasswordRequired = "Questo file è protetto da password. Inseriscila per importare."
     override val importWrongPassword = "Password errata"
     override val importSettingsOnly = "Importa solo impostazioni"
     override val importTitle = "Importa Impostazioni"
@@ -1603,6 +1610,7 @@ object TurkishStrings : Strings {
     override val exportPassword = "Parola"
     override val exportPasswordHint = "Bu dosyayı içe aktarmak için gerekli. Kaybedilirse kurtarılamaz."
     override val importPassword = "İçe aktarma parolası"
+    override val importPasswordRequired = "Bu dosya parola korumalı. İçe aktarmak için parolayı girin."
     override val importWrongPassword = "Yanlış parola"
     override val importSettingsOnly = "Yalnızca ayarları içe aktar"
     override val importTitle = "Ayarları İçe Aktar"
@@ -1825,6 +1833,7 @@ object ArabicStrings : Strings {
     override val exportPassword = "كلمة المرور"
     override val exportPasswordHint = "مطلوبة لاستيراد هذا الملف. لا يمكن استعادتها عند فقدانها."
     override val importPassword = "كلمة مرور الاستيراد"
+    override val importPasswordRequired = "هذا الملف محمي بكلمة مرور. أدخل كلمة المرور للاستيراد."
     override val importWrongPassword = "كلمة المرور غير صحيحة"
     override val importSettingsOnly = "استيراد الإعدادات فقط"
     override val importTitle = "استيراد الإعدادات"

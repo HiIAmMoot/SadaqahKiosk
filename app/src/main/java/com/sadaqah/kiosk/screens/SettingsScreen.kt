@@ -133,6 +133,7 @@ fun SettingsScreen(
                 pendingExportJson = null
                 showExportDialog = false
                 includeAffiliateKey = false
+                exportPassword = ""
             } catch (e: Exception) {
                 Toast.makeText(
                     context,
@@ -702,7 +703,7 @@ fun SettingsScreen(
                             showImportDialog = false
                         }
                         ImportResult.PasswordRequired ->
-                            Toast.makeText(context, strings.importPassword, Toast.LENGTH_LONG).show()
+                            Toast.makeText(context, strings.importPasswordRequired, Toast.LENGTH_LONG).show()
                         ImportResult.WrongPassword ->
                             Toast.makeText(context, strings.importWrongPassword, Toast.LENGTH_LONG).show()
                         ImportResult.Malformed ->
