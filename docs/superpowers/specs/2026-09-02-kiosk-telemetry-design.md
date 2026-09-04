@@ -1,8 +1,16 @@
 # Kiosk Telemetry — Design
 
 **Date:** 2026-09-02
+**Revised:** 2026-09-04
 **Target release:** `1.3.6-preview`
 **Status:** Approved for planning
+
+**Revision 2026-09-04** — reconciled with the kiosk code format and the customer
+terms. Identity changed from a device-minted `kiosk_id` to `code` + `install_id`;
+`kiosk_name` removed; `consent_events` became `telemetry_activations` and the
+blocking consent gate became a disclosure at configuration; the schema is now
+published as a reference others copy; privacy wording corrected from *anonymous* to
+*identified*.
 
 ---
 
@@ -32,23 +40,56 @@ Two kinds of data are collected:
 
 ## Ownership and privacy posture
 
-The database is the **vendor's** — one Supabase project across all customers, used
-for support, monitoring and revenue evidence.
+The default database is the **vendor's** — one Supabase project across all
+customers, used for support, monitoring and revenue evidence. It is not the only
+possible destination: the app is AGPL and must run pointed at anyone's Supabase,
+so what follows describes the vendor deployment while the software stays
+destination-agnostic.
 
-This means the vendor holds each customer's donation revenue data. That is not
-donor PII and carries a light GDPR burden, but it *is* commercially sensitive to
-the customer. The design treats that as a disclosure problem, not an encryption
-problem:
+The vendor deployment holds each customer's donation revenue data. That is not
+donor PII, and the customer is a legal person rather than a data subject, so the
+GDPR burden is light — but it *is* commercially sensitive to the customer. The
+design treats that as a disclosure problem, not an encryption problem:
 
 - The feature is visible and switchable in the kiosk's own settings.
-- First use requires explicit agreement to a privacy policy and terms, recorded
-  locally and server-side.
+- Configuring a destination surfaces a **disclosure** of what will be sent and
+  where, recorded as an activation.
 - The README documents exactly which fields are transmitted.
 
-An operator can revoke consent or change the credentials at any time. This is not
-a weakness to design around — the credentials live on the operator's device, so
-that control exists whether or not the UI admits it. Surfacing it costs nothing
-and is the only defensible posture for an AGPL project.
+### The data is identified, not anonymous
+
+Every event carries the kiosk code, which names the organisation, its city and its
+province in plaintext. Any wording calling this anonymous is false, and the app is
+open source, so a customer can read the claim and check it. The spec, the README
+and the disclosure screen all say **identified**.
+
+A deployment configured without a kiosk code is genuinely pseudonymous — only
+`install_id` identifies it. The wording has to cover both cases honestly rather
+than describing only the vendor's.
+
+### Disclosure, not consent
+
+An earlier revision gated first use behind agreement to a privacy policy and
+terms. That was wrong on three counts and has been removed:
+
+1. **Consent is not the legal basis.** The processing rests on contract
+   performance and legitimate interest. Presenting it as consent implies a right
+   of withdrawal that does not exist.
+2. **Vendor provisioning would forge the record.** Most kiosks are configured by
+   the vendor before delivery, so the person tapping *I agree* would be the vendor,
+   on hardware the customer has not seen — producing a row asserting an agreement
+   that never happened. Worse than no row.
+3. **It is meaningless for a fork.** A third-party operator is their own
+   controller; asking them to accept the vendor's privacy policy governs nothing.
+
+What replaces it is a disclosure shown when an operator configures a destination.
+Nothing is gated — supplying an endpoint and credentials *is* the decision, and
+the app transmitting nothing without them is the property doing the protective
+work. An operator can change or clear the credentials at any time; that control
+exists whether or not the UI admits it, since the credentials live on their device.
+
+Deactivation is deliberately not recorded. Clearing the endpoint removes the
+transport that would carry the notice, and it would not change the support answer.
 
 ---
 
@@ -149,17 +190,57 @@ characters. This rule gets a dedicated unit test.
 
 Three Supabase tables. All timestamps UTC. All inserts idempotent.
 
+This schema is **published in the app README as a reference** a self-hoster can
+paste into their own project. The vendor backend implements it and adds what only
+it needs — `kiosks`, `kiosk_codes`, `organisations`, and a server-side
+`received_at` — on top of this shared base.
+
+### How a kiosk identifies itself
+
+Two fields, doing different jobs:
+
+- **`code`** — the human-readable identifier printed on the kiosk's panel, e.g.
+  `nl-gld-arnhem-nour_al_houda-01`. Set at provisioning, survives a tablet swap,
+  and is what an operator can read out during a support call. **Optional**: a fork
+  with no code scheme leaves it empty, so the reference schema must not mark it
+  `not null`.
+- **`install_id`** — a random UUID minted on the device at first run. Changes on a
+  factory reset or hardware replacement.
+
+Together they say something neither says alone: *same code, new `install_id`* means
+that unit was re-provisioned or its tablet was replaced.
+
+An earlier revision had a single device-minted `kiosk_id` as identity. That was
+wrong — a factory reset silently produced a new one and the fleet lost continuity
+with no signal. Backend-minted UUIDs are equally unusable, since the app never sees
+one. The app sends the code; the backend resolves it.
+
+`kiosk_name` was removed. It duplicated what the code already carries, was free
+text an operator could change at any time, and put customer-identifying data in
+tables that do not need it.
+
 ### `donation_events`
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | Generated **client-side** for idempotency |
-| `kiosk_id` | uuid | Stable per install, random at first run |
-| `kiosk_name` | text | Operator-set name; identifies the customer |
+| `code` | text | As printed on the panel at the time; may be empty |
+| `install_id` | uuid | Device-minted; changes on reset or tablet swap |
 | `amount_cents` | integer | Never a float |
 | `currency` | text | `EUR` / `USD` / `GBP` |
-| `occurred_at` | timestamptz | |
+| `occurred_at` | timestamptz | Device clock — see below |
 | `app_version` | text | |
+
+The event records the code **as printed at the time**, not the kiosk's current
+code. After a transfer and reissue, historical donations stay attributed to the
+organisation that actually received them, with nobody reasoning about effective
+dates. The consequence is that any query must join through the alias table
+(`kiosk_codes`) rather than `kiosks.code`, or every donation taken before a
+reissue silently disappears from the total.
+
+`occurred_at` is the device clock, and a kiosk offline for days with a drifted RTC
+will report confidently wrong times. The vendor backend adds
+`received_at timestamptz default now()` so skew is detectable.
 
 No SumUp transaction code, no card data, no donor attributes. If reconciliation
 against SumUp is wanted later, adding `tx_code` is a deliberate future decision,
@@ -170,17 +251,29 @@ not an oversight.
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | Client-side |
-| `kiosk_id` | uuid | |
-| `kiosk_name` | text | |
+| `code` | text | May be empty |
+| `install_id` | uuid | |
 | `app_version` | text | |
 | `occurred_at` | timestamptz | |
 | `severity` | text | `info` / `warn` / `error` |
-| `kind` | text | Closed set, below |
+| `kind` | text | Plain text — see below |
 | `detail` | jsonb | Structured per kind; nullable |
 | `stack_trace` | text | Crashes only, truncated to 8 KB |
 
 `jsonb` rather than text so each kind carries its own shape without a column per
 variant.
+
+**`kind` and `severity` must be plain text — never an enum or a `CHECK`.** The
+list below is the current contents of a text column, not a closed set the database
+enforces, and it will grow. A constraint here is a permanent-rejection trap: the
+day the app ships a twelfth kind, every event from an updated kiosk is refused, the
+outbox retries forever, and the 5,000-event cap starts dropping real donations to
+make room.
+
+That generalises to a rule for every table the app writes: **no constraint may
+reject a well-formed row.** No foreign key on `code`, no regex `CHECK` on the event
+tables. A code mistyped at provisioning should land as one inspectable bad row, not
+silently block that kiosk forever. Validate on reconcile, never at insert.
 
 **Kinds:**
 
@@ -198,20 +291,28 @@ variant.
 | `update_install_failed` | error | `PackageInstaller` returned failure |
 | `update_rollback` | error | Watchdog restored the backup APK |
 
-### `consent_events`
+### `telemetry_activations`
 
 | Column | Type | Notes |
 |---|---|---|
 | `id` | uuid PK | |
-| `kiosk_id` | uuid | |
-| `kiosk_name` | text | |
-| `agreed_at` | timestamptz | |
-| `privacy_policy_url` | text | The URL as shown when agreed |
+| `code` | text | May be empty |
+| `install_id` | uuid | |
+| `activated_at` | timestamptz | |
+| `privacy_policy_url` | text | As shown at activation |
 | `terms_url` | text | |
 | `app_version` | text | |
 
-Consent is recorded server-side so agreement survives a device wipe or
-re-provisioning.
+A record that reporting was switched on — **not** a consent record. No version of
+the terms is stored: disclosure describes what the software does *now*, so there is
+no moment to preserve, and a link always resolves to the current text.
+
+Expect **more than one row per kiosk**. A re-provisioned unit gets a new
+`install_id` and activates again, which is correct and useful; nothing may assume
+uniqueness on `code`.
+
+There is no deactivation counterpart. Clearing the endpoint removes the transport
+that would carry the notice, and its absence does not change the support answer.
 
 ### Idempotency
 
@@ -305,13 +406,27 @@ without a device.
 | Field | Default | Notes |
 |---|---|---|
 | `analyticsEnabled` | `false` | Master switch |
-| `analyticsConsentAgreedAtMs` | `0L` | 0 = not yet agreed |
+| `analyticsActivatedAtMs` | `0L` | 0 = disclosure not yet shown |
 | `analyticsPrivacyPolicyUrl` | `""` | |
 | `analyticsTermsUrl` | `""` | |
-| `kioskId` | `""` | Random UUID minted on first run |
+| `kioskCode` | `""` | Optional; printed panel code |
+| `installId` | `""` | Random UUID minted on first run |
 
-`kioskId` is a random UUID, never a hardware identifier — `ANDROID_ID` and friends
-carry restrictions and privacy baggage for no benefit here.
+`installId` is a random UUID, never a hardware identifier — `ANDROID_ID` and
+friends carry restrictions and privacy baggage for no benefit here.
+
+`kioskCode` is **optional and its validation is advisory**. A fork has no
+kiosk-code scheme and never will, so requiring one would mean the app only runs for
+this vendor. The regex is a convention this vendor follows, not a property of the
+software: warn at provisioning on a non-conforming value, then accept it. With no
+code configured, `installId` alone identifies the device — which is all a
+single-site operator needs.
+
+The regex lives as a constant in the app with a comment naming the site repository
+as the convention's source, since the two cannot import from each other.
+
+`analyticsActivatedAtMs` exists only so the disclosure is not re-shown on every
+visit to the Analytics screen. It is not proof of anything.
 
 Credentials are **not** in `Settings`; they live in `TelemetryCredentials` so they
 are never written to the settings JSON except through the deliberate export path,
@@ -327,22 +442,41 @@ Reached from `SettingsScreen`, a sibling of Donation History behind the same
 biometric gate:
 
 - Master toggle
+- Kiosk code (optional, advisory validation)
 - Supabase URL, anon key (masked)
-- Test connection
+- Test connection — see below
 - Status: queued events, last successful upload, last error
 - Privacy policy URL, terms URL
-- Consent state, with revoke (revoking disables telemetry)
+- Activation state, and a control to clear the credentials
 
-### `ConsentScreen`
+**Test connection and activation are the same action**, and must not be built
+twice. Entering a destination writes a `telemetry_activations` row, which flushes
+immediately; a successful insert is the confirmation shown to the operator. That
+gives activation a second job as a configuration smoke test — a mistyped endpoint
+is caught at the bench rather than three weeks later when someone notices a kiosk
+that never reported.
 
-Blocking, shown after the first successful login when analytics is **enabled and
-configured** and consent has not been recorded. It summarises exactly what is
-collected and links to both policies.
+### `DisclosureScreen`
+
+**Not blocking, and not a consent gate.** Shown when an operator configures a
+destination, because supplying an endpoint and credentials is already the decision.
+It states:
+
+- What is sent: donation amount, time and kiosk code; diagnostics; app version.
+- What is never sent: donor names, card data, SumUp transaction identifiers.
+- Where it goes — the endpoint just entered, shown back to them.
+- That it can be turned off by clearing the endpoint.
+- A link to the privacy statement, as the policy applicable when the destination is
+  the vendor's, not as something the operator is agreeing to.
+
+The copy must be true in a fork as well as a vendor deployment, which rules out
+naming Sadaqah Kiosk as the recipient.
 
 Under lock-task mode a browser cannot be launched, so each URL renders as **text
-plus a QR code** for the operator's phone. Accepting writes
-`analyticsConsentAgreedAtMs` and enqueues a `consent_events` row. Declining leaves
-telemetry off until someone re-enables it in settings.
+plus a QR code** for the operator's phone. This constraint came from the consent
+screen and survives intact.
+
+Showing it writes `analyticsActivatedAtMs` so it is not repeated on every visit.
 
 ---
 
@@ -374,10 +508,14 @@ the feature is trusted.
 
 - README privacy section **rewritten, not softened**: the shipped app has no
   endpoint and transmits nothing by default; the optional feature, the exact
-  fields, and the consent requirement are documented plainly.
+  fields, and the fact that the data is **identified rather than anonymous** are
+  documented plainly.
 - Features list gains the optional analytics entry.
-- New Analytics section: setup, the RLS policy operators must apply, and the exact
-  schema.
+- New Analytics section carrying the **reference schema** — the three tables, the
+  diagnostic kinds, the insert-only RLS policy, and the code regex — as something a
+  self-hoster can paste into their own Supabase project. The app repository is the
+  home for this definition, because the app is the artefact people copy; the vendor
+  backend is one implementation of it.
 - Export/import documentation updated: secrets are now password-encrypted, the
   password is unrecoverable if lost, and pre-existing plaintext exports still
   import.
@@ -396,12 +534,15 @@ Each phase leaves the app shippable.
    legacy-import compatibility.
 3. **Instrumentation.** Donation events, diagnostic events, crash handler,
    update outcome reporting.
-4. **Consent gate + translations.** `ConsentScreen` across eight languages.
-   Telemetry stays inert until consent exists.
+4. **Disclosure screen + translations.** `DisclosureScreen` across eight languages.
 5. **Documentation.**
 
 Translations are the quiet cost: two new screens' worth of copy across eight
-languages in `Translations.kt`.
+languages in `Translations.kt`. Removing the consent gate did **not** remove this —
+17.2 of the customer terms makes the disclosure a contractual commitment, so the
+screen and its translations are still built. What disappeared is the blocking gate
+at first login, the re-prompt on material change, the stored terms version and the
+startup comparison.
 
 ## Out of scope
 
