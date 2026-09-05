@@ -66,4 +66,40 @@ class HttpPosterTest {
         assertFalse(serverError.isSuccess)
         assertFalse(serverError.isPermanentRejection)
     }
+
+    /** A stream that hands back one character per call, the way a socket
+     *  delivering a chunked body behaves. A single best-effort read would
+     *  return just the first character. */
+    private class DribblingStream(private val content: String) : java.io.InputStream() {
+        private var index = 0
+        override fun read(): Int =
+            if (index >= content.length) -1 else content[index++].code
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (index >= content.length) return -1
+            b[off] = content[index++].code.toByte()
+            return 1
+        }
+    }
+
+    @Test
+    fun readCappedKeepsReadingUntilTheStreamEnds() {
+        val body = """{"message":"invalid input syntax for type uuid"}"""
+        assertEquals(body, readCapped(DribblingStream(body), 8192))
+    }
+
+    @Test
+    fun readCappedStopsAtTheCap() {
+        val out = readCapped(DribblingStream("x".repeat(500)), 100)!!
+        assertEquals(100, out.length)
+    }
+
+    @Test
+    fun readCappedReturnsNullForNoStream() {
+        assertNull(readCapped(null, 8192))
+    }
+
+    @Test
+    fun readCappedReturnsEmptyForAnEmptyStream() {
+        assertEquals("", readCapped(DribblingStream(""), 8192))
+    }
 }
