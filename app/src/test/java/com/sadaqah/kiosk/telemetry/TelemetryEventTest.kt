@@ -12,6 +12,10 @@ class TelemetryEventTest {
         appVersion = "1.3.6-preview"
     )
 
+    /** Under 32 chars, so TOKEN_SHAPED cannot reach it and only the
+     *  affiliateKey parameter can cause redaction. */
+    private val shortKey = "sup_af_9f3a2b"
+
     private fun parse(json: String) = JsonParser.parseString(json).asJsonObject
 
     // ── Donation ─────────────────────────────────────────────────────────────
@@ -44,6 +48,14 @@ class TelemetryEventTest {
         for (forbidden in listOf("tx_code", "card", "donor", "pan", "name")) {
             assertFalse("payload must not contain $forbidden", p.has(forbidden))
         }
+    }
+
+    @Test
+    fun donation_payloadHasExactlyTheExpectedFields() {
+        val p = parse(TelemetryEvent.Donation(identity, 2500, "EUR", "2026-09-05T10:00:00Z").payloadJson())
+        assertEquals(
+            setOf("id", "code", "install_id", "app_version", "amount_cents", "currency", "occurred_at"),
+            p.keySet())
     }
 
     /** A fork with no kiosk-code scheme is a supported deployment. */
@@ -80,10 +92,25 @@ class TelemetryEventTest {
     }
 
     @Test
-    fun diagnostic_severityComesFromTheKind() {
-        assertEquals(DiagnosticSeverity.ERROR, DiagnosticKind.CRASH.severity)
-        assertEquals(DiagnosticSeverity.WARN, DiagnosticKind.BLUETOOTH_WATCHDOG_FIRED.severity)
-        assertEquals(DiagnosticSeverity.INFO, DiagnosticKind.UPDATE_INSTALLED.severity)
+    fun diagnostic_everyKindHasTheExpectedWireNameAndSeverity() {
+        val expected = mapOf(
+            DiagnosticKind.CRASH to ("crash" to DiagnosticSeverity.ERROR),
+            DiagnosticKind.RESTART_TRIGGERED to ("restart_triggered" to DiagnosticSeverity.ERROR),
+            DiagnosticKind.SUMUP_REINIT_FAILED to ("sumup_reinit_failed" to DiagnosticSeverity.ERROR),
+            DiagnosticKind.CARD_READER_CONNECT_FAILED to ("card_reader_connect_failed" to DiagnosticSeverity.WARN),
+            DiagnosticKind.CARD_READER_PAGE_TIMEOUT to ("card_reader_page_timeout" to DiagnosticSeverity.WARN),
+            DiagnosticKind.CHECKOUT_NO_READER to ("checkout_no_reader" to DiagnosticSeverity.WARN),
+            DiagnosticKind.BLUETOOTH_WATCHDOG_FIRED to ("bluetooth_watchdog_fired" to DiagnosticSeverity.WARN),
+            DiagnosticKind.NETWORK_OUTAGE to ("network_outage" to DiagnosticSeverity.WARN),
+            DiagnosticKind.UPDATE_INSTALLED to ("update_installed" to DiagnosticSeverity.INFO),
+            DiagnosticKind.UPDATE_INSTALL_FAILED to ("update_install_failed" to DiagnosticSeverity.ERROR),
+            DiagnosticKind.UPDATE_ROLLBACK to ("update_rollback" to DiagnosticSeverity.ERROR)
+        )
+        assertEquals(DiagnosticKind.entries.size, expected.size)
+        for ((kind, spec) in expected) {
+            assertEquals(spec.first, kind.wire)
+            assertEquals(spec.second, kind.severity)
+        }
     }
 
     @Test
@@ -127,21 +154,72 @@ class TelemetryEventTest {
 
     @Test
     fun diagnostic_redactsTheAffiliateKeyFromStackTrace() {
-        val key = "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
-        val e = TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
+        val p = parse(TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
             occurredAtIso = "2026-09-05T10:00:00Z",
-            stackTrace = "java.lang.IllegalStateException: key $key rejected",
-            affiliateKey = key)
-        val p = parse(e.payloadJson())
-        assertFalse(p.get("stack_trace").asString.contains(key))
+            stackTrace = "java.lang.IllegalStateException: key $shortKey rejected",
+            affiliateKey = shortKey).payloadJson())
+        assertFalse(p.get("stack_trace").asString.contains(shortKey))
+    }
+
+    /** Proves the test above exercises the parameter rather than the heuristic:
+     *  with no key supplied, a short secret survives. */
+    @Test
+    fun diagnostic_withoutAKeyAShortSecretSurvives() {
+        val p = parse(TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
+            occurredAtIso = "2026-09-05T10:00:00Z",
+            stackTrace = "java.lang.IllegalStateException: key $shortKey rejected",
+            affiliateKey = null).payloadJson())
+        assertTrue(p.get("stack_trace").asString.contains(shortKey))
     }
 
     @Test
     fun diagnostic_truncatesAnOversizedStackTrace() {
-        val e = TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
-            occurredAtIso = "2026-09-05T10:00:00Z", stackTrace = "x".repeat(50_000))
-        val p = parse(e.payloadJson())
-        assertTrue(p.get("stack_trace").asString.length < 50_000)
+        // Filler the token pattern cannot match — `.`, `(`, `:` and whitespace all
+        // break a run — so truncation actually fires instead of scrub eating it.
+        val trace = "\tat com.sadaqah.kiosk.Foo.bar(Foo.kt:1)\n".repeat(500)
+        val p = parse(TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
+            occurredAtIso = "2026-09-05T10:00:00Z", stackTrace = trace).payloadJson())
+        val out = p.get("stack_trace").asString
+        assertTrue(out.endsWith("truncated"))
+        assertTrue(out.toByteArray(Charsets.UTF_8).size <= TelemetryRedactor.MAX_TEXT_BYTES + 32)
+    }
+
+    @Test
+    fun diagnostic_redactsTheAffiliateKeyFromDetail() {
+        val p = parse(TelemetryEvent.Diagnostic(identity, DiagnosticKind.SUMUP_REINIT_FAILED,
+            occurredAtIso = "2026-09-05T10:00:00Z",
+            detailJson = """{"message":"login rejected for $shortKey"}""",
+            affiliateKey = shortKey).payloadJson())
+        assertFalse(p.getAsJsonObject("detail").get("message").asString.contains(shortKey))
+    }
+
+    @Test
+    fun diagnostic_dropsOversizedDetail() {
+        val huge = """{"blob":"${"." .repeat(20_000)}"}"""
+        val p = parse(TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
+            occurredAtIso = "2026-09-05T10:00:00Z", detailJson = huge).payloadJson())
+        assertFalse(p.has("detail"))
+    }
+
+    @Test
+    fun diagnostic_scrubsBeforeTruncatingSoNoKeyStraddlesTheCut() {
+        val filler = "\tat com.sadaqah.kiosk.Foo.bar(Foo.kt:1)\n".repeat(220)
+        val trace = filler.substring(0, TelemetryRedactor.MAX_TEXT_BYTES - 6) + shortKey + filler
+        val p = parse(TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
+            occurredAtIso = "2026-09-05T10:00:00Z",
+            stackTrace = trace, affiliateKey = shortKey).payloadJson())
+        assertFalse(p.get("stack_trace").asString.contains("sup_af"))
+    }
+
+    @Test
+    fun diagnostic_payloadHasExactlyTheExpectedFields() {
+        val p = parse(TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
+            occurredAtIso = "2026-09-05T10:00:00Z",
+            detailJson = """{"a":1}""", stackTrace = "boom").payloadJson())
+        assertEquals(
+            setOf("id", "code", "install_id", "app_version", "occurred_at",
+                  "kind", "severity", "detail", "stack_trace"),
+            p.keySet())
     }
 
     // ── Activation ───────────────────────────────────────────────────────────
@@ -163,6 +241,16 @@ class TelemetryEventTest {
         assertEquals("2026-09-05T10:00:00Z", p.get("activated_at").asString)
         assertFalse("this is an activation record, not a consent record", p.has("agreed_at"))
         assertEquals("https://example.invalid/privacy", p.get("privacy_policy_url").asString)
+    }
+
+    @Test
+    fun activation_payloadHasExactlyTheExpectedFields() {
+        val p = parse(TelemetryEvent.Activation(identity, "2026-09-05T10:00:00Z",
+            "https://example.invalid/privacy", "https://example.invalid/terms").payloadJson())
+        assertEquals(
+            setOf("id", "code", "install_id", "app_version", "activated_at",
+                  "privacy_policy_url", "terms_url"),
+            p.keySet())
     }
 
     // ── Timestamps ───────────────────────────────────────────────────────────
