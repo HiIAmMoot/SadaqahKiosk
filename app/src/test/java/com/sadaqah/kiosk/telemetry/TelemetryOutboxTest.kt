@@ -139,6 +139,7 @@ class TelemetryOutboxTest {
 
     @Test
     fun ageCap_dropsEventsPastTheWindow() {
+        now = 1_600_000_000_000L  // Well above PLAUSIBLE_EPOCH_FLOOR_MS
         val box = outbox(maxAgeMs = 10_000L)
         box.appendDonation("old")
         now += 20_000L
@@ -148,6 +149,7 @@ class TelemetryOutboxTest {
 
     @Test
     fun ageCap_keepsEventsInsideTheWindow() {
+        now = 1_600_000_000_000L  // Well above PLAUSIBLE_EPOCH_FLOOR_MS
         val box = outbox(maxAgeMs = 10_000L)
         box.appendDonation("first")
         now += 5_000L
@@ -165,13 +167,16 @@ class TelemetryOutboxTest {
 
     // ── Corruption tolerance ─────────────────────────────────────────────────
 
+    /** The case that matters is a torn line surviving a crash and then being
+     *  read — so assert with no intervening append to scrub it away first. */
     @Test
-    fun malformedLinesAreSkipped() {
+    fun malformedLinesAreSkippedOnRead() {
         val box = outbox()
         box.appendDonation("good1")
         file.appendText("this is not json\n")
-        box.appendDonation("good2")
-        assertEquals(listOf("good1", "good2"), box.peek().map { it.id })
+
+        assertEquals(listOf("good1"), box.peek().map { it.id })
+        assertEquals(1, box.size())
     }
 
     @Test
@@ -183,10 +188,47 @@ class TelemetryOutboxTest {
     }
 
     @Test
-    fun lineMissingRequiredFieldsIsSkipped() {
+    fun lineMissingRequiredFieldsIsSkippedOnRead() {
         val box = outbox()
+        box.appendDonation("good1")
         file.appendText("""{"id":"x"}""" + "\n")
-        box.appendDonation("e1")
-        assertEquals(listOf("e1"), box.peek().map { it.id })
+
+        assertEquals(listOf("good1"), box.peek().map { it.id })
+        assertEquals(1, box.size())
+    }
+
+    /** And the next append must not be derailed by the bad line already on disk. */
+    @Test
+    fun appendSucceedsWithAMalformedLineAlreadyPresent() {
+        val box = outbox()
+        box.appendDonation("good1")
+        file.appendText("this is not json\n")
+        box.appendDonation("good2")
+
+        assertEquals(listOf("good1", "good2"), box.peek().map { it.id })
+    }
+
+    /** A kiosk with a dead RTC stamps events near 1970. Once NTP corrects the
+     *  clock, ageing them out would silently delete real donation telemetry. */
+    @Test
+    fun eventsStampedByAnUnsetClockAreNotAgedOut() {
+        now = 5_000L                       // clock never set — near epoch
+        val box = outbox(maxAgeMs = 10_000L)
+        box.appendDonation("stampedBeforeClockWasSet")
+
+        now = 1_780_000_000_000L           // NTP corrects to 2026
+        box.appendDonation("afterCorrection")
+
+        assertEquals(
+            listOf("stampedBeforeClockWasSet", "afterCorrection"),
+            box.peek().map { it.id })
+    }
+
+    @Test
+    fun compactionLeavesNoTempFileBehind() {
+        val box = outbox(maxEvents = 2)
+        repeat(5) { box.appendDonation("e$it") }
+        assertEquals(2, box.size())
+        assertFalse(File(file.parentFile, file.name + ".tmp").exists())
     }
 }
