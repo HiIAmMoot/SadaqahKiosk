@@ -515,7 +515,9 @@ git commit -m "Add telemetry destination policy and credential storage"
 - Modify: `app/src/main/java/com/sadaqah/kiosk/MainActivity.kt` (the migration block near line 219, and the `donationStatsStartedAtMs` bootstrap near line 203)
 - Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryOutbox.kt`
 - Create: `app/src/main/java/com/sadaqah/kiosk/telemetry/KioskCode.kt`
+- Create: `app/src/main/java/com/sadaqah/kiosk/model/SettingsImport.kt`
 - Test: `app/src/test/java/com/sadaqah/kiosk/telemetry/KioskCodeTest.kt`
+- Test: `app/src/test/java/com/sadaqah/kiosk/model/SettingsImportTest.kt`
 - Test: `app/src/test/java/com/sadaqah/kiosk/telemetry/TelemetryOutboxTest.kt` (add to it)
 
 **Interfaces:**
@@ -667,6 +669,101 @@ Append inside the `data class Settings(...)` parameter list, after `donationStat
      *  and friends carry restrictions and privacy baggage for no benefit here. */
     val installId: String = ""
 ```
+
+- [ ] **Step 5b: Add `SettingsImport` so a cloned config cannot clone an identity**
+
+Fleet provisioning pushes one configuration onto many kiosks. `installId` must
+survive that: if it arrives from the file, every kiosk in the fleet reports the
+same `install_id` and the whole fleet collapses into one device in the data.
+`MainActivity.importSettings` already does this ad hoc for `logoUri`; this gives
+the idea a name and a test.
+
+Create `app/src/main/java/com/sadaqah/kiosk/model/SettingsImport.kt`:
+
+```kotlin
+package com.sadaqah.kiosk.model
+
+/**
+ * Merges an imported configuration onto this device's current settings.
+ *
+ * Some fields describe the *device*, not the configuration, and must never be
+ * taken from an imported file. Fleet provisioning clones one export onto many
+ * kiosks, so a field that identifies a device would identify all of them: every
+ * kiosk would report the same `install_id` and the fleet would read as a single
+ * machine that restarts a lot.
+ */
+object SettingsImport {
+    fun merge(current: Settings, imported: Settings): Settings = imported.copy(
+        // Minted once per device on first run. Never travels in an export.
+        installId = current.installId,
+        // A logo is a local file URI that means nothing on another device.
+        logoUri = null
+    )
+}
+```
+
+Test at `app/src/test/java/com/sadaqah/kiosk/model/SettingsImportTest.kt`:
+
+```kotlin
+package com.sadaqah.kiosk.model
+
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Test
+
+class SettingsImportTest {
+
+    /** The whole point: provisioning a fleet from one export must not give every
+     *  kiosk the same identity. */
+    @Test
+    fun theDevicesOwnInstallIdSurvivesAnImport() {
+        val current = Settings(installId = "this-device")
+        val imported = Settings(installId = "the-machine-the-export-came-from")
+        assertEquals("this-device", SettingsImport.merge(current, imported).installId)
+    }
+
+    @Test
+    fun aBlankLocalInstallIdIsNotFilledFromTheFile() {
+        val merged = SettingsImport.merge(Settings(installId = ""), Settings(installId = "from-file"))
+        assertEquals("", merged.installId)
+    }
+
+    @Test
+    fun theLogoIsNotCarriedAcrossDevices() {
+        assertNull(SettingsImport.merge(Settings(), Settings(logoUri = "file:///data/logo.png")).logoUri)
+    }
+
+    /** Everything that is genuinely configuration must still come across, or the
+     *  guard has quietly become a block. */
+    @Test
+    fun ordinaryConfigurationIsTakenFromTheImport() {
+        val imported = Settings(
+            installId = "other",
+            kioskCode = "SK-0042",
+            language = "ar",
+            analyticsEnabled = true,
+            analyticsPrivacyPolicyUrl = "https://example.org/privacy"
+        )
+        val merged = SettingsImport.merge(Settings(installId = "mine"), imported)
+        assertEquals("SK-0042", merged.kioskCode)
+        assertEquals("ar", merged.language)
+        assertEquals(true, merged.analyticsEnabled)
+        assertEquals("https://example.org/privacy", merged.analyticsPrivacyPolicyUrl)
+    }
+}
+```
+
+Then change both import paths in `MainActivity` to route through it. Replace
+`settings = result.settings.copy(logoUri = null)` in **both** `importSettings`
+and `importSettingsOnly` with:
+
+```kotlin
+        settings = SettingsImport.merge(settings, result.settings)
+```
+
+**Mutation check.** Remove `installId = current.installId` from the merge.
+`theDevicesOwnInstallIdSurvivesAnImport` must FAIL. Restore it and record the
+failure message in your report.
 
 - [ ] **Step 6: Add migration in `MainActivity.onCreate`**
 
@@ -1097,3 +1194,29 @@ These were parked deliberately and belong to whoever implements the items above:
 - Any automatic flush scheduling. Nothing calls `flush()` on a timer until phase 3.
 - Donation and diagnostic instrumentation — phase 3.
 - **The `id` uniqueness constraint cannot be verified from the client.** RLS is insert-only so there is no `SELECT` to check with, and `resolution=ignore-duplicates` returns success whether or not the constraint exists. It is a server-side requirement carried by the reference DDL in phase 5's documentation, not something this phase can assert.
+
+## Groundwork for adb auto-provisioning (stated requirement, later phase)
+
+Every setting should be configurable over adb so kiosks can be provisioned
+without touching the screen. That loader is **not** in this phase, but two
+decisions here exist to keep it cheap and safe when it arrives:
+
+- **Reuse the export format; do not invent a config format.** `SettingsExportFile`
+  already round-trips the whole `Settings` object plus a password-encrypted
+  secrets envelope, and both a UI export and a UI import already drive it. The adb
+  path should be a trigger over that same file, so there is one format, one parser
+  and one set of tests rather than two that drift.
+- **`installId` must never arrive from a file.** Task 3's `SettingsImport.merge`
+  enforces this, and it is the difference between provisioning fifty kiosks and
+  provisioning one kiosk fifty times. Any future loader must go through that merge
+  rather than assigning `result.settings` directly.
+
+The likely drop target is the app-specific external directory,
+`/sdcard/Android/data/com.sadaqah.kiosk/files/`, which adb can write on API 30+
+with no runtime permission and no `MANAGE_EXTERNAL_STORAGE`. Worth confirming
+against the kiosk's device-owner setup before building on it.
+
+Open question for whoever plans that phase: credentials. Auto-provisioning wants
+the Supabase key on the device, but the encrypted envelope needs the operator's
+password. Passing that password over adb puts it in shell history and in the
+process list. Decide it deliberately rather than defaulting to plaintext.
