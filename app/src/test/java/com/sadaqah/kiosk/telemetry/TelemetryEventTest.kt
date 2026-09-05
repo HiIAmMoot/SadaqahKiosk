@@ -78,14 +78,14 @@ class TelemetryEventTest {
     @Test
     fun diagnostic_targetsTheDiagnosticTable() {
         val e = TelemetryEvent.Diagnostic(identity, DiagnosticKind.NETWORK_OUTAGE,
-            occurredAtIso = "2026-09-05T10:00:00Z")
+            occurredAtIso = "2026-09-05T10:00:00Z", affiliateKey = null)
         assertEquals("diagnostic_events", e.table)
     }
 
     @Test
     fun diagnostic_serialisesKindAndSeverityAsLowercaseText() {
         val e = TelemetryEvent.Diagnostic(identity, DiagnosticKind.CARD_READER_PAGE_TIMEOUT,
-            occurredAtIso = "2026-09-05T10:00:00Z")
+            occurredAtIso = "2026-09-05T10:00:00Z", affiliateKey = null)
         val p = parse(e.payloadJson())
         assertEquals("card_reader_page_timeout", p.get("kind").asString)
         assertEquals("warn", p.get("severity").asString)
@@ -127,7 +127,7 @@ class TelemetryEventTest {
     @Test
     fun diagnostic_omitsAbsentDetailAndStackTrace() {
         val e = TelemetryEvent.Diagnostic(identity, DiagnosticKind.NETWORK_OUTAGE,
-            occurredAtIso = "2026-09-05T10:00:00Z")
+            occurredAtIso = "2026-09-05T10:00:00Z", affiliateKey = null)
         val p = parse(e.payloadJson())
         assertFalse(p.has("detail"))
         assertFalse(p.has("stack_trace"))
@@ -137,7 +137,8 @@ class TelemetryEventTest {
     fun diagnostic_detailIsEmbeddedAsJsonNotAString() {
         val e = TelemetryEvent.Diagnostic(identity, DiagnosticKind.UPDATE_INSTALLED,
             occurredAtIso = "2026-09-05T10:00:00Z",
-            detailJson = """{"from_version":"1.3.5","to_version":"1.3.6"}""")
+            detailJson = """{"from_version":"1.3.5","to_version":"1.3.6"}""",
+            affiliateKey = null)
         val p = parse(e.payloadJson())
         assertTrue(p.get("detail").isJsonObject)
         assertEquals("1.3.5", p.getAsJsonObject("detail").get("from_version").asString)
@@ -147,7 +148,8 @@ class TelemetryEventTest {
     @Test
     fun diagnostic_malformedDetailIsDropped() {
         val e = TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
-            occurredAtIso = "2026-09-05T10:00:00Z", detailJson = "not json at all")
+            occurredAtIso = "2026-09-05T10:00:00Z", detailJson = "not json at all",
+            affiliateKey = null)
         val p = parse(e.payloadJson())
         assertFalse(p.has("detail"))
     }
@@ -178,7 +180,8 @@ class TelemetryEventTest {
         // break a run — so truncation actually fires instead of scrub eating it.
         val trace = "\tat com.sadaqah.kiosk.Foo.bar(Foo.kt:1)\n".repeat(500)
         val p = parse(TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
-            occurredAtIso = "2026-09-05T10:00:00Z", stackTrace = trace).payloadJson())
+            occurredAtIso = "2026-09-05T10:00:00Z", stackTrace = trace,
+            affiliateKey = null).payloadJson())
         val out = p.get("stack_trace").asString
         assertTrue(out.endsWith("truncated"))
         assertTrue(out.toByteArray(Charsets.UTF_8).size <= TelemetryRedactor.MAX_TEXT_BYTES + 32)
@@ -197,7 +200,8 @@ class TelemetryEventTest {
     fun diagnostic_dropsOversizedDetail() {
         val huge = """{"blob":"${"." .repeat(20_000)}"}"""
         val p = parse(TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
-            occurredAtIso = "2026-09-05T10:00:00Z", detailJson = huge).payloadJson())
+            occurredAtIso = "2026-09-05T10:00:00Z", detailJson = huge,
+            affiliateKey = null).payloadJson())
         assertFalse(p.has("detail"))
     }
 
@@ -215,11 +219,23 @@ class TelemetryEventTest {
     fun diagnostic_payloadHasExactlyTheExpectedFields() {
         val p = parse(TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
             occurredAtIso = "2026-09-05T10:00:00Z",
-            detailJson = """{"a":1}""", stackTrace = "boom").payloadJson())
+            detailJson = """{"a":1}""", stackTrace = "boom",
+            affiliateKey = null).payloadJson())
         assertEquals(
             setOf("id", "code", "install_id", "app_version", "occurred_at",
                   "kind", "severity", "detail", "stack_trace"),
             p.keySet())
+    }
+
+    @Test
+    fun diagnostic_toStringDoesNotLeakTheKeyOrTheRawTrace() {
+        val event = TelemetryEvent.Diagnostic(identity, DiagnosticKind.CRASH,
+            occurredAtIso = "2026-09-05T10:00:00Z",
+            stackTrace = "boom for key $shortKey",
+            affiliateKey = shortKey)
+        val printed = event.toString()
+        assertFalse(printed.contains(shortKey))
+        assertFalse(printed.contains("boom"))
     }
 
     // ── Activation ───────────────────────────────────────────────────────────

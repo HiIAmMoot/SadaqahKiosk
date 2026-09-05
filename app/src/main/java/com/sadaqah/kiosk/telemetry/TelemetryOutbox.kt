@@ -24,15 +24,29 @@ data class QueuedEvent(
  * Storage is separate from [com.sadaqah.kiosk.donations.DonationHistory] on
  * purpose: that file is user-facing and has a Clear button, and an operator
  * clearing their history must not silently destroy unsent telemetry.
+ *
+ * `payload` must already be redacted. Build it with
+ * [TelemetryEvent.payloadJson], which scrubs on construction; the outbox
+ * itself does not inspect what it stores.
+ *
+ * `append` can throw IOException — a full disk, or a failed mkdirs. It does not
+ * swallow it, because it cannot log without an Android dependency. The caller
+ * owns that decision, and the caller sits on the donation path.
  */
 class TelemetryOutbox(
     private val file: File,
     private val maxEvents: Int = 5000,
     private val maxAgeMs: Long = 30L * 24 * 60 * 60 * 1000,
+    private val compactSlack: Int = 100,
     private val clock: () -> Long = System::currentTimeMillis
 ) {
-    @Synchronized
-    fun append(id: String, table: String, payload: String) {
+    /** Locking is keyed on the file, not the instance: phase 2's crash handler
+     *  may construct its own TelemetryOutbox over the same path, and two
+     *  instances holding separate monitors would let a compaction silently
+     *  overwrite a concurrent append. */
+    private val lock: Any = lockFor(file)
+
+    fun append(id: String, table: String, payload: String): Unit = synchronized(lock) {
         val now = clock()
         file.parentFile?.mkdirs()
         // A real append never puts existing bytes at risk, so an unclean death
@@ -43,26 +57,28 @@ class TelemetryOutbox(
         compactIfNeeded(now)
     }
 
-    @Synchronized
-    fun peek(limit: Int = DEFAULT_BATCH): List<QueuedEvent> = readAll().take(limit)
+    fun peek(limit: Int = DEFAULT_BATCH): List<QueuedEvent> = synchronized(lock) {
+        readAll().take(limit)
+    }
 
-    @Synchronized
-    fun remove(ids: Set<String>) {
-        if (ids.isEmpty()) return
+    fun remove(ids: Set<String>): Unit = synchronized(lock) {
+        if (ids.isEmpty()) return@synchronized
         writeAll(readAll().filterNot { it.id in ids })
     }
 
-    @Synchronized
-    fun size(): Int = readAll().size
+    fun size(): Int = synchronized(lock) { readAll().size }
 
     // ── Internals ────────────────────────────────────────────────────────────
 
-    /** Rewrites only when a cap actually binds, so the common path stays a
-     *  single-line append. */
+    /** Reclaims in batches rather than on every append. Rewriting whenever the
+     *  queue sits one event over its cap would put a full read-and-write on the
+     *  donation path for the entire time a kiosk is saturated — which is exactly
+     *  the offline case the cap exists for. The file is allowed to run up to
+     *  [compactSlack] events over instead. */
     private fun compactIfNeeded(now: Long) {
         val all = readAll()
         val kept = applyCaps(all, now)
-        if (kept.size != all.size) writeAll(kept)
+        if (all.size - kept.size >= compactSlack) writeAll(kept)
     }
 
     /** Caps are enforced on append so an offline kiosk sheds its oldest
@@ -90,9 +106,12 @@ class TelemetryOutbox(
         file.parentFile?.mkdirs()
         val tmp = File(file.parentFile, file.name + ".tmp")
         tmp.writeText(events.joinToString("") { serialise(it) })
-        Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        Files.move(tmp.toPath(), file.toPath(), StandardCopyOption.ATOMIC_MOVE)
     }
 
+    // Envelope keys are camelCase deliberately: this envelope is local to the
+    // outbox and never leaves the device. `payload` keys are snake_case because
+    // that is the wire contract the Supabase tables expect.
     private fun serialise(e: QueuedEvent): String = JsonObject().apply {
         addProperty("id", e.id)
         addProperty("table", e.table)
@@ -123,5 +142,16 @@ class TelemetryOutbox(
         /** 2020-01-01T00:00:00Z. A timestamp below this came from an unset clock
          *  and its age cannot be trusted. */
         private const val PLAUSIBLE_EPOCH_FLOOR_MS = 1_577_836_800_000L
+
+        private val locksByPath = java.util.concurrent.ConcurrentHashMap<String, Any>()
+
+        private fun lockFor(file: File): Any {
+            val key = try {
+                file.canonicalPath
+            } catch (_: Exception) {
+                file.absolutePath
+            }
+            return locksByPath.computeIfAbsent(key) { Any() }
+        }
     }
 }

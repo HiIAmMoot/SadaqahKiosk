@@ -65,6 +65,25 @@ class TelemetryGateTest {
             TelemetryGate.evaluate(ready().copy(backoffUntilMs = now), now))
     }
 
+    @Test
+    fun aDeadlineBeyondTheCeilingIsTreatedAsStaleAndAllowsFlush() {
+        val stale = ready().copy(backoffUntilMs = now + TelemetryGate.MAX_BACKOFF_MS + 1)
+        assertEquals(FlushBlock.NONE, TelemetryGate.evaluate(stale, now))
+    }
+
+    @Test
+    fun aDeadlineExactlyAtTheCeilingStillBlocks() {
+        val atCeiling = ready().copy(backoffUntilMs = now + TelemetryGate.MAX_BACKOFF_MS)
+        assertEquals(FlushBlock.BACKING_OFF, TelemetryGate.evaluate(atCeiling, now))
+    }
+
+    @Test
+    fun aStaleDeadlineDoesNotOutrankTheOtherBlocks() {
+        val disabledWithStaleDeadline = ready().copy(
+            enabled = false, backoffUntilMs = now + TelemetryGate.MAX_BACKOFF_MS + 1)
+        assertEquals(FlushBlock.DISABLED, TelemetryGate.evaluate(disabledWithStaleDeadline, now))
+    }
+
     /** Reported reasons are for logs; the most fundamental one should win so a
      *  log line says "disabled" rather than "no network" on a disabled kiosk. */
     @Test
