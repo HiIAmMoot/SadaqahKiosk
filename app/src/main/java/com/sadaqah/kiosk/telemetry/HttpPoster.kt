@@ -4,8 +4,10 @@ data class HttpResponse(val code: Int, val body: String?) {
     val isSuccess: Boolean get() = isSuccess(code)
 
     /**
-     * The server refused this specific content and always will, so the row can
-     * be dropped rather than retried.
+     * The server refused this specific content and, on its own account, always
+     * will. This is a statement about the response, not a licence to delete: see
+     * [TelemetryUploader] for when a refusal is actually acted on, which requires
+     * a sibling row's success in the same request as corroboration.
      *
      * Deliberately an allowlist. Endpoint-level refusals — 401 and 403 for a
      * wrong or rotated key, 404 for a missing table — say nothing about the row,
