@@ -4,18 +4,28 @@ data class HttpResponse(val code: Int, val body: String?) {
     val isSuccess: Boolean get() = code in 200..299
 
     /**
-     * 4xx: the server understood and refused, so retrying the same bytes will
-     * not help — except for 429 and 408, which are explicitly "try again": a
-     * rate-limited kiosk must back off rather than discard its telemetry.
+     * The server refused this specific content and always will, so the row can
+     * be dropped rather than retried.
+     *
+     * Deliberately an allowlist. Endpoint-level refusals — 401 and 403 for a
+     * wrong or rotated key, 404 for a missing table — say nothing about the row,
+     * and treating them as permanent would delete a whole queue of donation
+     * records over a configuration error. Anything not listed here is retried,
+     * because keeping data we cannot send costs a little disk, and dropping data
+     * we could have sent costs the record itself.
      */
     val isPermanentRejection: Boolean
-        get() = code in 400..499 && code != 429 && code != 408
+        get() = code in ROW_LEVEL_REFUSALS
 
     companion object {
         /** No HTTP status at all — DNS, socket, timeout. Distinct from any real
          *  status, which is always >= 100, so callers can treat it as retryable
          *  without special-casing null. */
         const val TRANSPORT_FAILURE = -1
+
+        /** 400 malformed, 409 conflict, 413 too large, 422 unprocessable — all
+         *  statements about the row itself. */
+        private val ROW_LEVEL_REFUSALS = setOf(400, 409, 413, 422)
     }
 }
 

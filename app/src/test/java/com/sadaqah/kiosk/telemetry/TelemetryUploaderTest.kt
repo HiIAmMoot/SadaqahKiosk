@@ -173,6 +173,10 @@ class TelemetryUploaderTest {
         assertEquals(setOf("good1", "good2"), outcome.uploadedIds)
         assertEquals(setOf("poison"), outcome.rejectedIds)
         assertFalse("a poison row is permanent, not retryable", outcome.retryableFailure)
+        assertTrue("every insert, batch or fallback, must be duplicate-tolerant",
+            poster.calls.all {
+                it.second["Prefer"] == "return=minimal,resolution=ignore-duplicates"
+            })
     }
 
     @Test
@@ -221,5 +225,15 @@ class TelemetryUploaderTest {
         val outcome = uploader(poster).upload(listOf(event("e1")))
         assertFalse("an error surfaced in the UI must not expose the key",
             outcome.lastError!!.contains(anonKey))
+    }
+
+    /** The reason describe() uses the house redactor rather than a manual
+     *  replace: a server can echo back tokens we never sent it. */
+    @Test
+    fun lastErrorRedactsTokenShapedStringsTheServerEchoesBack() {
+        val leaked = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9abcdef"
+        val poster = RecordingPoster { _, _ -> HttpResponse(500, "upstream rejected $leaked") }
+        val outcome = uploader(poster).upload(listOf(event("e1")))
+        assertFalse(outcome.lastError!!.contains(leaked))
     }
 }
