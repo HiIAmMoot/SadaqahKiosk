@@ -186,15 +186,26 @@ class TelemetryUploaderTest {
         assertEquals("one batch request, no per-row fallback", 1, poster.calls.size)
     }
 
-    /** A batch of one that is rejected needs no fallback — it is already isolated,
-     *  and no sibling row exists whose success could contradict the refusal. */
+    /**
+     * A batch of one needs no fallback — it is already isolated — but it also has
+     * no sibling whose success could corroborate the refusal. A stale PostgREST
+     * schema cache refuses a lone donation with exactly the same 400 as a genuinely
+     * malformed one, and a quiet kiosk flushing a single donation hits this path
+     * constantly. So it is kept, not deleted: the age cap retires a row that really
+     * is unacceptable, at the cost of one small request per flush until then.
+     */
     @Test
-    fun aSingleRejectedRowIsNotRetried() {
+    fun aLoneRefusedRowIsKeptBecauseNoSiblingCorroboratesTheRefusal() {
         val poster = RecordingPoster { _, _ -> HttpResponse(400, "invalid") }
         val outcome = uploader(poster).upload(listOf(event("only")))
-        assertEquals(1, poster.calls.size)
-        assertEquals(setOf("only"), outcome.rejectedIds)
-        assertFalse("a lone malformed row is still dropped, not stalled", outcome.retryableFailure)
+        assertEquals("one batch request, no per-row fallback", 1, poster.calls.size)
+        assertTrue(
+            "a lone refusal is indistinguishable from a fleet-wide one and must not delete",
+            outcome.rejectedIds.isEmpty()
+        )
+        assertTrue(outcome.uploadedIds.isEmpty())
+        assertTrue("the row stays queued for the next flush", outcome.retryableFailure)
+        assertTrue("the operator still sees why", outcome.lastError!!.contains("400"))
     }
 
     /**

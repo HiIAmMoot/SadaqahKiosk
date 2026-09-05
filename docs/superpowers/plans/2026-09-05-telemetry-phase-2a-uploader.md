@@ -17,7 +17,7 @@
 - **This phase stays inert.** Nothing calls the uploader yet; no existing file is modified. Wiring arrives in phase 2b.
 - **Every insert uses `Prefer: resolution=ignore-duplicates`** with the client-generated `id`, so retrying after an ambiguous network failure cannot double-count a donation.
 - **Batch reads are 100 events** (`TelemetryOutbox.DEFAULT_BATCH`), and one batch may mix tables — group by `table`, one request per table.
-- **A permanently-rejected row must never stall the queue, and a configuration fault must never empty it.** *(Superseded during execution — see "Deviations during execution" at the foot of this file. The original wording, "on a 4xx for a batch, retry the rows individually and report the ones that fail so the caller can drop exactly those", is not what shipped and must not be restored: a 4xx range includes 401/403/404, so it deletes a whole queue over a wrong key.)* What shipped: only an explicit allowlist of row-level refusals — **400, 409, 413, 422** — may be reported as permanent; everything else, including every other 4xx, is retryable. A batch refused with one of those is retried row by row to isolate the bad row, and those individual rejections are honoured **only if at least one row in the group succeeded**.
+- **A permanently-rejected row must never stall the queue, and a configuration fault must never empty it.** *(Superseded during execution — see "Deviations during execution" at the foot of this file. The original wording, "on a 4xx for a batch, retry the rows individually and report the ones that fail so the caller can drop exactly those", is not what shipped and must not be restored: a 4xx range includes 401/403/404, so it deletes a whole queue over a wrong key.)* What shipped: only an explicit allowlist of row-level refusals — **400, 409, 413, 422** — may be reported as permanent; everything else, including every other 4xx, is retryable. A batch refused with one of those is retried row by row to isolate the bad row, and those individual rejections are honoured **only if at least one row in the group succeeded**. A group of one is never reported rejected at all, for the same reason. Stated once, positively: **a row may be deleted only when a sibling row in the same request succeeded against the same endpoint in the same flush.**
 - **A 5xx or a transport failure is retryable** — those events stay queued.
 - **The anon key is a header value, never a query parameter**, so it does not land in server logs or redirects.
 - Kotlin 2.0.21, JUnit 4, minSdk 30.
@@ -683,3 +683,27 @@ project key, `HttpURLConnection` replays every header onto a redirect target, an
 not the host we authenticated to. A 3xx comes back as an ordinary non-success status, which is
 retryable. Phase 2b's https-scheme check depends on this — without it, a configured `https://`
 endpoint that redirects to `http://` sends the key in cleartext and the scheme check buys nothing.
+
+### Deviation 4 — a lone refused row is kept, not deleted (post-review)
+
+The final re-review raised, as a minor, that the uniformity rule protected
+multi-row groups but left a single-row group exposed to the same
+`PGRST204` window: one donation, refused with a 400 by a stale schema
+cache, deleted. It was judged minor on the assumption that single-row
+groups are an edge case.
+
+They are not. A kiosk on a quiet evening flushes exactly one donation, so
+this is the *common* path for a low-traffic mosque — precisely the
+deployment least able to spare a record. The branch that deleted a lone
+refused row was therefore removed, and such a row now falls through to
+the retryable path.
+
+What this costs: a row that genuinely is malformed is re-sent once per
+flush instead of being dropped, until `TelemetryOutbox`'s 30-day age cap
+retires it. That cap is what makes this affordable and is now
+load-bearing for this case — **phase 2b must not raise or remove it
+without revisiting this decision.** What it buys: there is no longer any
+single-request path on which the uploader tells the caller to delete a
+donation the server never accepted.
+
+The surviving deletion path is the corroborated one, and only that one.

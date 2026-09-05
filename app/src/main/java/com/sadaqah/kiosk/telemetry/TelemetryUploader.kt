@@ -6,6 +6,15 @@ package com.sadaqah.kiosk.telemetry
  * [uploadedIds] and [rejectedIds] are both safe to remove from the outbox — the
  * first succeeded, the second never will. They are reported apart so the caller
  * can log the difference rather than lose it.
+ *
+ * One invariant governs everything below, because the outbox is the only copy of
+ * a donation and the caller deletes whatever this reports: **a row is named in
+ * [rejectedIds] only when another row in the same request succeeded against the
+ * same endpoint in the same flush.** That sibling success is the only evidence
+ * that separates "the server refuses this row" from "the server is refusing
+ * everything right now", and without it the row stays queued. Anything not
+ * proven dead is retried; the outbox's age cap, not this class, is what finally
+ * retires a row nobody will ever accept.
  */
 data class UploadOutcome(
     val uploadedIds: Set<String>,
@@ -87,14 +96,13 @@ class TelemetryUploader(
                     }
                 }
 
-                // A lone row refused on its own is dropped: there is no sibling
-                // row whose success could contradict it, so the refusal is the
-                // only evidence available and it is about that row.
-                response.isPermanentRejection -> {
-                    rejected += forTable.map { it.id }
-                    lastError = describe(response)
-                }
-
+                // A lone refused row is NOT dropped. There is no sibling whose
+                // success could confirm the endpoint is healthy, so a refusal and
+                // a stale schema cache look identical from here — and a kiosk on a
+                // quiet evening flushes exactly one donation, which makes this the
+                // common path rather than an edge case. Keeping it costs one small
+                // request per flush until the outbox's age cap retires it; getting
+                // it wrong costs the only record of someone's donation.
                 else -> {
                     retryable = true
                     lastError = describe(response)
