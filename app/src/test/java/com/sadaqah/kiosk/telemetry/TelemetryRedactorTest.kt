@@ -24,11 +24,16 @@ class TelemetryRedactorTest {
         assertFalse(out.contains(affiliateKey))
     }
 
+    /**
+     * Deliberately uses a key too short for TOKEN_SHAPED to catch. With the
+     * 36-char fixture key the token pattern redacts it regardless of casing, so
+     * the test would pass even with case-sensitive matching and prove nothing.
+     */
     @Test
     fun scrub_removesTheAffiliateKeyRegardlessOfCase() {
-        val text = "rejected key ${affiliateKey.uppercase()} at login"
-        val out = TelemetryRedactor.scrub(text, affiliateKey)!!
-        assertFalse(out.contains(affiliateKey.uppercase()))
+        val shortKey = "sumup-aff-key"
+        val out = TelemetryRedactor.scrub("rejected key ${shortKey.uppercase()} at login", shortKey)!!
+        assertFalse(out.contains(shortKey, ignoreCase = true))
         assertTrue(out.contains(TelemetryRedactor.REDACTED))
     }
 
