@@ -9,6 +9,8 @@ data class GateInputs(
     val backoffUntilMs: Long
 )
 
+// Precedence lives in evaluate's branch order, not here — nothing should sort
+// these by ordinal expecting it to reflect which block wins.
 enum class FlushBlock {
     NONE,
     DISABLED,
@@ -38,6 +40,11 @@ object TelemetryGate {
         !inputs.activated -> FlushBlock.NOT_ACTIVATED
         !inputs.networkAvailable -> FlushBlock.NO_NETWORK
         inputs.queueDepth <= 0 -> FlushBlock.EMPTY_QUEUE
+        // A deadline further out than the ceiling cannot have come from
+        // backoffDelayMs, so it was computed against a clock that has since been
+        // corrected. Failing open toward flushing is the safe direction: the
+        // alternative is a kiosk that silently stops reporting for years.
+        inputs.backoffUntilMs - nowMs > MAX_BACKOFF_MS -> FlushBlock.NONE
         nowMs < inputs.backoffUntilMs -> FlushBlock.BACKING_OFF
         else -> FlushBlock.NONE
     }

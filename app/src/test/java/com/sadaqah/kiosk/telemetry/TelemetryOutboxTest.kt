@@ -15,8 +15,11 @@ class TelemetryOutboxTest {
     private lateinit var file: File
     private var now = 1_000_000L
 
-    private fun outbox(maxEvents: Int = 5000, maxAgeMs: Long = 30L * 24 * 60 * 60 * 1000) =
-        TelemetryOutbox(file, maxEvents, maxAgeMs) { now }
+    private fun outbox(
+        maxEvents: Int = 5000,
+        maxAgeMs: Long = 30L * 24 * 60 * 60 * 1000,
+        compactSlack: Int = 1
+    ) = TelemetryOutbox(file, maxEvents, maxAgeMs, compactSlack) { now }
 
     @Before
     fun setUp() {
@@ -222,6 +225,21 @@ class TelemetryOutboxTest {
         assertEquals(
             listOf("stampedBeforeClockWasSet", "afterCorrection"),
             box.peek().map { it.id })
+    }
+
+    /** A saturated queue must not rewrite the whole file on every append. */
+    @Test
+    fun compactionReclaimsInBatchesRatherThanOnEveryAppend() {
+        val box = outbox(maxEvents = 5, compactSlack = 10)
+        repeat(12) { box.appendDonation("e$it") }
+
+        // 12 appended, 5 is the cap, but only 7 are over — under the slack of 10,
+        // so nothing has been reclaimed yet and every event is still on disk.
+        assertEquals(12, file.readLines().count { it.isNotBlank() })
+
+        repeat(3) { box.appendDonation("late$it") }
+        // 15 events, 10 over the cap, so one batch reclaim brings it back to 5.
+        assertEquals(5, file.readLines().count { it.isNotBlank() })
     }
 
     @Test

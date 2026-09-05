@@ -83,47 +83,56 @@ sealed class TelemetryEvent {
         }
     }
 
-    data class Diagnostic(
+    /**
+     * Scrubbing happens in the constructor rather than in [addFields], so
+     * "redacted" is an invariant of a constructed Diagnostic rather than
+     * something the serialiser remembers to do. The raw trace and the key are
+     * constructor parameters, not properties, so they cannot be read back or
+     * printed by a log statement.
+     *
+     * Deliberately not a data class: a generated toString would print the key.
+     */
+    class Diagnostic(
         override val identity: EventIdentity,
         val kind: DiagnosticKind,
         val occurredAtIso: String,
-        val detailJson: String? = null,
-        val stackTrace: String? = null,
-        val affiliateKey: String? = null,
+        detailJson: String? = null,
+        stackTrace: String? = null,
+        affiliateKey: String?,
         override val id: String = UUID.randomUUID().toString()
     ) : TelemetryEvent() {
         override val table = TelemetryTables.DIAGNOSTICS
+
+        private val cleanedStackTrace: String? =
+            TelemetryRedactor.truncate(TelemetryRedactor.scrub(stackTrace, affiliateKey))
+
+        /** Scrubbed before parsing: `[redacted]` is safe inside a JSON string
+         *  literal, and if scrubbing breaks the document the parse fails and the
+         *  field is dropped — the safe direction. Oversized detail is dropped
+         *  rather than truncated, since a cut mid-document stops it parsing. */
+        private val cleanedDetail: JsonObject? = run {
+            val raw = TelemetryRedactor.scrub(detailJson, affiliateKey)
+            when {
+                raw == null -> null
+                raw.toByteArray(Charsets.UTF_8).size > TelemetryRedactor.MAX_TEXT_BYTES -> null
+                else -> try {
+                    JsonParser.parseString(raw) as? JsonObject
+                } catch (_: Exception) {
+                    null
+                }
+            }
+        }
 
         override fun addFields(target: JsonObject) {
             target.addProperty("occurred_at", occurredAtIso)
             target.addProperty("kind", kind.wire)
             target.addProperty("severity", kind.severity.wire)
-
-            detailAsObject()?.let { target.add("detail", it) }
-
-            val cleaned = TelemetryRedactor.truncate(
-                TelemetryRedactor.scrub(stackTrace, affiliateKey)
-            )
-            if (cleaned != null) target.addProperty("stack_trace", cleaned)
+            cleanedDetail?.let { target.add("detail", it) }
+            if (cleanedStackTrace != null) target.addProperty("stack_trace", cleanedStackTrace)
         }
 
-        /**
-         * Scrubbed before parsing rather than after: `[redacted]` is safe inside a
-         * JSON string literal, and if scrubbing does break the document the parse
-         * fails and the field is dropped — which is the safe direction.
-         *
-         * Malformed or oversized detail is dropped rather than thrown: a broken
-         * diagnostic must never take down the code path that reported it.
-         */
-        private fun detailAsObject(): JsonObject? {
-            val raw = TelemetryRedactor.scrub(detailJson, affiliateKey) ?: return null
-            if (raw.toByteArray(Charsets.UTF_8).size > TelemetryRedactor.MAX_TEXT_BYTES) return null
-            return try {
-                JsonParser.parseString(raw) as? JsonObject
-            } catch (_: Exception) {
-                null
-            }
-        }
+        override fun toString(): String =
+            "Diagnostic(id=$id, kind=${kind.wire}, occurredAt=$occurredAtIso)"
     }
 
     data class Activation(
