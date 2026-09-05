@@ -44,20 +44,31 @@ class HttpPosterTest {
     }
 
     @Test
-    fun clientErrorsArePermanentRejections() {
+    fun rowLevelRefusalsArePermanent() {
         assertTrue(HttpResponse(400, null).isPermanentRejection)
-        assertTrue(HttpResponse(401, null).isPermanentRejection)
-        assertTrue(HttpResponse(499, null).isPermanentRejection)
-        assertFalse(HttpResponse(399, null).isPermanentRejection)
-        assertFalse(HttpResponse(500, null).isPermanentRejection)
+        assertTrue(HttpResponse(409, null).isPermanentRejection)
+        assertTrue(HttpResponse(413, null).isPermanentRejection)
+        assertTrue(HttpResponse(422, null).isPermanentRejection)
+    }
+
+    /**
+     * These say the endpoint is wrong, not the row. Treating them as permanent
+     * would delete a whole queue of donations over a bad key or a missing table.
+     */
+    @Test
+    fun endpointLevelRefusalsAreRetryableNotPermanent() {
+        for (code in listOf(401, 403, 404, 408, 429)) {
+            assertFalse("HTTP $code must not be treated as a bad row",
+                HttpResponse(code, null).isPermanentRejection)
+        }
     }
 
     @Test
-    fun rateLimitAndRequestTimeoutAreRetryableNotPermanent() {
-        assertFalse(HttpResponse(429, null).isPermanentRejection)
-        assertFalse(HttpResponse(408, null).isPermanentRejection)
-        assertFalse(HttpResponse(429, null).isSuccess)
-        assertFalse(HttpResponse(408, null).isSuccess)
+    fun serverErrorsAndUnknownStatusesAreNeitherSuccessNorPermanent() {
+        for (code in listOf(300, 399, 451, 500, 503, HttpResponse.TRANSPORT_FAILURE)) {
+            assertFalse(HttpResponse(code, null).isSuccess)
+            assertFalse(HttpResponse(code, null).isPermanentRejection)
+        }
     }
 
     @Test
