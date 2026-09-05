@@ -47,12 +47,14 @@ class TelemetryUploader(
                 // rows individually isolates it, so the rest of the queue is not
                 // held hostage by a row that will never be accepted.
                 response.isPermanentRejection && forTable.size > 1 -> {
+                    val uploadedHere = mutableSetOf<String>()
+                    val rejectedHere = mutableSetOf<String>()
                     for (event in forTable) {
                         val single = send(table, listOf(event))
                         when {
-                            single.isSuccess -> uploaded += event.id
+                            single.isSuccess -> uploadedHere += event.id
                             single.isPermanentRejection -> {
-                                rejected += event.id
+                                rejectedHere += event.id
                                 lastError = describe(single)
                             }
                             else -> {
@@ -66,8 +68,28 @@ class TelemetryUploader(
                             }
                         }
                     }
+
+                    uploaded += uploadedHere
+                    if (uploadedHere.isEmpty()) {
+                        // "One bad row among many" is the hypothesis this fallback
+                        // rests on, and a row that went through is what confirms it.
+                        // Without one, uniform refusal refutes the hypothesis: a
+                        // stale PostgREST schema cache answers 400 for every row in
+                        // the fleet, and it clears on a reload. Honouring those
+                        // rejections would delete a whole batch of donations that
+                        // were never inserted, so report nothing rejected and let
+                        // the next flush ask again. A group that stalled partway
+                        // has no success either, so its earlier rejections are
+                        // discarded on the same reasoning.
+                        retryable = true
+                    } else {
+                        rejected += rejectedHere
+                    }
                 }
 
+                // A lone row refused on its own is dropped: there is no sibling
+                // row whose success could contradict it, so the refusal is the
+                // only evidence available and it is about that row.
                 response.isPermanentRejection -> {
                     rejected += forTable.map { it.id }
                     lastError = describe(response)

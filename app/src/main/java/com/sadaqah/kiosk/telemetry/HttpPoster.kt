@@ -1,7 +1,7 @@
 package com.sadaqah.kiosk.telemetry
 
 data class HttpResponse(val code: Int, val body: String?) {
-    val isSuccess: Boolean get() = code in 200..299
+    val isSuccess: Boolean get() = isSuccess(code)
 
     /**
      * The server refused this specific content and always will, so the row can
@@ -26,6 +26,10 @@ data class HttpResponse(val code: Int, val body: String?) {
         /** 400 malformed, 409 conflict, 413 too large, 422 unprocessable — all
          *  statements about the row itself. */
         private val ROW_LEVEL_REFUSALS = setOf(400, 409, 413, 422)
+
+        /** One definition of the 2xx range, reachable from a bare status code so
+         *  a caller holding only the number need not build a response to ask. */
+        fun isSuccess(code: Int): Boolean = code in 200..299
     }
 }
 
