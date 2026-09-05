@@ -12,17 +12,21 @@ object TelemetryRedactor {
     const val MAX_TEXT_BYTES = 8 * 1024
 
     /**
-     * Runs of 32+ token characters. The threshold is a deliberate trade: long
-     * enough that package names, file paths and short hashes survive — the
-     * redactor runs over stack traces, and over-redacting destroys the reason we
-     * collected them — short enough to catch keys, tokens and UUIDs.
+     * Runs of 32+ token characters, excluding `/`. The threshold is a deliberate
+     * trade: long enough that package names, file paths and short hashes survive
+     * (the redactor runs over stack traces, and over-redacting destroys the reason
+     * we collected them). Exactly 32 because at 20 it would destroy `UpdateWatchdogReceiver`
+     * in every stack trace. We deliberately exclude `/` because paths use it, so a
+     * contiguous run of path segments would otherwise count toward the threshold and
+     * destroy diagnostics. The affiliate-key match is the primary protection; this
+     * pattern is belt-and-braces for unknown secrets.
      */
-    private val TOKEN_SHAPED = Regex("[A-Za-z0-9+/=_-]{32,}")
+    private val TOKEN_SHAPED = Regex("[A-Za-z0-9+=_-]{32,}")
 
     fun scrub(text: String?, affiliateKey: String?): String? {
         if (text == null) return null
         val withoutKey =
-            if (affiliateKey.isNullOrBlank()) text else text.replace(affiliateKey, REDACTED)
+            if (affiliateKey.isNullOrBlank()) text else text.replace(affiliateKey, REDACTED, ignoreCase = true)
         return TOKEN_SHAPED.replace(withoutKey, REDACTED)
     }
 

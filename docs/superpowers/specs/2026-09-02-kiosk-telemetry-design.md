@@ -181,8 +181,8 @@ the insert-only RLS policy remains what actually contains the damage.
 
 `detail` and `stack_trace` are scrubbed before being written to the outbox, not at
 upload time — an unscrubbed value must never reach disk. Redacted: the SumUp
-affiliate key (exact match), and any token-shaped run of 20+ base64/hex
-characters. This rule gets a dedicated unit test.
+affiliate key (exact match), and any token-shaped run of 32+ base64/hex
+characters excluding `/` so file paths survive. This rule gets a dedicated unit test.
 
 ---
 

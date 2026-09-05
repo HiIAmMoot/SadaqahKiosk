@@ -25,6 +25,14 @@ class TelemetryRedactorTest {
     }
 
     @Test
+    fun scrub_removesTheAffiliateKeyRegardlessOfCase() {
+        val text = "rejected key ${affiliateKey.uppercase()} at login"
+        val out = TelemetryRedactor.scrub(text, affiliateKey)!!
+        assertFalse(out.contains(affiliateKey.uppercase()))
+        assertTrue(out.contains(TelemetryRedactor.REDACTED))
+    }
+
+    @Test
     fun scrub_toleratesNullOrBlankKey() {
         assertEquals("nothing secret here", TelemetryRedactor.scrub("nothing secret here", null))
         assertEquals("nothing secret here", TelemetryRedactor.scrub("nothing secret here", ""))
@@ -80,6 +88,16 @@ class TelemetryRedactorTest {
         assertEquals(text, TelemetryRedactor.scrub(text, null))
     }
 
+    /**
+     * The original fixture cleared the threshold by only four characters.
+     * A deeper path is the realistic case and must also survive.
+     */
+    @Test
+    fun scrub_keepsDeeplyNestedFilePaths() {
+        val path = "/data/user/0/com.sadaqah.kiosk/files/telemetry/outbox_events_archive_2026.jsonl"
+        assertEquals(path, TelemetryRedactor.scrub(path, null))
+    }
+
     // ── Truncation ───────────────────────────────────────────────────────────
 
     @Test
@@ -110,5 +128,19 @@ class TelemetryRedactorTest {
     fun truncate_exactlyAtLimitIsUntouched() {
         val exact = "z".repeat(TelemetryRedactor.MAX_TEXT_BYTES)
         assertEquals(exact, TelemetryRedactor.truncate(exact))
+    }
+
+    /**
+     * The byte cut can land inside a multi-byte character. That must degrade to a
+     * replacement character, not an exception — this runs on the crash path.
+     */
+    @Test
+    fun truncate_handlesACutInsideAMultiByteCharacter() {
+        // "€" is three UTF-8 bytes, so repeating it guarantees the 8192-byte
+        // boundary falls inside one of them.
+        val text = "€".repeat(10_000)
+        val out = TelemetryRedactor.truncate(text)!!
+        assertTrue(out.endsWith("… truncated"))
+        assertTrue(out.length < text.length)
     }
 }
