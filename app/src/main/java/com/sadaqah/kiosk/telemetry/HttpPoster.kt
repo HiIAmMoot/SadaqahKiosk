@@ -3,8 +3,13 @@ package com.sadaqah.kiosk.telemetry
 data class HttpResponse(val code: Int, val body: String?) {
     val isSuccess: Boolean get() = code in 200..299
 
-    /** 4xx: the server understood and refused. Retrying the same bytes will not help. */
-    val isPermanentRejection: Boolean get() = code in 400..499
+    /**
+     * 4xx: the server understood and refused, so retrying the same bytes will
+     * not help — except for 429 and 408, which are explicitly "try again": a
+     * rate-limited kiosk must back off rather than discard its telemetry.
+     */
+    val isPermanentRejection: Boolean
+        get() = code in 400..499 && code != 429 && code != 408
 
     companion object {
         /** No HTTP status at all — DNS, socket, timeout. Distinct from any real
