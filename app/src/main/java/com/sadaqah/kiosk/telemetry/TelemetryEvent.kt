@@ -107,13 +107,20 @@ sealed class TelemetryEvent {
             if (cleaned != null) target.addProperty("stack_trace", cleaned)
         }
 
-        /** Malformed detail is dropped rather than thrown: a broken diagnostic
-         *  must never take down the code path that reported it. */
+        /**
+         * Scrubbed before parsing rather than after: `[redacted]` is safe inside a
+         * JSON string literal, and if scrubbing does break the document the parse
+         * fails and the field is dropped — which is the safe direction.
+         *
+         * Malformed or oversized detail is dropped rather than thrown: a broken
+         * diagnostic must never take down the code path that reported it.
+         */
         private fun detailAsObject(): JsonObject? {
-            val raw = detailJson ?: return null
+            val raw = TelemetryRedactor.scrub(detailJson, affiliateKey) ?: return null
+            if (raw.toByteArray(Charsets.UTF_8).size > TelemetryRedactor.MAX_TEXT_BYTES) return null
             return try {
                 JsonParser.parseString(raw) as? JsonObject
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 null
             }
         }
@@ -135,7 +142,6 @@ sealed class TelemetryEvent {
     }
 
     companion object {
-        /** UTC, second precision, always Z-suffixed. */
         fun nowIso(): String = Instant.now().toString()
     }
 }
