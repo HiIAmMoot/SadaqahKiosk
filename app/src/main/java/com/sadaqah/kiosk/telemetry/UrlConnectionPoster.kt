@@ -13,12 +13,15 @@ import java.net.URL
  * the body, and the body is the operator's only clue about a misconfigured
  * endpoint.
  *
- * A read that fails partway degrades to null rather than throwing, so the
- * caller keeps the status code it already has.
+ * The stream is opened by [openStream] rather than handed in already open, so
+ * that opening it is inside the same guard as reading it: on a connection reset
+ * the success stream can throw on acquisition, and a status code we already know
+ * must not be lost to that. A read that fails at any point degrades to null
+ * rather than throwing, so the caller keeps the status code it already has.
  */
-internal fun readCapped(stream: java.io.InputStream?, maxChars: Int): String? {
-    if (stream == null) return null
+internal fun readCapped(openStream: () -> java.io.InputStream?, maxChars: Int): String? {
     return try {
+        val stream = openStream() ?: return null
         val buffer = CharArray(maxChars)
         stream.bufferedReader().use { reader ->
             var total = 0
@@ -54,20 +57,31 @@ class UrlConnectionPoster(
     override fun post(url: String, headers: Map<String, String>, body: String): HttpResponse {
         var conn: HttpURLConnection? = null
         return try {
-            conn = (URL(url).openConnection() as HttpURLConnection).apply {
+            val connection = (URL(url).openConnection() as HttpURLConnection).apply {
                 requestMethod = "POST"
                 connectTimeout = connectTimeoutMs
                 readTimeout = readTimeoutMs
                 doOutput = true
+                // The headers below carry the project key. HttpURLConnection
+                // replays every header onto a redirect target, and a redirect
+                // target is not the host we authenticated to — so a 3xx comes
+                // back as an ordinary non-success status, which is retryable.
+                instanceFollowRedirects = false
                 for ((name, value) in headers) setRequestProperty(name, value)
             }
-            conn.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            conn = connection
+            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
 
-            val code = conn.responseCode
+            val code = connection.responseCode
             // Supabase returns the failure reason on the error stream, and it is
             // the only clue an operator gets about a misconfigured endpoint.
-            val stream = if (HttpResponse(code, null).isSuccess) conn.inputStream else conn.errorStream
-            HttpResponse(code, readCapped(stream, TelemetryRedactor.MAX_TEXT_BYTES))
+            // Opening it is deferred into readCapped so a throw there costs the
+            // body and not the status we already have.
+            val responseBody = readCapped(
+                { if (HttpResponse.isSuccess(code)) connection.inputStream else connection.errorStream },
+                TelemetryRedactor.MAX_TEXT_BYTES
+            )
+            HttpResponse(code, responseBody)
         } catch (t: Throwable) {
             // Throwable rather than Exception: an unbounded response body can
             // raise OutOfMemoryError, and this must never propagate into a

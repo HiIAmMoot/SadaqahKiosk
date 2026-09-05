@@ -17,7 +17,7 @@
 - **This phase stays inert.** Nothing calls the uploader yet; no existing file is modified. Wiring arrives in phase 2b.
 - **Every insert uses `Prefer: resolution=ignore-duplicates`** with the client-generated `id`, so retrying after an ambiguous network failure cannot double-count a donation.
 - **Batch reads are 100 events** (`TelemetryOutbox.DEFAULT_BATCH`), and one batch may mix tables — group by `table`, one request per table.
-- **A permanently-rejected row must never stall the queue.** On a 4xx for a batch, retry the rows individually and report the ones that fail so the caller can drop exactly those.
+- **A permanently-rejected row must never stall the queue, and a configuration fault must never empty it.** *(Superseded during execution — see "Deviations during execution" at the foot of this file. The original wording, "on a 4xx for a batch, retry the rows individually and report the ones that fail so the caller can drop exactly those", is not what shipped and must not be restored: a 4xx range includes 401/403/404, so it deletes a whole queue over a wrong key.)* What shipped: only an explicit allowlist of row-level refusals — **400, 409, 413, 422** — may be reported as permanent; everything else, including every other 4xx, is retryable. A batch refused with one of those is retried row by row to isolate the bad row, and those individual rejections are honoured **only if at least one row in the group succeeded**.
 - **A 5xx or a transport failure is retryable** — those events stay queued.
 - **The anon key is a header value, never a query parameter**, so it does not land in server logs or redirects.
 - Kotlin 2.0.21, JUnit 4, minSdk 30.
@@ -121,7 +121,9 @@ package com.sadaqah.kiosk.telemetry
 data class HttpResponse(val code: Int, val body: String?) {
     val isSuccess: Boolean get() = code in 200..299
 
-    /** 4xx: the server understood and refused. Retrying the same bytes will not help. */
+    /** SUPERSEDED — see "Deviations during execution". Shipped as an allowlist:
+     *  `code in setOf(400, 409, 413, 422)`. A 4xx *range* also swallows 401, 403
+     *  and 404, which are statements about the endpoint, not the row. */
     val isPermanentRejection: Boolean get() = code in 400..499
 
     companion object {
@@ -528,6 +530,10 @@ class TelemetryUploader(
                     for (event in forTable) {
                         val single = send(table, listOf(event))
                         when {
+                            // SUPERSEDED — see "Deviations during execution".
+                            // What shipped collects into group-local sets, breaks
+                            // out on a retryable row, and discards the group's
+                            // rejections entirely unless some row succeeded.
                             single.isSuccess -> uploaded += event.id
                             single.isPermanentRejection -> rejected += event.id
                             else -> {
@@ -634,3 +640,46 @@ These belong to phase 2b, which is where telemetry stops being inert:
 - A test pinning that two `TelemetryOutbox` instances over one path share a lock
 
 Nothing here can be verified against a real Supabase project until 2b supplies credentials and a caller. `UrlConnectionPoster` in particular has no test and is verified only by inspection — that is the deliberate cost of putting every decision on the other side of the seam.
+
+## Deviations during execution
+
+Phase 2b is written against this file, so where the code that shipped disagrees with the plan above,
+this section is what binds. Everything here moves in one direction: the outbox is the only copy of a
+donation record, so a caller that is told "rejected" deletes it. A stalled row is visible and
+reversible; a deleted row is neither.
+
+**The 4xx range is not the rejection rule. An allowlist is.** `isPermanentRejection` is
+`code in setOf(400, 409, 413, 422)` — malformed, conflict, too large, unprocessable. Every other
+status, including the rest of the 4xx range, is retryable. 401 and 403 mean the key is wrong or
+rotated and 404 means the table is missing; none of them is a statement about the row, and treating
+them as permanent deletes an entire queue of donations over a configuration error. An allowlist also
+fails safe for statuses nobody has thought about yet, which is the right default when the cost of a
+wrong "permanent" is a lost record and the cost of a wrong "retryable" is disk.
+
+**A batch's row-by-row fallback is only believed when a row got through.** The fallback exists on one
+hypothesis: a refused batch may contain exactly one bad row. Rejections found during that pass are
+therefore reported only if at least one row in the same table group succeeded — the success is what
+demonstrates the endpoint and the schema are fine and the refusal really is about the row. If every
+row is refused, or the group stalls on a network failure before any row succeeds, the group reports
+**zero** rejections and sets `retryableFailure` instead. PostgREST answers 400 for a stale schema
+cache and for an unknown column (`PGRST204`); those are fleet-wide, identical for every row, and they
+clear on a reload — under the original rule a batch of 100 would come back as 100 "verified"
+rejections and 100 donations would be deleted that the server never accepted.
+
+A group of exactly one refused row is unaffected and is still dropped: there is no sibling row whose
+success could contradict the refusal, so the refusal is the only evidence there is.
+
+**The fallback stops at the first retryable row.** When the network drops mid-fallback, every
+remaining row would burn a full connect-plus-read timeout and stay queued regardless. The loop breaks
+and the next flush retries them.
+
+**`lastError` is captured in the fallback's rejected branch**, from the individual row's response
+rather than the batch's — that branch is the one that ends in a deleted donation, so it is the one
+whose reason has to survive. It goes through `TelemetryRedactor.scrub` then `truncate`, in that order,
+so a byte-level cut cannot bisect a secret into a surviving half.
+
+**The transport refuses redirects.** `instanceFollowRedirects = false`: the request headers carry the
+project key, `HttpURLConnection` replays every header onto a redirect target, and a redirect target is
+not the host we authenticated to. A 3xx comes back as an ordinary non-success status, which is
+retryable. Phase 2b's https-scheme check depends on this — without it, a configured `https://`
+endpoint that redirects to `http://` sends the key in cleartext and the scheme check buys nothing.
