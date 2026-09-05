@@ -960,7 +960,7 @@ fun ExportDialog(
                 border = BorderStroke(responsiveDp(2.dp), Color(settings.buttonBorderColor))
             ) {
                 if (isBusy) {
-                    Text(strings.importing, color = Color(settings.buttonBorderColor))
+                    Text(strings.exporting, color = Color(settings.buttonBorderColor))
                 } else {
                     Text(strings.export, color = Color(settings.buttonBorderColor))
                 }
