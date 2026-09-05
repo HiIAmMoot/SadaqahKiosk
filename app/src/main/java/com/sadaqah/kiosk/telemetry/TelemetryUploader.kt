@@ -51,10 +51,18 @@ class TelemetryUploader(
                         val single = send(table, listOf(event))
                         when {
                             single.isSuccess -> uploaded += event.id
-                            single.isPermanentRejection -> rejected += event.id
+                            single.isPermanentRejection -> {
+                                rejected += event.id
+                                lastError = describe(single)
+                            }
                             else -> {
+                                // The network went away mid-fallback. Every
+                                // remaining row would burn a full connect-plus-read
+                                // timeout and stay queued regardless, so stop and
+                                // let the next flush retry them.
                                 retryable = true
                                 lastError = describe(single)
+                                break
                             }
                         }
                     }
@@ -93,7 +101,9 @@ class TelemetryUploader(
      *  through the house redactor rather than a manual replace of one known
      *  value — a server can echo back tokens we did not put in the request. */
     private fun describe(response: HttpResponse): String {
-        val body = TelemetryRedactor.scrub(response.body, anonKey) ?: ""
+        val body = TelemetryRedactor.truncate(
+            TelemetryRedactor.scrub(response.body, anonKey)
+        ) ?: ""
         return "HTTP ${response.code} $body".trim()
     }
 }
