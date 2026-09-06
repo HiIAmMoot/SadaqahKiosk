@@ -1606,11 +1606,16 @@ class MainActivity : FragmentActivity() {
                 is ActivationResult.Succeeded -> {
                     // The screen would otherwise keep reporting "not yet
                     // reporting" after a proven-good test.
-                    onSettingsChange(settings.copy(analyticsActivatedAtMs = System.currentTimeMillis()))
+                    // Stamped once. The field names when this kiosk began reporting, and
+                    // overwriting it on every later test press would make that drift
+                    // forward forever, so it would never answer the question it exists for.
+                    if (settings.analyticsActivatedAtMs == 0L) {
+                        onSettingsChange(settings.copy(analyticsActivatedAtMs = System.currentTimeMillis()))
+                    }
                     TestConnectionState.Succeeded(strings.analyticsTestSucceeded)
                 }
                 is ActivationResult.Queued -> TestConnectionState.Queued(strings.analyticsTestQueued)
-                is ActivationResult.Blocked -> TestConnectionState.Failed(analyticsBlockedMessage(result.reason, strings))
+                is ActivationResult.Blocked -> TestConnectionState.Blocked(analyticsBlockedMessage(result.reason, strings))
                 // result.error is already redacted by the uploader, but the screen
                 // renders view.error (from status) for that — never the raw string here.
                 is ActivationResult.Failed -> TestConnectionState.Failed(strings.analyticsTestFailed)

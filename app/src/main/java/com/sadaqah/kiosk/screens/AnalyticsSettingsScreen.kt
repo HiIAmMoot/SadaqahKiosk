@@ -58,6 +58,15 @@ sealed class TestConnectionState {
     data class Succeeded(val message: String) : TestConnectionState()
     data class Queued(val message: String) : TestConnectionState()
     data class Failed(val message: String) : TestConnectionState()
+
+    /**
+     * Never attempted — something refused before the request was made, such as no
+     * network or an active backoff. Deliberately distinct from [Failed]: rendering
+     * "waiting before retrying" in red tells an operator their destination is
+     * broken when it may be perfectly fine, and sends them to re-check settings
+     * that were never the problem.
+     */
+    data class Blocked(val message: String) : TestConnectionState()
 }
 
 /**
@@ -257,6 +266,7 @@ fun AnalyticsSettingsScreen(
                             is TestConnectionState.Succeeded -> Text(testState.message, color = Color(0xFF2E7D32), fontSize = responsiveSp(12.0))
                             is TestConnectionState.Queued -> Text(testState.message, color = border, fontSize = responsiveSp(12.0))
                             is TestConnectionState.Failed -> Text(testState.message, color = errorColor, fontSize = responsiveSp(12.0))
+                            is TestConnectionState.Blocked -> Text(testState.message, color = border, fontSize = responsiveSp(12.0))
                         }
                     }
                 }
