@@ -335,6 +335,9 @@ interface Strings {
     val analyticsFailedAttempts: String
     val analyticsRetryIn: String
     val analyticsDropped: String
+    // Fix round 2 (I5): lets the operator clear a dropped-events count they have
+    // read and understood, without touching the outbox or the destination.
+    val analyticsAcknowledgeDropped: String
 }
 
 // ── Dutch ─────────────────────────────────────────────────────────────────────
@@ -598,6 +601,7 @@ object DutchStrings : Strings {
     override val analyticsFailedAttempts = "Mislukte pogingen"
     override val analyticsRetryIn = "Nieuwe poging over"
     override val analyticsDropped = "Verwijderd (opslag vol of te oud)"
+    override val analyticsAcknowledgeDropped = "Bevestigen"
 }
 
 // ── English ───────────────────────────────────────────────────────────────────
@@ -777,6 +781,7 @@ object EnglishStrings : Strings {
     override val analyticsFailedAttempts = "Failed attempts"
     override val analyticsRetryIn = "Retrying in"
     override val analyticsDropped = "Discarded (storage full or too old)"
+    override val analyticsAcknowledgeDropped = "Acknowledge"
 }
 
 // ── German ────────────────────────────────────────────────────────────────────
@@ -1040,6 +1045,7 @@ object GermanStrings : Strings {
     override val analyticsFailedAttempts = "Fehlgeschlagene Versuche"
     override val analyticsRetryIn = "Erneuter Versuch in"
     override val analyticsDropped = "Verworfen (Speicher voll oder zu alt)"
+    override val analyticsAcknowledgeDropped = "Bestätigen"
 }
 
 // ── French ────────────────────────────────────────────────────────────────────
@@ -1303,6 +1309,7 @@ object FrenchStrings : Strings {
     override val analyticsFailedAttempts = "Tentatives échouées"
     override val analyticsRetryIn = "Nouvelle tentative dans"
     override val analyticsDropped = "Supprimé (stockage plein ou trop ancien)"
+    override val analyticsAcknowledgeDropped = "Confirmer"
 }
 
 // ── Spanish ───────────────────────────────────────────────────────────────────
@@ -1566,6 +1573,7 @@ object SpanishStrings : Strings {
     override val analyticsFailedAttempts = "Intentos fallidos"
     override val analyticsRetryIn = "Reintentando en"
     override val analyticsDropped = "Descartado (almacenamiento lleno o demasiado antiguo)"
+    override val analyticsAcknowledgeDropped = "Confirmar"
 }
 
 // ── Italian ───────────────────────────────────────────────────────────────────
@@ -1829,6 +1837,7 @@ object ItalianStrings : Strings {
     override val analyticsFailedAttempts = "Tentativi falliti"
     override val analyticsRetryIn = "Nuovo tentativo tra"
     override val analyticsDropped = "Scartato (memoria piena o troppo vecchio)"
+    override val analyticsAcknowledgeDropped = "Conferma"
 }
 
 // ── Turkish ───────────────────────────────────────────────────────────────────
@@ -2092,6 +2101,7 @@ object TurkishStrings : Strings {
     override val analyticsFailedAttempts = "Başarısız denemeler"
     override val analyticsRetryIn = "Yeniden deneme"
     override val analyticsDropped = "Atıldı (depolama dolu ya da çok eski)"
+    override val analyticsAcknowledgeDropped = "Onayla"
 }
 
 // ── Arabic ────────────────────────────────────────────────────────────────────
@@ -2355,4 +2365,5 @@ object ArabicStrings : Strings {
     override val analyticsFailedAttempts = "المحاولات الفاشلة"
     override val analyticsRetryIn = "إعادة المحاولة خلال"
     override val analyticsDropped = "تم الحذف (التخزين ممتلئ أو قديم جدًا)"
+    override val analyticsAcknowledgeDropped = "تأكيد"
 }
