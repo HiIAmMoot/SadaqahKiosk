@@ -199,6 +199,25 @@ class AnalyticsPresenterTest {
         assertEquals("HTTP 401 bad key", view(status = status).error)
     }
 
+    /**
+     * A partial success and a retryable failure in the same flush stamp
+     * lastSuccessMs and lastErrorAtMs from one clock() read (TelemetryManager
+     * flush's retryableFailure branch), so they land equal, not ordered. `<=`
+     * must still show the error here — mutating it to `<` passes every other
+     * test in this file (all three use strictly-ordered timestamps) while
+     * silently suppressing exactly the failure Ruling AR exists to surface.
+     */
+    @Test
+    fun aFailureRecordedInTheSameFlushAsAPartialSuccessIsStillShown() {
+        val status = TelemetryStatus(
+            queued = 0,
+            lastError = "HTTP 503 down",
+            lastErrorAtMs = now,
+            lastSuccessMs = now
+        )
+        assertEquals("HTTP 503 down", view(status = status).error)
+    }
+
     @Test
     fun backoffIsReportedOnlyWhileItIsInTheFuture() {
         assertTrue(view(status = TelemetryStatus(backoffUntilMs = now + 30_000)).backingOff)

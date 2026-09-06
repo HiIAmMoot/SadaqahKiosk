@@ -42,10 +42,27 @@ interface TelemetryStatusStore {
      */
     fun read(): TelemetryStatus
     fun write(status: TelemetryStatus)
+
+    /**
+     * Atomic read-modify-write: [transform] sees the value in the store *at the
+     * moment this call runs*, never a snapshot captured earlier by the caller.
+     * The default is not atomic on its own — a concurrent [write] between this
+     * [read] and this [write] would still be lost — so both real implementations
+     * override it under a lock. Exists because [TelemetryManager.flush] reads
+     * status before a network call that can run for minutes and writes it after;
+     * anything else that wrote to the store during that window (an outbox
+     * eviction's drop count, chiefly) must not be clobbered by that stale write.
+     */
+    fun update(transform: (TelemetryStatus) -> TelemetryStatus) {
+        write(transform(read()))
+    }
 }
 
 class InMemoryStatusStore : TelemetryStatusStore {
     private var status = TelemetryStatus()
-    override fun read(): TelemetryStatus = status
-    override fun write(status: TelemetryStatus) { this.status = status }
+    override fun read(): TelemetryStatus = synchronized(this) { status }
+    override fun write(status: TelemetryStatus) { synchronized(this) { this.status = status } }
+    override fun update(transform: (TelemetryStatus) -> TelemetryStatus) {
+        synchronized(this) { status = transform(status) }
+    }
 }

@@ -342,14 +342,33 @@ class TelemetryOutboxTest {
 
     // ── Dropped reporting ────────────────────────────────────────────────────
 
+    /** Exercises the count cap only — see the name. A fixed clock never ages
+     *  anything out, so this says nothing about the age-eviction path; that has
+     *  its own test below, [droppingEventsOverTheAgeCapReportsHowManyWereLost]. */
     @Test
-    fun droppingOldEventsReportsHowManyWereLost() {
+    fun droppingEventsOverTheCountCapReportsHowManyWereLost() {
         val dropped = mutableListOf<Int>()
         val box = TelemetryOutbox(file, maxEvents = 2, compactSlack = 0, clock = { now }) { dropped += it }
         box.appendDonation("a")
         box.appendDonation("b")
         box.appendDonation("c")
         assertEquals("the caller must learn a donation was thrown away", 1, dropped.sum())
+    }
+
+    /** The operator-facing copy says "too old" first, and on a real kiosk the
+     *  age cap is the more likely eviction path — an offline kiosk past
+     *  maxAgeMs, not one that queued 5000 rows. That path had no drop-reporting
+     *  coverage at all until this test. */
+    @Test
+    fun droppingEventsOverTheAgeCapReportsHowManyWereLost() {
+        now = 1_600_000_000_000L // well above PLAUSIBLE_EPOCH_FLOOR_MS
+        val dropped = mutableListOf<Int>()
+        val box = TelemetryOutbox(file, maxAgeMs = 10_000L, compactSlack = 0, clock = { now }) { dropped += it }
+        box.appendDonation("old1")
+        box.appendDonation("old2")
+        now += 20_000L // past maxAgeMs: both earlier rows age out
+        box.appendDonation("fresh")
+        assertEquals("both aged-out rows must be reported, the same way the count cap is", 2, dropped.sum())
     }
 
     @Test

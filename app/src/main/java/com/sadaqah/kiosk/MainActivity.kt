@@ -121,10 +121,15 @@ class MainActivity : FragmentActivity() {
             File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"),
             onDropped = { count ->
                 // Can fire from a background thread and from inside the outbox's
-                // own lock, so this stays a small, non-blocking read-add-write on
-                // the status store and never calls back into the outbox.
-                val current = telemetryStatusStore.read()
-                telemetryStatusStore.write(current.copy(droppedCount = current.droppedCount + count))
+                // own lock, so this stays a small, non-blocking update on the
+                // status store and never calls back into the outbox. Going
+                // through update() rather than a hand-written read-then-write
+                // also closes the race between two of these landing concurrently
+                // (Ruling BA) and the larger one against an in-flight flush
+                // (TelemetryManager.flush reads its own snapshot before a
+                // network call that can run for minutes) — both are now the
+                // same "someone else wrote first" case update() exists to handle.
+                telemetryStatusStore.update { it.copy(droppedCount = it.droppedCount + count) }
             }
         )
     }
@@ -503,6 +508,7 @@ class MainActivity : FragmentActivity() {
                         onSettingsChange(settings.copy(analyticsPrivacyPolicyUrl = privacy, analyticsTermsUrl = terms))
                     },
                     onAnalyticsClearCredentials = ::onAnalyticsClearCredentials,
+                    onAnalyticsAcknowledgeDropped = ::onAnalyticsAcknowledgeDropped,
                     setupStatusFromOffline = setupStatusFromOffline,
                     onExitSetupStatus = ::exitSetupStatus,
                     onUnpinApp = ::unpinApp,
@@ -1727,16 +1733,20 @@ class MainActivity : FragmentActivity() {
      *  press — [AnalyticsPresenter] already covers NOT_CONFIGURED/DISABLED before
      *  the press via [AnalyticsView.testUnavailable].
      *
-     *  Three of the six remaining arms cannot actually fire out of `activate()`
-     *  today: `BACKING_OFF` can't, because `activate()` zeroes `backoffUntilMs`
-     *  before the gate runs; `NOT_ACTIVATED` can't, because `activate()` passes
-     *  `treatAsActivated = true`; `NONE` can't, because `activate()` only wraps a
-     *  non-NONE block in `Blocked` at all. `EMPTY_QUEUE` *can* fire, but only if
-     *  the row this very call just appended is gone by the time the gate runs
-     *  (e.g. a concurrent clear) — nothing is learned about the destination in
-     *  that case, so it must not say "could not reach the destination", the same
-     *  mistake Ruling AY fixed for `Blocked` generally. All four get one honest,
-     *  destination-agnostic message instead of a false claim either way. */
+     *  FIX (I2): `TelemetryManager.activate()` now evaluates the gate *before*
+     *  mutating anything, against inputs that force `activated = true`,
+     *  `backoffUntilMs = 0` and a queue depth that already counts the row about
+     *  to be appended. That pre-check is the only source of a `Blocked` result
+     *  today, and it can only ever produce `DISABLED`, `NOT_CONFIGURED` or
+     *  `NO_NETWORK` — the other three inputs can't fail. So `BACKING_OFF`,
+     *  `NOT_ACTIVATED`, `EMPTY_QUEUE` and `NONE` are all unreachable out of
+     *  `activate()`: the internal `flush()` call that follows a passing
+     *  pre-check sees the same forced-true/zeroed inputs (`TelemetryManager` is
+     *  documented as not meant for concurrent callers, so nothing else can
+     *  change them in between) and cannot itself return a non-`NONE` block for
+     *  this call to wrap. They still get one honest, destination-agnostic
+     *  message rather than being treated as unreachable `when` branches that
+     *  might one day silently start firing. */
     private fun analyticsBlockedMessage(reason: FlushBlock, strings: Strings): String = when (reason) {
         FlushBlock.NO_NETWORK -> strings.noInternetConnection
         FlushBlock.NOT_CONFIGURED -> strings.analyticsTestUnavailableNotConfigured
@@ -1747,6 +1757,18 @@ class MainActivity : FragmentActivity() {
 
     fun onAnalyticsClearCredentials() {
         TelemetryTeardown.clearEverything(telemetryCredentials, telemetryOutbox, telemetryStatusStore)
+        refreshAnalyticsSnapshot()
+    }
+
+    /** FIX (I5): the operator's acknowledgement of a shown drop count. Zeroes
+     *  [TelemetryStatus.droppedCount] and nothing else — not the outbox, not the
+     *  destination, not any other status field — via the `update` seam so it
+     *  can never clobber a droppedCount bump (or anything else) written
+     *  concurrently. A counter nobody can clear stops being read; this is what
+     *  lets the next real drop be seen as new rather than folded into an old,
+     *  already-understood number. */
+    fun onAnalyticsAcknowledgeDropped() {
+        telemetryStatusStore.update { it.copy(droppedCount = 0) }
         refreshAnalyticsSnapshot()
     }
 
@@ -1968,6 +1990,7 @@ fun AppUI(
     onAnalyticsKioskCodeChange: (String) -> Unit,
     onAnalyticsPolicyUrlsChange: (String, String) -> Unit,
     onAnalyticsClearCredentials: () -> Unit,
+    onAnalyticsAcknowledgeDropped: () -> Unit,
     onShowSetupStatus: (Boolean) -> Unit,
     setupStatusFromOffline: Boolean,
     onExitSetupStatus: () -> Unit,
@@ -2049,7 +2072,8 @@ fun AppUI(
                 onTestConnection = onAnalyticsTestConnection,
                 onKioskCodeChange = onAnalyticsKioskCodeChange,
                 onPolicyUrlsChange = onAnalyticsPolicyUrlsChange,
-                onClearCredentials = onAnalyticsClearCredentials
+                onClearCredentials = onAnalyticsClearCredentials,
+                onAcknowledgeDropped = onAnalyticsAcknowledgeDropped
             )
             showSetupStatus -> SetupStatusScreen(
                 isNetworkAvailable = isNetworkAvailable,
