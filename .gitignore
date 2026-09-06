@@ -40,3 +40,8 @@ keystore.properties
 test-output.txt
 *-test-output.txt
 build-output.txt
+
+# Handoff notes from other agents — working reference, not shipped source.
+# May carry live endpoints or keys, which must never enter git history.
+Handoffs/
+handoffs/
