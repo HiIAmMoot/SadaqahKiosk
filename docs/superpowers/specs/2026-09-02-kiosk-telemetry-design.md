@@ -316,9 +316,31 @@ that would carry the notice, and its absence does not change the support answer.
 
 ### Idempotency
 
-Every insert uses the client-generated `id` with
-`Prefer: resolution=ignore-duplicates`. Retrying after an ambiguous network
-failure is therefore safe.
+*Corrected against the live backend on 2026-09-06 — the original version of this
+section, which called for `Prefer: resolution=ignore-duplicates`, was wrong and
+would have been re-implemented by anyone reading it. See below.*
+
+Every insert sends `Prefer: return=minimal` and nothing else in that header.
+`resolution=ignore-duplicates` is deliberately not sent: PostgREST implements it
+as an upsert, and the upsert path requires `SELECT` on the target table. The
+device key is granted `INSERT` only, on purpose — every kiosk ships the same
+key, so it is assumed leaked, and withholding `SELECT` is what keeps a leaked
+key from reading any donation row in the fleet. Requesting
+`resolution=ignore-duplicates` (or `return=representation`, which is a `SELECT`
+for the same reason) against a key with no `SELECT` grant fails outright, with
+`401`.
+
+The idempotency mechanism is the client-generated `id` itself: it is the
+primary key on the target table, so an insert that repeats an `id` already
+stored collides on that key rather than creating a duplicate row. The server's
+answer to a collision is `409` (`SQLSTATE 23505`), and that is the signal a
+retry was absorbed — on a single-row request, `409` means this exact row is
+already safely stored, which is success, not a rejection. A collision inside a
+multi-row request is different: PostgREST executes a batch insert as one
+statement, so any row colliding aborts the whole statement and the other rows
+in it never landed. A `409` on a batch therefore falls back to sending its rows
+individually, the same way a row-level refusal does, so each row's true outcome
+is resolved on its own.
 
 This matters more than usual: these kiosks lose connectivity mid-request
 routinely, and a double-counted donation produces revenue figures that are

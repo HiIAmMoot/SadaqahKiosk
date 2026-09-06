@@ -5,11 +5,17 @@ import java.net.URI
 /**
  * Where telemetry goes and what authenticates it.
  *
- * Deliberately not a data class: a generated toString would print the anon key,
- * and one `Log.d(TAG, "$config")` is all it takes to put a credential in logcat.
+ * Deliberately not a data class: a generated toString would print the
+ * publishable key, and one `Log.d(TAG, "$config")` is all it takes to put a
+ * credential in logcat.
+ *
+ * Named `publishableKey` because that is what Supabase calls it: the anon key
+ * it replaces has been retired. The Postgres role it authenticates as is still
+ * called `anon` (that did not change), so a `42501` permission-denied hint
+ * mentioning `anon` is naming the role, not a stale key type.
  */
-class TelemetryConfig(val baseUrl: String, val anonKey: String) {
-    override fun toString(): String = "TelemetryConfig(baseUrl=$baseUrl, anonKey=[redacted])"
+class TelemetryConfig(val baseUrl: String, val publishableKey: String) {
+    override fun toString(): String = "TelemetryConfig(baseUrl=$baseUrl, publishableKey=[redacted])"
 }
 
 sealed class UrlVerdict {
@@ -34,7 +40,7 @@ object TelemetryUrl {
             return UrlVerdict.Invalid("That is not a valid URL.")
         }
 
-        // Cleartext would put the anon key on the wire in the clear, and a mosque's
+        // Cleartext would put the publishable key on the wire in the clear, and a mosque's
         // wifi is not a controlled network. Checked here, at entry, so the operator
         // learns at the bench rather than from a kiosk that never reported.
         if (!"https".equals(uri.scheme, ignoreCase = true)) {
@@ -92,7 +98,7 @@ class TelemetryCredentials(private val store: SecretStore) {
 
     fun load(): TelemetryConfig? {
         val storedUrl = store.get(KEY_URL)?.takeIf { it.isNotBlank() } ?: return null
-        val key = store.get(KEY_ANON)?.takeIf { it.isNotBlank() } ?: return null
+        val key = store.get(KEY_PUBLISHABLE)?.takeIf { it.isNotBlank() } ?: return null
         // The scheme is enforced at save() time, but that is only where credentials
         // enter, not where they're used. A stored http:// URL — from a downgrade, a
         // migration, or any other writer touching the same keys — must not load as
@@ -110,16 +116,16 @@ class TelemetryCredentials(private val store: SecretStore) {
      *  every flush. Wiping is the only outcome that cannot silently lie about
      *  being configured, so a storage failure clears both halves rather than
      *  leaving that stale pairing behind. */
-    fun save(baseUrl: String, anonKey: String): UrlVerdict {
-        val key = anonKey.trim()
-        if (key.isBlank()) return UrlVerdict.Invalid("Enter the anon key.")
+    fun save(baseUrl: String, publishableKey: String): UrlVerdict {
+        val key = publishableKey.trim()
+        if (key.isBlank()) return UrlVerdict.Invalid("Enter the publishable key.")
         val verdict = TelemetryUrl.check(baseUrl)
         if (verdict !is UrlVerdict.Valid) return verdict
 
         // A store that cannot write must not be reported as configured. Both halves
         // are attempted, then checked: a half-written destination would read as
         // configured and fail every flush afterwards.
-        val stored = store.put(KEY_URL, verdict.normalised) && store.put(KEY_ANON, key)
+        val stored = store.put(KEY_URL, verdict.normalised) && store.put(KEY_PUBLISHABLE, key)
         if (!stored) {
             clear()
             return UrlVerdict.Invalid("This device could not store the credentials securely.")
@@ -129,13 +135,18 @@ class TelemetryCredentials(private val store: SecretStore) {
 
     fun clear() {
         store.remove(KEY_URL)
-        store.remove(KEY_ANON)
+        store.remove(KEY_PUBLISHABLE)
     }
 
     fun isConfigured(): Boolean = load() != null
 
     private companion object {
         const val KEY_URL = "telemetry_base_url"
-        const val KEY_ANON = "telemetry_anon_key"
+
+        // Renamed from "telemetry_anon_key" when the anon key was replaced by a
+        // publishable key. No migration reads the old name: the settings screen
+        // that would call save() does not exist yet, so nothing has ever stored
+        // credentials under either name on a real device.
+        const val KEY_PUBLISHABLE = "telemetry_publishable_key"
     }
 }

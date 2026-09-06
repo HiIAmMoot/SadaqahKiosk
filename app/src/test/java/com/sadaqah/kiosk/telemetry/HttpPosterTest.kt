@@ -59,9 +59,29 @@ class HttpPosterTest {
     @Test
     fun rowLevelRefusalsArePermanent() {
         assertTrue(HttpResponse(400, null).isPermanentRejection)
-        assertTrue(HttpResponse(409, null).isPermanentRejection)
         assertTrue(HttpResponse(413, null).isPermanentRejection)
         assertTrue(HttpResponse(422, null).isPermanentRejection)
+    }
+
+    /**
+     * 409 used to sit in ROW_LEVEL_REFUSALS. Without
+     * `resolution=ignore-duplicates` the only way a client-generated primary key
+     * collides is a retry of a row already stored, so 409 is not a refusal at
+     * all — it is [HttpResponse.isAlreadyStored], handled separately by
+     * TelemetryUploader.
+     */
+    @Test
+    fun conflictIsNotAPermanentRejectionButIsAlreadyStored() {
+        val response = HttpResponse(409, null)
+        assertFalse("409 must not be treated as a refused row", response.isPermanentRejection)
+        assertTrue(response.isAlreadyStored)
+    }
+
+    @Test
+    fun onlyFourZeroNineIsAlreadyStored() {
+        for (code in listOf(200, 201, 400, 401, 403, 404, 413, 422, 500)) {
+            assertFalse("HTTP $code must not be isAlreadyStored", HttpResponse(code, null).isAlreadyStored)
+        }
     }
 
     /**

@@ -1,4 +1,4 @@
-package com.sadaqah.kiosk.telemetry
+﻿package com.sadaqah.kiosk.telemetry
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -18,7 +18,7 @@ class TelemetryCredentialsTest {
     }
 
     /**
-     * The anon key travels as a request header. Over cleartext it is readable by
+     * The publishable key travels as a request header. Over cleartext it is readable by
      * anything between the kiosk and the server, and a mosque's wifi is not a
      * controlled network. Rejecting at entry means the operator finds out at the
      * bench rather than never.
@@ -124,16 +124,16 @@ class TelemetryCredentialsTest {
     @Test
     fun savingThenLoadingReturnsTheNormalisedDestination() {
         val creds = credentials()
-        assertTrue(creds.save("https://abc.supabase.co/", " anon-key ") is UrlVerdict.Valid)
+        assertTrue(creds.save("https://abc.supabase.co/", " publishable-key ") is UrlVerdict.Valid)
         val config = creds.load()!!
         assertEquals("https://abc.supabase.co", config.baseUrl)
-        assertEquals("anon-key", config.anonKey)
+        assertEquals("publishable-key", config.publishableKey)
     }
 
     @Test
     fun anInvalidUrlIsNotStored() {
         val creds = credentials()
-        assertTrue(creds.save("http://abc.supabase.co", "anon-key") is UrlVerdict.Invalid)
+        assertTrue(creds.save("http://abc.supabase.co", "publishable-key") is UrlVerdict.Invalid)
         assertNull("a rejected destination must not be half-written", creds.load())
         assertFalse(creds.isConfigured())
     }
@@ -167,7 +167,7 @@ class TelemetryCredentialsTest {
     fun aStoredHttpUrlMakesLoadReturnNull() {
         val store = InMemorySecretStore()
         store.put("telemetry_base_url", "http://abc.supabase.co")
-        store.put("telemetry_anon_key", "anon-key")
+        store.put("telemetry_publishable_key", "publishable-key")
         assertNull(TelemetryCredentials(store).load())
     }
 
@@ -175,12 +175,12 @@ class TelemetryCredentialsTest {
     fun clearRemovesBothHalves() {
         val store = InMemorySecretStore()
         val creds = TelemetryCredentials(store)
-        creds.save("https://abc.supabase.co", "anon-key")
+        creds.save("https://abc.supabase.co", "publishable-key")
         creds.clear()
         assertNull(creds.load())
         assertFalse(creds.isConfigured())
         assertNull("the url must not outlive clear()", store.get("telemetry_base_url"))
-        assertNull("the key must not outlive clear()", store.get("telemetry_anon_key"))
+        assertNull("the key must not outlive clear()", store.get("telemetry_publishable_key"))
     }
 
     /**
@@ -196,7 +196,7 @@ class TelemetryCredentialsTest {
     @Test
     fun aStoreThatCannotWriteIsReportedRatherThanAccepted() {
         val creds = TelemetryCredentials(UnwritableSecretStore())
-        val verdict = creds.save("https://abc.supabase.co", "anon-key")
+        val verdict = creds.save("https://abc.supabase.co", "publishable-key")
         assertTrue(verdict is UrlVerdict.Invalid)
         assertFalse("a failed save must not look configured", creds.isConfigured())
     }
@@ -211,7 +211,7 @@ class TelemetryCredentialsTest {
     fun aFailedSecondWriteRollsBackTheFirst() {
         val store = FailsNthWriteSecretStore(failOn = 2)
         val creds = TelemetryCredentials(store)
-        val verdict = creds.save("https://abc.supabase.co", "anon-key")
+        val verdict = creds.save("https://abc.supabase.co", "publishable-key")
         assertTrue(verdict is UrlVerdict.Invalid)
         assertNull(creds.load())
         assertFalse(creds.isConfigured())
@@ -221,14 +221,14 @@ class TelemetryCredentialsTest {
         )
         assertNull(
             "a half-written key must not survive a failed save",
-            store.get("telemetry_anon_key")
+            store.get("telemetry_publishable_key")
         )
     }
 
     @Test
     fun isConfiguredIsTrueAfterASuccessfulSave() {
         val creds = credentials()
-        creds.save("https://abc.supabase.co", "anon-key")
+        creds.save("https://abc.supabase.co", "publishable-key")
         assertTrue(creds.isConfigured())
     }
 
@@ -239,14 +239,14 @@ class TelemetryCredentialsTest {
         creds.save("https://second.supabase.co", "second-key")
         val config = creds.load()!!
         assertEquals("https://second.supabase.co", config.baseUrl)
-        assertEquals("second-key", config.anonKey)
+        assertEquals("second-key", config.publishableKey)
     }
 
     /** A generated toString on a credential holder is how keys reach logcat. */
     @Test
     fun theConfigDoesNotPrintItsKey() {
-        val config = TelemetryConfig("https://abc.supabase.co", "super-secret-anon-key")
-        assertFalse(config.toString().contains("super-secret-anon-key"))
+        val config = TelemetryConfig("https://abc.supabase.co", "super-secret-publishable-key")
+        assertFalse(config.toString().contains("super-secret-publishable-key"))
     }
 
     /**
