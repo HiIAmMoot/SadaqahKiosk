@@ -249,4 +249,44 @@ class TelemetryOutboxTest {
         assertEquals(2, box.size())
         assertFalse(File(file.parentFile, file.name + ".tmp").exists())
     }
+
+    // ── Clear ────────────────────────────────────────────────────────────────
+
+    @Test
+    fun clearEmptiesTheQueue() {
+        val outbox = outbox()
+        outbox.appendDonation("a")
+        outbox.appendDonation("b")
+        outbox.clear()
+        assertEquals(0, outbox.size())
+        assertTrue(outbox.peek().isEmpty())
+    }
+
+    /**
+     * Clearing credentials must not strand identified data on disk: the rows
+     * name a kiosk, and an operator who turns telemetry off has withdrawn the basis
+     * for holding them. The file itself goes, not just its contents.
+     */
+    @Test
+    fun clearRemovesTheFileRatherThanLeavingAnEmptyOne() {
+        val outbox = outbox()
+        outbox.appendDonation("a")
+        outbox.clear()
+        assertFalse(file.exists())
+    }
+
+    @Test
+    fun clearOnAnAbsentFileIsHarmless() {
+        outbox().clear()
+        assertEquals(0, outbox().size())
+    }
+
+    @Test
+    fun theQueueStillWorksAfterBeingCleared() {
+        val outbox = outbox()
+        outbox.appendDonation("a")
+        outbox.clear()
+        outbox.appendDonation("b")
+        assertEquals(listOf("b"), outbox.peek().map { it.id })
+    }
 }

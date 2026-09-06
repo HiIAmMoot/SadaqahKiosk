@@ -38,6 +38,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import com.sadaqah.kiosk.model.Settings
+import com.sadaqah.kiosk.model.SettingsImport
 import com.sadaqah.kiosk.ui.theme.SadaqahKioskTheme
 import com.google.gson.Gson
 import com.sadaqah.kiosk.donations.DonationHistory
@@ -238,6 +239,16 @@ class MainActivity : FragmentActivity() {
                     "https://github.com/HiIAmMoot/SadaqahKiosk"
                 }
                 migrated = migrated.copy(updateRepoUrl = url); dirty = true
+            }
+            if (!json.contains("\"analyticsEnabled\"")) {
+                migrated = migrated.copy(analyticsEnabled = false); dirty = true
+            }
+            // Minted once and never regenerated: a new installId on an existing
+            // kiosk would read as a new device in the data and silently split its
+            // history in two.
+            if (migrated.installId.isBlank()) {
+                migrated = migrated.copy(installId = java.util.UUID.randomUUID().toString())
+                dirty = true
             }
         }
         if (dirty) {
@@ -1416,7 +1427,7 @@ class MainActivity : FragmentActivity() {
         val result = SettingsExportFile.parse(jsonString, password)
         if (result !is ImportResult.Success) return result
 
-        settings = result.settings.copy(logoUri = null)
+        settings = SettingsImport.merge(settings, result.settings)
         saveSettings(settings)
         TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
 
@@ -1431,7 +1442,7 @@ class MainActivity : FragmentActivity() {
     fun importSettingsOnly(jsonString: String): ImportResult {
         val result = SettingsExportFile.parseSettingsOnly(jsonString)
         if (result !is ImportResult.Success) return result
-        settings = result.settings.copy(logoUri = null)
+        settings = SettingsImport.merge(settings, result.settings)
         saveSettings(settings)
         TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
         return result

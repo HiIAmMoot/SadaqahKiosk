@@ -34,5 +34,19 @@ data class Settings(
     // Donation history
     val donationTrackingEnabled: Boolean = true,
     /** Wall-clock instant the averages are computed from. 0 = uninitialised; MainActivity bootstraps it to "now" on first start. */
-    val donationStatsStartedAtMs: Long = 0L
+    val donationStatsStartedAtMs: Long = 0L,
+    // Telemetry (see docs/superpowers/specs/2026-09-02-kiosk-telemetry-design.md).
+    // Credentials are deliberately NOT here — they live in TelemetryCredentials so
+    // they never reach the settings JSON except through the encrypted export path.
+    val analyticsEnabled: Boolean = false,
+    /** 0 = the disclosure has not been shown. Not proof of anything; it exists so
+     *  the disclosure is not re-shown on every visit to the Analytics screen. */
+    val analyticsActivatedAtMs: Long = 0L,
+    val analyticsPrivacyPolicyUrl: String = "",
+    val analyticsTermsUrl: String = "",
+    /** Optional printed panel code. Advisory validation only — see KioskCode. */
+    val kioskCode: String = "",
+    /** Random UUID minted on first run. Never a hardware identifier: ANDROID_ID
+     *  and friends carry restrictions and privacy baggage for no benefit here. */
+    val installId: String = ""
 )

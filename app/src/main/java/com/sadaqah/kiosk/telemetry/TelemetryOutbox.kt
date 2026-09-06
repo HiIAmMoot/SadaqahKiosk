@@ -68,6 +68,13 @@ class TelemetryOutbox(
 
     fun size(): Int = synchronized(lock) { readAll().size }
 
+    /** Removes the queue entirely. Used when credentials are cleared: the rows
+     *  name a kiosk, so leaving them on disk would strand identified data an
+     *  operator has just withdrawn the basis for holding. */
+    fun clear(): Unit = synchronized(lock) {
+        file.delete()
+    }
+
     // ── Internals ────────────────────────────────────────────────────────────
 
     /** Reclaims in batches rather than on every append. Rewriting whenever the
