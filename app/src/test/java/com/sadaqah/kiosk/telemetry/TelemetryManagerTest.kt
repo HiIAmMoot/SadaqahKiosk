@@ -16,6 +16,36 @@ class TelemetryManagerTest {
     private var now = 1_000_000L
     private var online = true
 
+    /** Returns a fixed [HttpResponse] for every call, but records what it saw. */
+    private class ConstantPoster(private val response: HttpResponse) : HttpPoster {
+        var callCount = 0
+            private set
+        val bodies = mutableListOf<String>()
+
+        override fun post(url: String, headers: Map<String, String>, body: String): HttpResponse {
+            callCount++
+            bodies += body
+            return response
+        }
+    }
+
+    /** Returns one response per call, by call index, then repeats its last
+     *  response for any call beyond the script. This is what lets a test drive
+     *  the uploader's per-row fallback: a real batch refusal followed by
+     *  individually-scripted row outcomes. */
+    private class ScriptedPoster(private val responses: List<HttpResponse>) : HttpPoster {
+        var callCount = 0
+            private set
+        val bodies = mutableListOf<String>()
+
+        override fun post(url: String, headers: Map<String, String>, body: String): HttpResponse {
+            val response = responses.getOrElse(callCount) { responses.last() }
+            callCount++
+            bodies += body
+            return response
+        }
+    }
+
     private fun manager(
         outbox: TelemetryOutbox,
         poster: HttpPoster,
@@ -23,7 +53,8 @@ class TelemetryManagerTest {
         activated: Boolean = true,
         credentials: TelemetryCredentials = TelemetryCredentials(InMemorySecretStore())
             .apply { save("https://abc.supabase.co", "anon-key") },
-        statusStore: TelemetryStatusStore = InMemoryStatusStore()
+        statusStore: TelemetryStatusStore = InMemoryStatusStore(),
+        upload: ((TelemetryConfig, List<QueuedEvent>) -> UploadOutcome)? = null
     ) = TelemetryManager(
         outbox = outbox,
         credentials = credentials,
@@ -39,7 +70,10 @@ class TelemetryManagerTest {
             )
         },
         networkAvailable = { online },
-        clock = { now }
+        clock = { now },
+        upload = upload ?: { config, batch ->
+            TelemetryUploader(config.baseUrl, config.anonKey, poster).upload(batch)
+        }
     )
 
     private fun outboxWith(vararg ids: String): TelemetryOutbox {
@@ -51,7 +85,7 @@ class TelemetryManagerTest {
     @Test
     fun aSuccessfulFlushDeletesTheUploadedRows() {
         val outbox = outboxWith("a", "b")
-        val result = manager(outbox, { _, _, _ -> HttpResponse(201, null) }).flush()
+        val result = manager(outbox, ConstantPoster(HttpResponse(201, null))).flush()
         assertEquals(FlushBlock.NONE, result)
         assertEquals(0, outbox.size())
     }
@@ -64,7 +98,7 @@ class TelemetryManagerTest {
     @Test
     fun aRetryableFailureKeepsEveryRow() {
         val outbox = outboxWith("a", "b")
-        val result = manager(outbox, { _, _, _ -> HttpResponse(503, "down") }).flush()
+        val result = manager(outbox, ConstantPoster(HttpResponse(503, "down"))).flush()
         assertEquals(FlushBlock.NONE, result)
         assertEquals(2, outbox.size())
     }
@@ -72,7 +106,7 @@ class TelemetryManagerTest {
     @Test
     fun aRetryableFailureBacksOff() {
         val store = InMemoryStatusStore()
-        manager(outboxWith("a"), { _, _, _ -> HttpResponse(503, "down") }, statusStore = store).flush()
+        manager(outboxWith("a"), ConstantPoster(HttpResponse(503, "down")), statusStore = store).flush()
         val status = store.read()
         assertEquals(1, status.consecutiveFailures)
         assertTrue("a failure must push the next attempt out", status.backoffUntilMs > now)
@@ -81,8 +115,12 @@ class TelemetryManagerTest {
     @Test
     fun aSuccessResetsTheFailureCount() {
         val store = InMemoryStatusStore()
-        store.write(store.read().copy(consecutiveFailures = 4, backoffUntilMs = 0L))
-        manager(outboxWith("a"), { _, _, _ -> HttpResponse(201, null) }, statusStore = store).flush()
+        // A non-null lastError is seeded so clearing it below is a genuine
+        // assertion rather than one that would pass with the reset deleted —
+        // the previous seed left lastError null already, which made
+        // assertNull(lastError) vacuous.
+        store.write(store.read().copy(consecutiveFailures = 4, backoffUntilMs = 0L, lastError = "HTTP 503 down"))
+        manager(outboxWith("a"), ConstantPoster(HttpResponse(201, null)), statusStore = store).flush()
         assertEquals(0, store.read().consecutiveFailures)
         assertEquals(now, store.read().lastSuccessMs)
         assertNull(store.read().lastError)
@@ -90,39 +128,42 @@ class TelemetryManagerTest {
 
     @Test
     fun theGateStopsAFlushBeforeAnyRequestIsMade() {
-        var called = false
+        val poster = ConstantPoster(HttpResponse(201, null))
         val outbox = outboxWith("a")
-        val result = manager(
-            outbox,
-            { _, _, _ -> called = true; HttpResponse(201, null) },
-            enabled = false
-        ).flush()
+        val result = manager(outbox, poster, enabled = false).flush()
         assertEquals(FlushBlock.DISABLED, result)
-        assertFalse("a disabled kiosk must not touch the network", called)
+        assertEquals("a disabled kiosk must not touch the network", 0, poster.callCount)
         assertEquals(1, outbox.size())
     }
 
     @Test
     fun anUnconfiguredKioskIsBlockedRatherThanUploadingToNowhere() {
+        val poster = ConstantPoster(HttpResponse(201, null))
+        val outbox = outboxWith("a")
         val result = manager(
-            outboxWith("a"),
-            { _, _, _ -> HttpResponse(201, null) },
+            outbox,
+            poster,
             credentials = TelemetryCredentials(InMemorySecretStore())
         ).flush()
         assertEquals(FlushBlock.NOT_CONFIGURED, result)
+        assertEquals("no destination means no request", 0, poster.callCount)
+        assertEquals(1, outbox.size())
     }
 
     @Test
     fun beingOfflineBlocksTheFlush() {
         online = false
-        assertEquals(FlushBlock.NO_NETWORK, manager(outboxWith("a"), { _, _, _ -> HttpResponse(201, null) }).flush())
-        online = true
+        val poster = ConstantPoster(HttpResponse(201, null))
+        val outbox = outboxWith("a")
+        assertEquals(FlushBlock.NO_NETWORK, manager(outbox, poster).flush())
+        assertEquals("no network means no request", 0, poster.callCount)
+        assertEquals(1, outbox.size())
     }
 
     @Test
     fun anEmptyQueueIsNotAFailure() {
         val store = InMemoryStatusStore()
-        val result = manager(TelemetryOutbox(temp.newFile()), { _, _, _ -> HttpResponse(500, null) }, statusStore = store).flush()
+        val result = manager(TelemetryOutbox(temp.newFile()), ConstantPoster(HttpResponse(500, null)), statusStore = store).flush()
         assertEquals(FlushBlock.EMPTY_QUEUE, result)
         assertEquals("nothing to send is not a failure", 0, store.read().consecutiveFailures)
     }
@@ -131,10 +172,21 @@ class TelemetryManagerTest {
     fun aBackoffDeadlineInTheFutureBlocksTheFlush() {
         val store = InMemoryStatusStore()
         store.write(store.read().copy(backoffUntilMs = now + 30_000))
-        assertEquals(
-            FlushBlock.BACKING_OFF,
-            manager(outboxWith("a"), { _, _, _ -> HttpResponse(201, null) }, statusStore = store).flush()
-        )
+        val poster = ConstantPoster(HttpResponse(201, null))
+        val outbox = outboxWith("a")
+        assertEquals(FlushBlock.BACKING_OFF, manager(outbox, poster, statusStore = store).flush())
+        assertEquals("a live backoff deadline must not be tested against the network", 0, poster.callCount)
+        assertEquals(1, outbox.size())
+    }
+
+    @Test
+    fun activatedFalseBlocksAPlainFlushWithNotActivated() {
+        val poster = ConstantPoster(HttpResponse(201, null))
+        val outbox = outboxWith("a")
+        val result = manager(outbox, poster, activated = false).flush()
+        assertEquals(FlushBlock.NOT_ACTIVATED, result)
+        assertEquals(0, poster.callCount)
+        assertEquals(1, outbox.size())
     }
 
     /** Activation is also the configuration smoke test: a mistyped endpoint is
@@ -142,31 +194,221 @@ class TelemetryManagerTest {
     @Test
     fun activateEnqueuesAnActivationRowAndFlushesIt() {
         val outbox = TelemetryOutbox(temp.newFile())
-        val bodies = mutableListOf<String>()
-        val result = manager(outbox, { _, _, body -> bodies += body; HttpResponse(201, null) })
-            .activate()
-        assertEquals(FlushBlock.NONE, result)
+        val poster = ConstantPoster(HttpResponse(201, null))
+        val result = manager(outbox, poster).activate()
+        assertEquals(ActivationResult.Succeeded, result)
         assertEquals(0, outbox.size())
-        assertTrue(bodies.single().contains("install-1"))
+        assertTrue(poster.bodies.single().contains("install-1"))
+    }
+
+    /**
+     * This is the deadlock the review flagged: activation is what sets
+     * `activated`, so a gate check on `activated` made the button permanently
+     * unable to succeed on a fresh kiosk. `activate()` must bypass that one
+     * check while every other gate check still applies.
+     */
+    @Test
+    fun activateSucceedsOnAFreshKioskEvenThoughActivatedIsStillFalse() {
+        val outbox = TelemetryOutbox(temp.newFile())
+        val poster = ConstantPoster(HttpResponse(201, null))
+        val result = manager(outbox, poster, activated = false).activate()
+        assertEquals(ActivationResult.Succeeded, result)
+        assertEquals(0, outbox.size())
+    }
+
+    /** Even bypassing NOT_ACTIVATED, every other gate check still blocks
+     *  activation — a disabled kiosk must not smoke-test anything. */
+    @Test
+    fun activateIsStillBlockedByEveryOtherGateCheck() {
+        val outbox = TelemetryOutbox(temp.newFile())
+        val poster = ConstantPoster(HttpResponse(201, null))
+        val result = manager(outbox, poster, enabled = false, activated = false).activate()
+        assertEquals(ActivationResult.Blocked(FlushBlock.DISABLED), result)
+        assertEquals(0, poster.callCount)
+        // The row is appended before the gate is asked, so it must survive.
+        assertEquals(1, outbox.size())
     }
 
     @Test
     fun aFailedActivationLeavesTheRowQueuedSoTheOperatorCanRetry() {
         val outbox = TelemetryOutbox(temp.newFile())
-        manager(outbox, { _, _, _ -> HttpResponse(401, "bad key") }).activate()
+        val result = manager(outbox, ConstantPoster(HttpResponse(401, "bad key"))).activate()
         assertEquals(1, outbox.size())
+        // 401 is retryable (not a row-level refusal), so the flush ran and did
+        // not land — this must not be reported the same way as FlushBlock.NONE
+        // used to make it look, which was indistinguishable from success.
+        assertTrue("a non-landed activation must report Failed, not Succeeded", result is ActivationResult.Failed)
+        assertTrue((result as ActivationResult.Failed).error?.contains("401") == true)
     }
 
     @Test
     fun theStoredErrorNeverContainsTheAnonKey() {
         val store = InMemoryStatusStore()
-        manager(outboxWith("a"), { _, _, _ -> HttpResponse(500, "rejected key anon-key") }, statusStore = store).flush()
+        manager(outboxWith("a"), ConstantPoster(HttpResponse(500, "rejected key anon-key")), statusStore = store).flush()
         assertFalse(store.read().lastError!!.contains("anon-key"))
     }
 
     @Test
     fun statusReportsTheQueueDepth() {
         val outbox = outboxWith("a", "b", "c")
-        assertEquals(3, manager(outbox, { _, _, _ -> HttpResponse(201, null) }).status().queued)
+        val store = InMemoryStatusStore()
+        // Every stored field is seeded to a distinctive value so the test fails
+        // if status() ever discards one of them in favour of a fresh queue-only
+        // TelemetryStatus.
+        store.write(
+            TelemetryStatus(
+                queued = 999,
+                lastSuccessMs = 42L,
+                lastError = "HTTP 503 down",
+                consecutiveFailures = 7,
+                backoffUntilMs = 123_456L
+            )
+        )
+        val reported = manager(outbox, ConstantPoster(HttpResponse(201, null)), statusStore = store).status()
+        assertEquals("queued must be recomputed from the outbox, not trusted from storage", 3, reported.queued)
+        assertEquals(42L, reported.lastSuccessMs)
+        assertEquals("HTTP 503 down", reported.lastError)
+        assertEquals(7, reported.consecutiveFailures)
+        assertEquals(123_456L, reported.backoffUntilMs)
+    }
+
+    // ── FIX 2: flush() has no exception handling ───────────────────────────
+
+    @Test
+    fun aThrowingUploadBacksOffRatherThanRetryingInATightLoop() {
+        val store = InMemoryStatusStore()
+        val outbox = outboxWith("a")
+        val result = manager(
+            outbox,
+            ConstantPoster(HttpResponse(201, null)),
+            statusStore = store,
+            upload = { _, _ -> throw IllegalStateException("row 17: amount_cents=500") }
+        ).flush()
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals("a throw must not remove anything the uploader never named", 1, outbox.size())
+        assertEquals(1, store.read().consecutiveFailures)
+        assertTrue("a throwing flush must still back off", store.read().backoffUntilMs > now)
+        assertEquals(
+            "the error must be the exception's class name, never its message",
+            "java.lang.IllegalStateException",
+            store.read().lastError
+        )
+    }
+
+    @Test
+    fun anAppendFailureInActivateSurfacesAsFailedRatherThanBeingSwallowedOrThrown() {
+        // Pointing the outbox at a directory makes File.appendText throw, the
+        // same shape TelemetryOutbox.append documents for a real disk failure.
+        val outbox = TelemetryOutbox(temp.newFolder())
+        val poster = ConstantPoster(HttpResponse(201, null))
+        val result = manager(outbox, poster).activate()
+        assertTrue("an append failure must surface as Failed, not Succeeded or a thrown exception", result is ActivationResult.Failed)
+        assertEquals(0, poster.callCount)
+    }
+
+    // ── FIX 3: the success branch must require evidence, not just !retryable ─
+
+    @Test
+    fun anOutcomeThatUploadedAndRejectedNothingIsNotRecordedAsASuccess() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(lastError = "HTTP 503 down", consecutiveFailures = 3))
+        val outbox = outboxWith("a")
+        val result = manager(
+            outbox,
+            ConstantPoster(HttpResponse(201, null)),
+            statusStore = store,
+            // This exact shape is unreachable through the real TelemetryUploader
+            // for a non-empty batch (see UploadOutcome's contract note) — which
+            // is exactly why it needs an explicit test rather than a trust in
+            // that reachability argument holding forever.
+            upload = { _, _ -> UploadOutcome(emptySet(), emptySet(), false, null) }
+        ).flush()
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals("nothing named by the outcome must be removed", 1, outbox.size())
+        assertEquals("no evidence of success must not clear a real error", "HTTP 503 down", store.read().lastError)
+        assertEquals("no evidence of success must not reset the failure count", 3, store.read().consecutiveFailures)
+    }
+
+    // ── FIX 4: partial outcomes and transport failures, driven for real ─────
+
+    /**
+     * A two-row batch is refused as a batch, then retried row by row: the first
+     * row is accepted, the second is permanently refused. This is the exact
+     * shape TelemetryUploader.upload uses its per-row fallback for, and it is
+     * the only way to make rejectedIds non-empty through the real uploader.
+     */
+    @Test
+    fun aPartialOutcomeRemovesBothTheUploadedAndTheRejectedRow() {
+        val outbox = outboxWith("a", "b")
+        val poster = ScriptedPoster(
+            listOf(
+                HttpResponse(400, "batch refused"), // the 2-row batch, refused together
+                HttpResponse(201, null),             // row "a" retried alone: accepted
+                HttpResponse(400, "row refused")     // row "b" retried alone: refused
+            )
+        )
+        val result = manager(outbox, poster).flush()
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals("exactly the batch attempt plus one retry per row", 3, poster.callCount)
+        assertEquals(
+            "both the uploaded row and the sibling-corroborated rejected row must be removed",
+            0,
+            outbox.size()
+        )
+    }
+
+    @Test
+    fun aTransportFailureIsTreatedAsRetryableAndKeepsEveryRow() {
+        val store = InMemoryStatusStore()
+        val outbox = outboxWith("a", "b")
+        val poster = ConstantPoster(HttpResponse(HttpResponse.TRANSPORT_FAILURE, null))
+        val result = manager(outbox, poster, statusStore = store).flush()
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals(1, poster.callCount)
+        assertEquals("a transport failure must keep every row", 2, outbox.size())
+        assertEquals(1, store.read().consecutiveFailures)
+    }
+
+    // ── FIX 5: missing coverage ──────────────────────────────────────────────
+
+    @Test
+    fun aBatchLargerThanPeeksLimitLeavesTheRemainderQueued() {
+        val ids = (1..(TelemetryOutbox.DEFAULT_BATCH + 5)).map { "id-$it" }.toTypedArray()
+        val outbox = outboxWith(*ids)
+        val poster = ConstantPoster(HttpResponse(201, null))
+        val result = manager(outbox, poster).flush()
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals(1, poster.callCount)
+        assertEquals(
+            "only the first page is taken; the untaken remainder must survive",
+            5,
+            outbox.size()
+        )
+    }
+
+    /**
+     * Pins the deliberate decision (commented at the write site in
+     * TelemetryManager): a partial success still moves lastSuccessMs, even
+     * though the flush also backs off, because rows genuinely did land.
+     */
+    @Test
+    fun aPartialSuccessMovesLastSuccessMsWhileStillBackingOff() {
+        val store = InMemoryStatusStore()
+        val outbox = outboxWith("a", "b", "c")
+        val poster = ScriptedPoster(
+            listOf(
+                HttpResponse(400, "batch refused"),                    // 3-row batch, refused together
+                HttpResponse(201, null),                                // row "a" retried alone: accepted
+                HttpResponse(HttpResponse.TRANSPORT_FAILURE, null)      // row "b" retried alone: network dies
+                // row "c" is never attempted — the fallback stops on transport failure
+            )
+        )
+        val result = manager(outbox, poster, statusStore = store).flush()
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals(3, poster.callCount)
+        assertEquals("the accepted row must be removed; the untried and unresolved rows must not", 2, outbox.size())
+        assertEquals(now, store.read().lastSuccessMs)
+        assertTrue("a flush with a genuine failure must still back off", store.read().backoffUntilMs > now)
+        assertEquals(1, store.read().consecutiveFailures)
     }
 }
