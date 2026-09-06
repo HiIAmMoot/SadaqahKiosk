@@ -40,9 +40,36 @@ object TelemetryUrl {
         if (!"https".equals(uri.scheme, ignoreCase = true)) {
             return UrlVerdict.Invalid("The URL must start with https://")
         }
-        if (uri.host.isNullOrBlank()) return UrlVerdict.Invalid("That URL has no host.")
 
-        return UrlVerdict.Valid(trimmed)
+        // A base URL has no business carrying credentials, a query or a fragment:
+        // TelemetryConfig.toString() prints baseUrl in full, so any of these would
+        // defeat the hand-written redaction the moment an operator pastes a URL
+        // that already has a token in it (Supabase hands those out as
+        // `?apikey=...` URLs). uri.userInfo alone is not enough to catch it: a
+        // registry-based authority (see the host fallback below) leaves userInfo
+        // null even when the raw authority contains "user:pass@", so the raw
+        // authority is checked too.
+        val authorityHasUserinfo = uri.rawAuthority?.contains('@') == true
+        if (uri.userInfo != null || authorityHasUserinfo) {
+            return UrlVerdict.Invalid("Remove the username and password from the URL.")
+        }
+        if (uri.query != null) return UrlVerdict.Invalid("Remove everything from the ? onwards.")
+        if (uri.fragment != null) return UrlVerdict.Invalid("Remove everything from the # onwards.")
+
+        // uri.host is null for a registry-based authority (URI can't parse it as a
+        // hostname) even though a perfectly good host is present — e.g. an
+        // underscore in `my_project.supabase.co` or a raw IDN like `münchen.de`.
+        // Falling back to the raw authority is safe only because the check above
+        // has already rejected any authority containing '@'.
+        val host = uri.host ?: uri.rawAuthority
+        if (host.isNullOrBlank()) return UrlVerdict.Invalid("That URL has no host.")
+
+        // The scheme is lowercased explicitly because HtTpS:// is accepted (schemes
+        // are case-insensitive per RFC 3986 §3.1) but must not be stored verbatim
+        // under a name ("normalised") that implies it isn't. The authority and path
+        // are carried through unchanged.
+        val normalised = "https://" + uri.rawAuthority + (uri.rawPath ?: "")
+        return UrlVerdict.Valid(normalised.trimEnd('/'))
     }
 }
 
@@ -56,13 +83,25 @@ object TelemetryUrl {
 class TelemetryCredentials(private val store: SecretStore) {
 
     fun load(): TelemetryConfig? {
-        val url = store.get(KEY_URL)?.takeIf { it.isNotBlank() } ?: return null
+        val storedUrl = store.get(KEY_URL)?.takeIf { it.isNotBlank() } ?: return null
         val key = store.get(KEY_ANON)?.takeIf { it.isNotBlank() } ?: return null
+        // The scheme is enforced at save() time, but that is only where credentials
+        // enter, not where they're used. A stored http:// URL — from a downgrade, a
+        // migration, or any other writer touching the same keys — must not load as
+        // a working destination just because it's non-blank: re-run the same check
+        // the flush path relies on, and use its normalised form.
+        val url = (TelemetryUrl.check(storedUrl) as? UrlVerdict.Valid)?.normalised ?: return null
         return TelemetryConfig(url, key)
     }
 
-    /** Validates before writing anything, so a rejected destination leaves the
-     *  previous one intact rather than half-replacing it. */
+    /** Validates before writing anything, so a *validation* failure leaves the
+     *  previous destination intact — nothing is written. A *storage* failure is
+     *  handled differently, by [clear]: if the first `put` succeeded and the
+     *  second failed, the old key would survive paired with the new URL, and that
+     *  mismatched pair would load as a valid-looking destination that then fails
+     *  every flush. Wiping is the only outcome that cannot silently lie about
+     *  being configured, so a storage failure clears both halves rather than
+     *  leaving that stale pairing behind. */
     fun save(baseUrl: String, anonKey: String): UrlVerdict {
         val key = anonKey.trim()
         if (key.isBlank()) return UrlVerdict.Invalid("Enter the anon key.")
