@@ -275,10 +275,37 @@ class TelemetryOutboxTest {
         assertFalse(file.exists())
     }
 
+    /** A no-op `clear()`, a `writeText("")` truncate, and a bare `delete()` all
+     *  pass "size is 0 on an absent file" trivially — `readAll()` returns empty
+     *  for any absent file regardless. What only the real implementation
+     *  satisfies is that the outbox is left in the same usable state a genuine
+     *  delete-then-recreate leaves it in: the file is gone, and append still
+     *  works and brings it back. */
     @Test
-    fun clearOnAnAbsentFileIsHarmless() {
-        outbox().clear()
-        assertEquals(0, outbox().size())
+    fun clearOnAnAbsentFileIsHarmlessAndLeavesTheOutboxUsable() {
+        val box = outbox()
+        box.clear()
+        assertFalse(file.exists())
+        box.appendDonation("a")
+        assertTrue(file.exists())
+        assertEquals(listOf("a"), box.peek().map { it.id })
+    }
+
+    /** The temp file `writeAll` stages compaction through must not survive a
+     *  clear, or a crash mid-compaction followed by "telemetry just got turned
+     *  off" leaves identified rows on disk forever. */
+    @Test
+    fun clearRemovesAStrandedTempFileToo() {
+        val box = outbox()
+        box.appendDonation("a")
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        tmp.writeText("leftover from a crashed compaction\n")
+        assertTrue(tmp.exists())
+
+        box.clear()
+
+        assertFalse(file.exists())
+        assertFalse(tmp.exists())
     }
 
     @Test

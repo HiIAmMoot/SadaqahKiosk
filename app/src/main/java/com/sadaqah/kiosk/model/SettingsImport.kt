@@ -14,6 +14,20 @@ object SettingsImport {
         // Minted once per device on first run. Never travels in an export.
         installId = current.installId,
         // A logo is a local file URI that means nothing on another device.
-        logoUri = null
+        logoUri = null,
+        // Bootstrapped per device and used as the donation-throughput denominator
+        // and the "Measuring since" label. An importing kiosk would otherwise
+        // permanently adopt the source device's anchor, and it never self-heals
+        // because the bootstrap only fires on 0 — so preserve the current
+        // device's value always, including when it is itself 0, which lets the
+        // bootstrap give this device its own anchor.
+        donationStatsStartedAtMs = current.donationStatsStartedAtMs,
+        // A record that the disclosure was shown on THIS device. Inheriting it
+        // would make a kiosk that has never shown the disclosure look like it had.
+        analyticsActivatedAtMs = current.analyticsActivatedAtMs,
+        // A one-shot signature-check bypass. Riding an export onto a whole fleet
+        // would disable that check across every kiosk that imports it, so force
+        // it off on import rather than ever inheriting it.
+        skipApkSignatureCheckOnce = false
     )
 }
