@@ -109,7 +109,16 @@ class MainActivity : FragmentActivity() {
     // the app already uses: a subdirectory beside DonationHistory's, the Keystore
     // for credentials, plain prefs for status.
     private val telemetryOutbox: TelemetryOutbox by lazy {
-        TelemetryOutbox(File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"))
+        TelemetryOutbox(
+            File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"),
+            onDropped = { count ->
+                // Can fire from a background thread and from inside the outbox's
+                // own lock, so this stays a small, non-blocking read-add-write on
+                // the status store and never calls back into the outbox.
+                val current = telemetryStatusStore.read()
+                telemetryStatusStore.write(current.copy(droppedCount = current.droppedCount + count))
+            }
+        )
     }
     private val telemetryCredentials: TelemetryCredentials by lazy {
         TelemetryCredentials(KeystoreSecretStore(this))

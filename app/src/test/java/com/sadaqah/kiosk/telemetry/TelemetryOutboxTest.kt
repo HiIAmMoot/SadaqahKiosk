@@ -19,7 +19,7 @@ class TelemetryOutboxTest {
         maxEvents: Int = 5000,
         maxAgeMs: Long = 30L * 24 * 60 * 60 * 1000,
         compactSlack: Int = 1
-    ) = TelemetryOutbox(file, maxEvents, maxAgeMs, compactSlack) { now }
+    ) = TelemetryOutbox(file, maxEvents, maxAgeMs, compactSlack, clock = { now })
 
     @Before
     fun setUp() {
@@ -52,7 +52,7 @@ class TelemetryOutboxTest {
     @Test
     fun append_createsParentDirectories() {
         val nested = File(temp.newFolder("a"), "b/c/outbox.jsonl")
-        TelemetryOutbox(nested, 5000, 1000L) { now }.append("x", "t", "{}")
+        TelemetryOutbox(nested, 5000, 1000L, clock = { now }).append("x", "t", "{}")
         assertTrue(nested.exists())
     }
 
@@ -128,6 +128,20 @@ class TelemetryOutboxTest {
         box.remove(setOf("e1", "e2"))
         assertEquals(0, box.size())
         assertTrue(box.peek().isEmpty())
+    }
+
+    /** `remove()` also calls `writeAll`, exactly like cap-driven compaction does,
+     *  but rows it removes are ones the uploader named -- accounted for, not
+     *  lost. A callback that fired here too would tell an operator donations
+     *  were thrown away when they were in fact successfully uploaded. */
+    @Test
+    fun removeDoesNotReportAnythingDropped() {
+        val dropped = mutableListOf<Int>()
+        val box = TelemetryOutbox(file, maxEvents = 10, compactSlack = 0, clock = { now }) { dropped += it }
+        box.appendDonation("e1")
+        box.appendDonation("e2")
+        box.remove(setOf("e1"))
+        assertEquals("rows removed by the uploader are not losses", 0, dropped.sum())
     }
 
     // ── Caps ─────────────────────────────────────────────────────────────────
@@ -324,5 +338,25 @@ class TelemetryOutboxTest {
         outbox.clear()
         outbox.appendDonation("b")
         assertEquals(listOf("b"), outbox.peek().map { it.id })
+    }
+
+    // ── Dropped reporting ────────────────────────────────────────────────────
+
+    @Test
+    fun droppingOldEventsReportsHowManyWereLost() {
+        val dropped = mutableListOf<Int>()
+        val box = TelemetryOutbox(file, maxEvents = 2, compactSlack = 0, clock = { now }) { dropped += it }
+        box.appendDonation("a")
+        box.appendDonation("b")
+        box.appendDonation("c")
+        assertEquals("the caller must learn a donation was thrown away", 1, dropped.sum())
+    }
+
+    @Test
+    fun aQueueUnderItsCapReportsNothingDropped() {
+        val dropped = mutableListOf<Int>()
+        val box = TelemetryOutbox(file, maxEvents = 10, compactSlack = 0, clock = { now }) { dropped += it }
+        box.appendDonation("a")
+        assertEquals(0, dropped.sum())
     }
 }

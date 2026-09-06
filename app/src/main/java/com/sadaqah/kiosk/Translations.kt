@@ -334,6 +334,7 @@ interface Strings {
     val analyticsInstallId: String
     val analyticsFailedAttempts: String
     val analyticsRetryIn: String
+    val analyticsDropped: String
 }
 
 // ── Dutch ─────────────────────────────────────────────────────────────────────
@@ -596,6 +597,7 @@ object DutchStrings : Strings {
     override val analyticsInstallId = "Installatie-ID"
     override val analyticsFailedAttempts = "Mislukte pogingen"
     override val analyticsRetryIn = "Nieuwe poging over"
+    override val analyticsDropped = "Verwijderd (opslag vol of te oud)"
 }
 
 // ── English ───────────────────────────────────────────────────────────────────
@@ -774,6 +776,7 @@ object EnglishStrings : Strings {
     override val analyticsInstallId = "Install ID"
     override val analyticsFailedAttempts = "Failed attempts"
     override val analyticsRetryIn = "Retrying in"
+    override val analyticsDropped = "Discarded (storage full or too old)"
 }
 
 // ── German ────────────────────────────────────────────────────────────────────
@@ -1036,6 +1039,7 @@ object GermanStrings : Strings {
     override val analyticsInstallId = "Installations-ID"
     override val analyticsFailedAttempts = "Fehlgeschlagene Versuche"
     override val analyticsRetryIn = "Erneuter Versuch in"
+    override val analyticsDropped = "Verworfen (Speicher voll oder zu alt)"
 }
 
 // ── French ────────────────────────────────────────────────────────────────────
@@ -1298,6 +1302,7 @@ object FrenchStrings : Strings {
     override val analyticsInstallId = "ID d'installation"
     override val analyticsFailedAttempts = "Tentatives échouées"
     override val analyticsRetryIn = "Nouvelle tentative dans"
+    override val analyticsDropped = "Supprimé (stockage plein ou trop ancien)"
 }
 
 // ── Spanish ───────────────────────────────────────────────────────────────────
@@ -1560,6 +1565,7 @@ object SpanishStrings : Strings {
     override val analyticsInstallId = "ID de instalación"
     override val analyticsFailedAttempts = "Intentos fallidos"
     override val analyticsRetryIn = "Reintentando en"
+    override val analyticsDropped = "Descartado (almacenamiento lleno o demasiado antiguo)"
 }
 
 // ── Italian ───────────────────────────────────────────────────────────────────
@@ -1822,6 +1828,7 @@ object ItalianStrings : Strings {
     override val analyticsInstallId = "ID installazione"
     override val analyticsFailedAttempts = "Tentativi falliti"
     override val analyticsRetryIn = "Nuovo tentativo tra"
+    override val analyticsDropped = "Scartato (memoria piena o troppo vecchio)"
 }
 
 // ── Turkish ───────────────────────────────────────────────────────────────────
@@ -2084,6 +2091,7 @@ object TurkishStrings : Strings {
     override val analyticsInstallId = "Kurulum kimliği"
     override val analyticsFailedAttempts = "Başarısız denemeler"
     override val analyticsRetryIn = "Yeniden deneme"
+    override val analyticsDropped = "Atıldı (depolama dolu ya da çok eski)"
 }
 
 // ── Arabic ────────────────────────────────────────────────────────────────────
@@ -2346,4 +2354,5 @@ object ArabicStrings : Strings {
     override val analyticsInstallId = "معرّف التثبيت"
     override val analyticsFailedAttempts = "المحاولات الفاشلة"
     override val analyticsRetryIn = "إعادة المحاولة خلال"
+    override val analyticsDropped = "تم الحذف (التخزين ممتلئ أو قديم جدًا)"
 }

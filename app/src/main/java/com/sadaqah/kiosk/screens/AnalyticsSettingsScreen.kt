@@ -290,6 +290,9 @@ fun AnalyticsSettingsScreen(
                             AnalyticsStatusLine(strings.analyticsLastError, view.error, errorColor)
                         }
                         AnalyticsStatusLine(strings.analyticsFailedAttempts, view.consecutiveFailures.toString(), border)
+                        if (view.dropped > 0) {
+                            AnalyticsStatusLine(strings.analyticsDropped, view.dropped.toString(), errorColor)
+                        }
                         if (view.backingOff) {
                             AnalyticsStatusLine(
                                 strings.analyticsBackingOff,
