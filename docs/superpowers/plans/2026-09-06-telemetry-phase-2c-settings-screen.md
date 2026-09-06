@@ -389,6 +389,15 @@ Add after the existing import/export block (around line 129):
     val analyticsClearCredentials: String
     val analyticsClearWarning: String
     val analyticsCleared: String
+    // Added after Task 1's review: the presenter now decides these, so the
+    // screen needs copy for each rather than computing its own.
+    val analyticsTestUnavailableNotConfigured: String
+    val analyticsTestUnavailableDisabled: String
+    val analyticsKeyUnusual: String
+    val analyticsPolicyUrlsMissing: String
+    val analyticsInstallId: String
+    val analyticsFailedAttempts: String
+    val analyticsRetryIn: String
 ```
 
 - [ ] **Step 2: Implement them in all eight objects**
@@ -426,7 +435,18 @@ Add the same block to `DutchStrings`, `EnglishStrings`, `GermanStrings`, `French
     override val analyticsClearCredentials = "Clear credentials"
     override val analyticsClearWarning = "This removes the destination and deletes everything still waiting to send."
     override val analyticsCleared = "Credentials cleared."
+    override val analyticsTestUnavailableNotConfigured = "Enter a destination first."
+    override val analyticsTestUnavailableDisabled = "Turn analytics on to test the connection."
+    override val analyticsKeyUnusual = "This does not look like a publishable key. Check you have not pasted a secret key."
+    override val analyticsPolicyUrlsMissing = "No policy links set. Activation will record them as empty."
+    override val analyticsInstallId = "Install ID"
+    override val analyticsFailedAttempts = "Failed attempts"
+    override val analyticsRetryIn = "Retrying in"
 ```
+
+`analyticsKeyUnusual` is the one an operator must not misread: pasting a Supabase
+*secret* key here would store a credential with full database access. Keep the
+second sentence in every language.
 
 Translate rather than transliterate. `analyticsClearWarning` must keep its second clause in every language — an operator needs to know queued data is destroyed. Arabic is RTL; follow whatever the existing Arabic entries do.
 
@@ -438,7 +458,7 @@ Expected: BUILD SUCCESSFUL. A missing override in any of the eight objects is a 
 - [ ] **Step 4: Verify no object was skipped**
 
 Run: `grep -c "analyticsClearWarning" app/src/main/java/com/sadaqah/kiosk/Translations.kt`
-Expected: `9` — one interface declaration plus eight implementations.
+Expected: `9` — one interface declaration plus eight implementations. Repeat the count for `analyticsKeyUnusual` and `analyticsInstallId` too, since those were added later and are the easiest to miss in one of the eight objects.
 
 - [ ] **Step 5: Commit**
 
