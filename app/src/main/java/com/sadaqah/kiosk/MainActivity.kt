@@ -47,6 +47,7 @@ import com.sadaqah.kiosk.recovery.*
 import com.sadaqah.kiosk.screens.*
 import com.sadaqah.kiosk.settingsio.ImportResult
 import com.sadaqah.kiosk.settingsio.SettingsExportFile
+import com.sadaqah.kiosk.telemetry.*
 import com.sadaqah.kiosk.update.ReleaseInfo
 import com.sadaqah.kiosk.update.SemVer
 import com.sadaqah.kiosk.update.UpdateManager
@@ -58,10 +59,13 @@ import com.sumup.merchant.reader.api.SumUpPayment
 import com.sumup.merchant.reader.ReaderModuleCoreState
 import com.sumup.merchant.reader.api.SumUpState
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import java.math.BigDecimal
 
 private const val INACTIVITY_BOUNCE_MS = 5L * 60 * 1000 // 5 min on settings / custom-amount → back to donation
@@ -100,6 +104,40 @@ class MainActivity : FragmentActivity() {
     private lateinit var restartManager: RestartManager
     private lateinit var networkRecoveryManager: NetworkRecoveryManager
 
+    // Telemetry (phase 2c wiring — see TelemetryManager for the send sequence).
+    // Constructed lazily, off the same filesDir/{context} mechanisms the rest of
+    // the app already uses: a subdirectory beside DonationHistory's, the Keystore
+    // for credentials, plain prefs for status.
+    private val telemetryOutbox: TelemetryOutbox by lazy {
+        TelemetryOutbox(File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"))
+    }
+    private val telemetryCredentials: TelemetryCredentials by lazy {
+        TelemetryCredentials(KeystoreSecretStore(this))
+    }
+    private val telemetryStatusStore: TelemetryStatusStore by lazy { PrefsStatusStore(this) }
+    private val telemetryManager: TelemetryManager by lazy {
+        TelemetryManager(
+            outbox = telemetryOutbox,
+            credentials = telemetryCredentials,
+            statusStore = telemetryStatusStore,
+            posterFor = { UrlConnectionPoster() },
+            runtime = {
+                TelemetryRuntime(
+                    enabled = settings.analyticsEnabled,
+                    activated = settings.analyticsActivatedAtMs != 0L,
+                    identity = EventIdentity(
+                        code = settings.kioskCode,
+                        installId = settings.installId,
+                        appVersion = BuildConfig.VERSION_NAME
+                    ),
+                    privacyPolicyUrl = settings.analyticsPrivacyPolicyUrl,
+                    termsUrl = settings.analyticsTermsUrl
+                )
+            },
+            networkAvailable = { isOnlineNow() }
+        )
+    }
+
     var settings: Settings by mutableStateOf(Settings())
     var isLoggedIn by mutableStateOf(false)
     var affiliateKey by mutableStateOf("")
@@ -123,6 +161,12 @@ class MainActivity : FragmentActivity() {
     var isConnectingCardReader by mutableStateOf(false)
     var showSetupStatus by mutableStateOf(false)
     var showDonationHistory by mutableStateOf(false)
+    var showAnalyticsSettings by mutableStateOf(false)
+    // Bumped after any action that mutates telemetry credentials/outbox/status
+    // without also changing `settings`, so the recomposition that recomputes
+    // analyticsView actually picks up the change.
+    var analyticsRefreshVersion by mutableStateOf(0)
+    var analyticsTestState by mutableStateOf<TestConnectionState>(TestConnectionState.Idle)
     var setupStatusFromOffline by mutableStateOf(false)
     var showUpdateConfirm by mutableStateOf(false)
     var showUpdatingOverlay by mutableStateOf(false)
@@ -350,6 +394,7 @@ class MainActivity : FragmentActivity() {
                             showSetupStatus = false
                             setupStatusFromOffline = false
                             showDonationHistory = false
+                            showAnalyticsSettings = false
                             // Reset so the screensaver doesn't immediately fire on top of the bounce.
                             lastInteractionTime = System.currentTimeMillis()
                         }
@@ -411,6 +456,27 @@ class MainActivity : FragmentActivity() {
                     showDonationHistory = showDonationHistory,
                     onShowDonationHistory = { showDonationHistory = it },
                     donationHistory = donationHistory,
+                    showAnalyticsSettings = showAnalyticsSettings,
+                    onShowAnalyticsSettings = { showAnalyticsSettings = it },
+                    analyticsView = run {
+                        analyticsRefreshVersion // establishes the recompute dependency; see the var's KDoc
+                        AnalyticsPresenter.view(
+                            settings, telemetryCredentials.load(), telemetryManager.status(), System.currentTimeMillis()
+                        )
+                    },
+                    analyticsTestState = analyticsTestState,
+                    onAnalyticsToggleEnabled = { enabled -> onSettingsChange(settings.copy(analyticsEnabled = enabled)) },
+                    onAnalyticsSaveDestination = { url, key ->
+                        val verdict = telemetryCredentials.save(url, key)
+                        analyticsRefreshVersion++
+                        verdict
+                    },
+                    onAnalyticsTestConnection = ::onAnalyticsTestConnection,
+                    onAnalyticsKioskCodeChange = { code -> onSettingsChange(settings.copy(kioskCode = code)) },
+                    onAnalyticsPolicyUrlsChange = { privacy, terms ->
+                        onSettingsChange(settings.copy(analyticsPrivacyPolicyUrl = privacy, analyticsTermsUrl = terms))
+                    },
+                    onAnalyticsClearCredentials = ::onAnalyticsClearCredentials,
                     setupStatusFromOffline = setupStatusFromOffline,
                     onExitSetupStatus = ::exitSetupStatus,
                     onUnpinApp = ::unpinApp,
@@ -1392,6 +1458,7 @@ class MainActivity : FragmentActivity() {
             showSetupStatus = false
             setupStatusFromOffline = false
             showDonationHistory = false
+            showAnalyticsSettings = false
             prepareCardReader()
         }
     }
@@ -1520,6 +1587,52 @@ class MainActivity : FragmentActivity() {
         if (newSettings.logoUri != previousLogoUri) {
             LogoColorExtractor.refresh(this, newSettings.logoUri)
         }
+    }
+
+    // ── Analytics settings entry points (called from UI) ───────────────────────
+
+    /**
+     * "Test connection" and activation are the same operator action. activate()
+     * does network I/O (see UrlConnectionPoster's KDoc), so it must not run on
+     * the main thread — done here via lifecycleScope + Dispatchers.IO, the same
+     * mechanism the rest of MainActivity uses for background work.
+     */
+    fun onAnalyticsTestConnection() {
+        analyticsTestState = TestConnectionState.Running
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { telemetryManager.activate() }
+            val strings = TranslationManager.currentStrings()
+            analyticsTestState = when (result) {
+                is ActivationResult.Succeeded -> {
+                    // The screen would otherwise keep reporting "not yet
+                    // reporting" after a proven-good test.
+                    onSettingsChange(settings.copy(analyticsActivatedAtMs = System.currentTimeMillis()))
+                    TestConnectionState.Succeeded(strings.analyticsTestSucceeded)
+                }
+                is ActivationResult.Queued -> TestConnectionState.Queued(strings.analyticsTestQueued)
+                is ActivationResult.Blocked -> TestConnectionState.Failed(analyticsBlockedMessage(result.reason, strings))
+                // result.error is already redacted by the uploader, but the screen
+                // renders view.error (from status) for that — never the raw string here.
+                is ActivationResult.Failed -> TestConnectionState.Failed(strings.analyticsTestFailed)
+            }
+            analyticsRefreshVersion++
+        }
+    }
+
+    /** Copy for a [FlushBlock] reason that only becomes true at the moment of the
+     *  press — [AnalyticsPresenter] already covers NOT_CONFIGURED/DISABLED before
+     *  the press via [AnalyticsView.testUnavailable]. */
+    private fun analyticsBlockedMessage(reason: FlushBlock, strings: Strings): String = when (reason) {
+        FlushBlock.NO_NETWORK -> strings.noInternetConnection
+        FlushBlock.BACKING_OFF -> strings.analyticsBackingOff
+        FlushBlock.NOT_CONFIGURED -> strings.analyticsTestUnavailableNotConfigured
+        FlushBlock.DISABLED -> strings.analyticsTestUnavailableDisabled
+        FlushBlock.NOT_ACTIVATED, FlushBlock.EMPTY_QUEUE, FlushBlock.NONE -> strings.analyticsTestFailed
+    }
+
+    fun onAnalyticsClearCredentials() {
+        TelemetryTeardown.clearEverything(telemetryCredentials, telemetryOutbox, telemetryStatusStore)
+        analyticsRefreshVersion++
     }
 
     // ── Update flow entry points (called from UI) ──────────────────────────────
@@ -1730,6 +1843,16 @@ fun AppUI(
     showDonationHistory: Boolean,
     onShowDonationHistory: (Boolean) -> Unit,
     donationHistory: DonationHistory,
+    showAnalyticsSettings: Boolean,
+    onShowAnalyticsSettings: (Boolean) -> Unit,
+    analyticsView: AnalyticsView,
+    analyticsTestState: TestConnectionState,
+    onAnalyticsToggleEnabled: (Boolean) -> Unit,
+    onAnalyticsSaveDestination: (String, String) -> UrlVerdict,
+    onAnalyticsTestConnection: () -> Unit,
+    onAnalyticsKioskCodeChange: (String) -> Unit,
+    onAnalyticsPolicyUrlsChange: (String, String) -> Unit,
+    onAnalyticsClearCredentials: () -> Unit,
     onShowSetupStatus: (Boolean) -> Unit,
     setupStatusFromOffline: Boolean,
     onExitSetupStatus: () -> Unit,
@@ -1800,6 +1923,19 @@ fun AppUI(
                 onClearHistory = { donationHistory.clearAll() },
                 onBack = { onShowDonationHistory(false) }
             )
+            showAnalyticsSettings -> AnalyticsSettingsScreen(
+                view = analyticsView,
+                settings = settings,
+                strings = rememberStrings(),
+                testState = analyticsTestState,
+                onBack = { onShowAnalyticsSettings(false) },
+                onToggleEnabled = onAnalyticsToggleEnabled,
+                onSaveDestination = onAnalyticsSaveDestination,
+                onTestConnection = onAnalyticsTestConnection,
+                onKioskCodeChange = onAnalyticsKioskCodeChange,
+                onPolicyUrlsChange = onAnalyticsPolicyUrlsChange,
+                onClearCredentials = onAnalyticsClearCredentials
+            )
             showSetupStatus -> SetupStatusScreen(
                 isNetworkAvailable = isNetworkAvailable,
                 isBluetoothEnabled = isBluetoothEnabled,
@@ -1841,6 +1977,7 @@ fun AppUI(
                 onPinApp = onPinApp,
                 onShowSetupStatus = { onShowSetupStatus(true) },
                 onShowDonationHistory = { onShowDonationHistory(true) },
+                onShowAnalyticsSettings = { onShowAnalyticsSettings(true) },
                 onActivateScreensaver = onActivateScreensaver,
                 onTestModeChange = onTestModeChange,
                 onLogout = onLogout,
