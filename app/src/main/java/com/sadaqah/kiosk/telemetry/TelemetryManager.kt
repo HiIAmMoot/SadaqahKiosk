@@ -22,6 +22,17 @@ sealed class ActivationResult {
 
     /** Attempted and did not land. [error] is already redacted. Row stays queued. */
     data class Failed(val error: String?) : ActivationResult()
+
+    /** The gate allowed a flush and the row was appended, but [TelemetryOutbox.peek]
+     *  only ever takes [TelemetryOutbox.DEFAULT_BATCH] rows from the *head* of the
+     *  queue, and this kiosk already had at least that many rows ahead of the
+     *  activation row. This flush's page never reached it, so nothing is known yet
+     *  about whether the destination works — this is **not** a failure of the
+     *  destination, and must not be shown to the operator as one. The row stays
+     *  queued and a later flush (automatic or another press of the button) will
+     *  reach it. Tell the operator the destination is untested because of a
+     *  backlog, not that it is broken. */
+    object Queued : ActivationResult()
 }
 
 /**
@@ -56,6 +67,15 @@ class TelemetryManager(
      *  concurrent callers, same as the rest of this class. */
     private var lastUploadOutcome: UploadOutcome? = null
 
+    /** The ids [TelemetryOutbox.peek] actually returned for the most recent
+     *  [flush] call (set right after the peek, cleared at the start of every
+     *  call, same lifetime as [lastUploadOutcome]). This is what lets [activate]
+     *  tell "attempted this flush but not confirmed" (a real failure) apart from
+     *  "never got a turn because the page didn't reach it" (FIX 3) — both leave
+     *  the activation row absent from [lastUploadOutcome]'s two sets, so that
+     *  alone can't distinguish them. */
+    private var lastAttemptedIds: Set<String>? = null
+
     fun status(): TelemetryStatus = statusStore.read().copy(queued = outbox.size())
 
     /**
@@ -68,9 +88,24 @@ class TelemetryManager(
      * Activation bypasses the gate's own `activated` check — that flag is what
      * this method exists to earn, so gating on it would make activation
      * permanently impossible on a fresh kiosk. Every other gate check (enabled,
-     * configured, network, backoff) still applies.
+     * configured, network, backoff) still applies, EXCEPT that a stale backoff
+     * is cleared first — see the comment above that line for why.
      */
     fun activate(): ActivationResult {
+        // "Test connection" and activation are the same operator action (per the
+        // spec), and pressing it is a deliberate, in-person override of an
+        // automatic delay — most concretely: the destination was wrong, backoff
+        // climbed towards the 60-minute ceiling, and the operator just typed a
+        // different URL. Nothing else resets this bookkeeping (TelemetryCredentials
+        // must not depend on TelemetryStatusStore, so it can't clear it from
+        // save() without breaking that layering), and clearing it only here — as
+        // opposed to a separate method the settings screen would have to remember
+        // to call — means a corrected destination is testable on the very next
+        // press of the button rather than possibly up to an hour later.
+        statusStore.write(
+            statusStore.read().copy(consecutiveFailures = 0, backoffUntilMs = 0L, lastError = null)
+        )
+
         val current = runtime()
         val event = TelemetryEvent.Activation(
             identity = current.identity,
@@ -93,6 +128,12 @@ class TelemetryManager(
         return when {
             block != FlushBlock.NONE -> ActivationResult.Blocked(block)
             lastUploadOutcome?.uploadedIds?.contains(event.id) == true -> ActivationResult.Succeeded
+            // FIX 3: absence from the outcome is ambiguous by itself — it also
+            // describes a row this flush never even sent. lastAttemptedIds
+            // disambiguates: if the activation row wasn't in the page peek()
+            // returned, nothing was attempted and this is a healthy kiosk with a
+            // backlog, not a broken destination.
+            lastAttemptedIds?.contains(event.id) != true -> ActivationResult.Queued
             else -> ActivationResult.Failed(statusStore.read().lastError)
         }
     }
@@ -101,6 +142,7 @@ class TelemetryManager(
 
     private fun flush(treatAsActivated: Boolean): FlushBlock {
         lastUploadOutcome = null
+        lastAttemptedIds = null
 
         val current = runtime()
         val config = credentials.load()
@@ -125,6 +167,10 @@ class TelemetryManager(
         val cfg = config ?: return FlushBlock.NOT_CONFIGURED
 
         val batch = outbox.peek()
+        // Recorded regardless of what happens next, so activate() can tell a row
+        // this page never reached (FIX 3) apart from one it sent but could not
+        // confirm.
+        lastAttemptedIds = batch.map { it.id }.toSet()
         if (batch.isEmpty()) return FlushBlock.EMPTY_QUEUE
 
         val outcome = try {
