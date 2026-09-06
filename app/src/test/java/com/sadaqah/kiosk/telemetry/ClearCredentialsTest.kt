@@ -24,7 +24,7 @@ class ClearCredentialsTest {
         val credentials = TelemetryCredentials(InMemorySecretStore())
         credentials.save("https://abc.supabase.co", "publishable-key")
         val statusStore = InMemoryStatusStore()
-        statusStore.write(TelemetryStatus(lastError = "HTTP 503", consecutiveFailures = 3))
+        statusStore.write(TelemetryStatus(lastError = "HTTP 503", consecutiveFailures = 3, droppedCount = 9))
 
         TelemetryTeardown.clearEverything(credentials, outbox, statusStore)
 
@@ -33,6 +33,10 @@ class ClearCredentialsTest {
         assertNull("a stale error would describe a destination that no longer exists",
             statusStore.read().lastError)
         assertEquals(0, statusStore.read().consecutiveFailures)
+        // Plan Task 5 Step 3: nothing pinned this before. It does reset today
+        // (via the default TelemetryStatus()), but a future teardown that
+        // preserved the count would have stayed green without this assertion.
+        assertEquals("a dropped count must not survive a teardown", 0, statusStore.read().droppedCount)
     }
 
     @Test
