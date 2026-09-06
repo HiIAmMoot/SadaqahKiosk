@@ -48,6 +48,7 @@ data class AnalyticsView(
      *  while still waiting reads as a stuck kiosk. */
     val backoffRemainingSeconds: Long,
     val consecutiveFailures: Int,
+    val dropped: Int,
     val privacyPolicyUrl: String,
     val termsUrl: String,
     val policyUrlsMissing: Boolean
@@ -112,6 +113,7 @@ object AnalyticsPresenter {
             backoffRemainingSeconds =
                 (status.backoffUntilMs - nowMs).coerceAtLeast(0L).let { (it + 999) / 1000 },
             consecutiveFailures = status.consecutiveFailures,
+            dropped = status.droppedCount,
             privacyPolicyUrl = settings.analyticsPrivacyPolicyUrl,
             termsUrl = settings.analyticsTermsUrl,
             policyUrlsMissing = settings.analyticsPrivacyPolicyUrl.isBlank() || settings.analyticsTermsUrl.isBlank()

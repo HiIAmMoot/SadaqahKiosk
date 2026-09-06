@@ -20,7 +20,11 @@ data class TelemetryStatus(
     val lastError: String? = null,
     val lastErrorAtMs: Long = 0L,
     val consecutiveFailures: Int = 0,
-    val backoffUntilMs: Long = 0L
+    val backoffUntilMs: Long = 0L,
+    /** Rows the outbox's count/age caps discarded outright — never sent, never
+     *  recoverable. Distinct from a retryable failure: this is loss, not a
+     *  pending retry. */
+    val droppedCount: Int = 0
 )
 
 /**
