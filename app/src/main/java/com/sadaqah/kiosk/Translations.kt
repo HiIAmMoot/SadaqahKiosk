@@ -293,6 +293,47 @@ interface Strings {
     val frequencyCountHeader: String get() = "Count"
     val frequencyTotalHeader: String get() = "Total"
     val recentDonations: String get() = "Recent donations"
+
+    // Analytics / telemetry
+    val analyticsTitle: String
+    val analyticsSettings: String
+    val analyticsEnabledLabel: String
+    val analyticsEnabledHint: String
+    val analyticsDestination: String
+    val analyticsUrlLabel: String
+    val analyticsKeyLabel: String
+    val analyticsKeyHint: String
+    val analyticsSave: String
+    val analyticsTestConnection: String
+    val analyticsTesting: String
+    val analyticsTestSucceeded: String
+    val analyticsTestFailed: String
+    val analyticsTestQueued: String
+    val analyticsStatus: String
+    val analyticsQueued: String
+    val analyticsLastUpload: String
+    val analyticsNeverUploaded: String
+    val analyticsLastError: String
+    val analyticsBackingOff: String
+    val analyticsActivated: String
+    val analyticsNotActivated: String
+    val analyticsKioskCode: String
+    val analyticsKioskCodeUnusual: String
+    val analyticsPolicyUrls: String
+    val analyticsPrivacyUrlLabel: String
+    val analyticsTermsUrlLabel: String
+    val analyticsClearCredentials: String
+    val analyticsClearWarning: String
+    val analyticsCleared: String
+    // Added after Task 1's review: the presenter now decides these, so the
+    // screen needs copy for each rather than computing its own.
+    val analyticsTestUnavailableNotConfigured: String
+    val analyticsTestUnavailableDisabled: String
+    val analyticsKeyUnusual: String
+    val analyticsPolicyUrlsMissing: String
+    val analyticsInstallId: String
+    val analyticsFailedAttempts: String
+    val analyticsRetryIn: String
 }
 
 // ── Dutch ─────────────────────────────────────────────────────────────────────
@@ -516,6 +557,45 @@ object DutchStrings : Strings {
     override val frequencyCountHeader = "Aantal"
     override val frequencyTotalHeader = "Totaal"
     override val recentDonations = "Recente donaties"
+
+    // Analytics
+    override val analyticsTitle = "Analyse"
+    override val analyticsSettings = "Analyse & rapportage"
+    override val analyticsEnabledLabel = "Analyse versturen"
+    override val analyticsEnabledHint = "Donatietotalen en storingsmeldingen, alleen van deze kiosk."
+    override val analyticsDestination = "Bestemming"
+    override val analyticsUrlLabel = "Project-URL"
+    override val analyticsKeyLabel = "Publiceerbare sleutel"
+    override val analyticsKeyHint = "Versleuteld opgeslagen op dit apparaat."
+    override val analyticsSave = "Bestemming opslaan"
+    override val analyticsTestConnection = "Verbinding testen"
+    override val analyticsTesting = "Bezig met testen..."
+    override val analyticsTestSucceeded = "Verbonden. Deze kiosk rapporteert nu."
+    override val analyticsTestFailed = "Kon de bestemming niet bereiken."
+    override val analyticsTestQueued = "In de wachtrij achter bestaande gebeurtenissen; wordt daarmee verstuurd."
+    override val analyticsStatus = "Status"
+    override val analyticsQueued = "Wacht op verzending"
+    override val analyticsLastUpload = "Laatste upload"
+    override val analyticsNeverUploaded = "Nooit"
+    override val analyticsLastError = "Laatste fout"
+    override val analyticsBackingOff = "Wacht voor nieuwe poging"
+    override val analyticsActivated = "Rapportage is actief"
+    override val analyticsNotActivated = "Rapporteert nog niet"
+    override val analyticsKioskCode = "Kioskcode"
+    override val analyticsKioskCodeUnusual = "Dit komt niet overeen met het gebruikelijke codeformaat. Wordt toch gebruikt."
+    override val analyticsPolicyUrls = "Beleidslinks"
+    override val analyticsPrivacyUrlLabel = "URL privacybeleid"
+    override val analyticsTermsUrlLabel = "URL voorwaarden"
+    override val analyticsClearCredentials = "Gegevens wissen"
+    override val analyticsClearWarning = "Dit verwijdert de bestemming en wist alles wat nog klaarstaat om te verzenden."
+    override val analyticsCleared = "Gegevens gewist."
+    override val analyticsTestUnavailableNotConfigured = "Vul eerst een bestemming in."
+    override val analyticsTestUnavailableDisabled = "Zet analyse aan om de verbinding te testen."
+    override val analyticsKeyUnusual = "Dit lijkt geen publiceerbare sleutel. Controleer of u geen geheime sleutel heeft geplakt."
+    override val analyticsPolicyUrlsMissing = "Geen beleidslinks ingesteld. Activatie registreert deze als leeg."
+    override val analyticsInstallId = "Installatie-ID"
+    override val analyticsFailedAttempts = "Mislukte pogingen"
+    override val analyticsRetryIn = "Nieuwe poging over"
 }
 
 // ── English ───────────────────────────────────────────────────────────────────
@@ -655,6 +735,45 @@ object EnglishStrings : Strings {
     override val euro = "Euro (€)"
     override val usDollar = "US Dollar ($)"
     override val britishPound = "British Pound (£)"
+
+    // Analytics
+    override val analyticsTitle = "Analytics"
+    override val analyticsSettings = "Analytics & reporting"
+    override val analyticsEnabledLabel = "Send analytics"
+    override val analyticsEnabledHint = "Donation totals and fault reports, from this kiosk only."
+    override val analyticsDestination = "Destination"
+    override val analyticsUrlLabel = "Project URL"
+    override val analyticsKeyLabel = "Publishable key"
+    override val analyticsKeyHint = "Stored encrypted on this device."
+    override val analyticsSave = "Save destination"
+    override val analyticsTestConnection = "Test connection"
+    override val analyticsTesting = "Testing..."
+    override val analyticsTestSucceeded = "Connected. This kiosk is now reporting."
+    override val analyticsTestFailed = "Could not reach the destination."
+    override val analyticsTestQueued = "Queued behind existing events; it will send with them."
+    override val analyticsStatus = "Status"
+    override val analyticsQueued = "Waiting to send"
+    override val analyticsLastUpload = "Last upload"
+    override val analyticsNeverUploaded = "Never"
+    override val analyticsLastError = "Last error"
+    override val analyticsBackingOff = "Waiting before retrying"
+    override val analyticsActivated = "Reporting is on"
+    override val analyticsNotActivated = "Not yet reporting"
+    override val analyticsKioskCode = "Kiosk code"
+    override val analyticsKioskCodeUnusual = "This does not match the usual code format. It will still be used."
+    override val analyticsPolicyUrls = "Policy links"
+    override val analyticsPrivacyUrlLabel = "Privacy policy URL"
+    override val analyticsTermsUrlLabel = "Terms URL"
+    override val analyticsClearCredentials = "Clear credentials"
+    override val analyticsClearWarning = "This removes the destination and deletes everything still waiting to send."
+    override val analyticsCleared = "Credentials cleared."
+    override val analyticsTestUnavailableNotConfigured = "Enter a destination first."
+    override val analyticsTestUnavailableDisabled = "Turn analytics on to test the connection."
+    override val analyticsKeyUnusual = "This does not look like a publishable key. Check you have not pasted a secret key."
+    override val analyticsPolicyUrlsMissing = "No policy links set. Activation will record them as empty."
+    override val analyticsInstallId = "Install ID"
+    override val analyticsFailedAttempts = "Failed attempts"
+    override val analyticsRetryIn = "Retrying in"
 }
 
 // ── German ────────────────────────────────────────────────────────────────────
@@ -878,6 +997,45 @@ object GermanStrings : Strings {
     override val frequencyCountHeader = "Anzahl"
     override val frequencyTotalHeader = "Summe"
     override val recentDonations = "Letzte Spenden"
+
+    // Analytics
+    override val analyticsTitle = "Analyse"
+    override val analyticsSettings = "Analyse & Berichte"
+    override val analyticsEnabledLabel = "Analyse senden"
+    override val analyticsEnabledHint = "Spendensummen und Störungsmeldungen, nur von diesem Kiosk."
+    override val analyticsDestination = "Ziel"
+    override val analyticsUrlLabel = "Projekt-URL"
+    override val analyticsKeyLabel = "Veröffentlichbarer Schlüssel"
+    override val analyticsKeyHint = "Verschlüsselt auf diesem Gerät gespeichert."
+    override val analyticsSave = "Ziel speichern"
+    override val analyticsTestConnection = "Verbindung testen"
+    override val analyticsTesting = "Wird getestet..."
+    override val analyticsTestSucceeded = "Verbunden. Dieser Kiosk meldet jetzt Daten."
+    override val analyticsTestFailed = "Ziel konnte nicht erreicht werden."
+    override val analyticsTestQueued = "Hinter bestehenden Ereignissen eingereiht; wird mit ihnen gesendet."
+    override val analyticsStatus = "Status"
+    override val analyticsQueued = "Wartet auf Versand"
+    override val analyticsLastUpload = "Letzter Upload"
+    override val analyticsNeverUploaded = "Nie"
+    override val analyticsLastError = "Letzter Fehler"
+    override val analyticsBackingOff = "Wartet vor erneutem Versuch"
+    override val analyticsActivated = "Meldung ist aktiv"
+    override val analyticsNotActivated = "Meldet noch nicht"
+    override val analyticsKioskCode = "Kiosk-Code"
+    override val analyticsKioskCodeUnusual = "Entspricht nicht dem üblichen Codeformat. Wird trotzdem verwendet."
+    override val analyticsPolicyUrls = "Richtlinien-Links"
+    override val analyticsPrivacyUrlLabel = "URL der Datenschutzerklärung"
+    override val analyticsTermsUrlLabel = "URL der Nutzungsbedingungen"
+    override val analyticsClearCredentials = "Zugangsdaten löschen"
+    override val analyticsClearWarning = "Dadurch werden das Ziel entfernt und alle noch wartenden Daten endgültig gelöscht."
+    override val analyticsCleared = "Zugangsdaten gelöscht."
+    override val analyticsTestUnavailableNotConfigured = "Zuerst ein Ziel eingeben."
+    override val analyticsTestUnavailableDisabled = "Analyse einschalten, um die Verbindung zu testen."
+    override val analyticsKeyUnusual = "Das sieht nicht wie ein veröffentlichbarer Schlüssel aus. Prüfen Sie, ob Sie keinen geheimen Schlüssel eingefügt haben."
+    override val analyticsPolicyUrlsMissing = "Keine Richtlinien-Links festgelegt. Bei der Aktivierung werden sie leer gespeichert."
+    override val analyticsInstallId = "Installations-ID"
+    override val analyticsFailedAttempts = "Fehlgeschlagene Versuche"
+    override val analyticsRetryIn = "Erneuter Versuch in"
 }
 
 // ── French ────────────────────────────────────────────────────────────────────
@@ -1101,6 +1259,45 @@ object FrenchStrings : Strings {
     override val frequencyCountHeader = "Nombre"
     override val frequencyTotalHeader = "Total"
     override val recentDonations = "Dons récents"
+
+    // Analytics
+    override val analyticsTitle = "Analytique"
+    override val analyticsSettings = "Analytique et rapports"
+    override val analyticsEnabledLabel = "Envoyer les données analytiques"
+    override val analyticsEnabledHint = "Totaux des dons et rapports d'incidents, de ce kiosque uniquement."
+    override val analyticsDestination = "Destination"
+    override val analyticsUrlLabel = "URL du projet"
+    override val analyticsKeyLabel = "Clé publiable"
+    override val analyticsKeyHint = "Stockée de façon chiffrée sur cet appareil."
+    override val analyticsSave = "Enregistrer la destination"
+    override val analyticsTestConnection = "Tester la connexion"
+    override val analyticsTesting = "Test en cours..."
+    override val analyticsTestSucceeded = "Connecté. Ce kiosque transmet désormais ses données."
+    override val analyticsTestFailed = "Impossible de joindre la destination."
+    override val analyticsTestQueued = "En file derrière les événements existants ; sera envoyé avec eux."
+    override val analyticsStatus = "État"
+    override val analyticsQueued = "En attente d'envoi"
+    override val analyticsLastUpload = "Dernier envoi"
+    override val analyticsNeverUploaded = "Jamais"
+    override val analyticsLastError = "Dernière erreur"
+    override val analyticsBackingOff = "Attente avant nouvelle tentative"
+    override val analyticsActivated = "Transmission active"
+    override val analyticsNotActivated = "Pas encore de transmission"
+    override val analyticsKioskCode = "Code du kiosque"
+    override val analyticsKioskCodeUnusual = "Ne correspond pas au format habituel. Sera quand même utilisé."
+    override val analyticsPolicyUrls = "Liens des politiques"
+    override val analyticsPrivacyUrlLabel = "URL de la politique de confidentialité"
+    override val analyticsTermsUrlLabel = "URL des conditions d'utilisation"
+    override val analyticsClearCredentials = "Effacer les identifiants"
+    override val analyticsClearWarning = "Cela supprime la destination et efface tout ce qui reste en attente d'envoi."
+    override val analyticsCleared = "Identifiants effacés."
+    override val analyticsTestUnavailableNotConfigured = "Saisissez d'abord une destination."
+    override val analyticsTestUnavailableDisabled = "Activez les données analytiques pour tester la connexion."
+    override val analyticsKeyUnusual = "Ceci ne ressemble pas à une clé publiable. Vérifiez que vous n'avez pas collé une clé secrète."
+    override val analyticsPolicyUrlsMissing = "Aucun lien de politique défini. L'activation les enregistrera comme vides."
+    override val analyticsInstallId = "ID d'installation"
+    override val analyticsFailedAttempts = "Tentatives échouées"
+    override val analyticsRetryIn = "Nouvelle tentative dans"
 }
 
 // ── Spanish ───────────────────────────────────────────────────────────────────
@@ -1324,6 +1521,45 @@ object SpanishStrings : Strings {
     override val frequencyCountHeader = "Cantidad"
     override val frequencyTotalHeader = "Total"
     override val recentDonations = "Donaciones recientes"
+
+    // Analytics
+    override val analyticsTitle = "Analítica"
+    override val analyticsSettings = "Analítica e informes"
+    override val analyticsEnabledLabel = "Enviar analítica"
+    override val analyticsEnabledHint = "Totales de donaciones y avisos de fallos, solo de este kiosco."
+    override val analyticsDestination = "Destino"
+    override val analyticsUrlLabel = "URL del proyecto"
+    override val analyticsKeyLabel = "Clave publicable"
+    override val analyticsKeyHint = "Guardada cifrada en este dispositivo."
+    override val analyticsSave = "Guardar destino"
+    override val analyticsTestConnection = "Probar conexión"
+    override val analyticsTesting = "Probando..."
+    override val analyticsTestSucceeded = "Conectado. Este kiosco ya está informando."
+    override val analyticsTestFailed = "No se pudo contactar con el destino."
+    override val analyticsTestQueued = "En cola detrás de eventos existentes; se enviará junto con ellos."
+    override val analyticsStatus = "Estado"
+    override val analyticsQueued = "Esperando para enviar"
+    override val analyticsLastUpload = "Última subida"
+    override val analyticsNeverUploaded = "Nunca"
+    override val analyticsLastError = "Último error"
+    override val analyticsBackingOff = "Esperando para reintentar"
+    override val analyticsActivated = "El envío está activo"
+    override val analyticsNotActivated = "Aún no informa"
+    override val analyticsKioskCode = "Código del kiosco"
+    override val analyticsKioskCodeUnusual = "No coincide con el formato habitual. Se usará de todas formas."
+    override val analyticsPolicyUrls = "Enlaces de políticas"
+    override val analyticsPrivacyUrlLabel = "URL de política de privacidad"
+    override val analyticsTermsUrlLabel = "URL de términos"
+    override val analyticsClearCredentials = "Borrar credenciales"
+    override val analyticsClearWarning = "Esto elimina el destino y borra todo lo que aún esperaba enviarse."
+    override val analyticsCleared = "Credenciales borradas."
+    override val analyticsTestUnavailableNotConfigured = "Introduce primero un destino."
+    override val analyticsTestUnavailableDisabled = "Activa la analítica para probar la conexión."
+    override val analyticsKeyUnusual = "Esto no parece una clave publicable. Comprueba que no hayas pegado una clave secreta."
+    override val analyticsPolicyUrlsMissing = "No hay enlaces de políticas configurados. La activación los registrará vacíos."
+    override val analyticsInstallId = "ID de instalación"
+    override val analyticsFailedAttempts = "Intentos fallidos"
+    override val analyticsRetryIn = "Reintentando en"
 }
 
 // ── Italian ───────────────────────────────────────────────────────────────────
@@ -1547,6 +1783,45 @@ object ItalianStrings : Strings {
     override val frequencyCountHeader = "Quantità"
     override val frequencyTotalHeader = "Totale"
     override val recentDonations = "Donazioni recenti"
+
+    // Analytics
+    override val analyticsTitle = "Analisi"
+    override val analyticsSettings = "Analisi e report"
+    override val analyticsEnabledLabel = "Invia dati di analisi"
+    override val analyticsEnabledHint = "Totali delle donazioni e segnalazioni di guasti, solo da questo kiosk."
+    override val analyticsDestination = "Destinazione"
+    override val analyticsUrlLabel = "URL del progetto"
+    override val analyticsKeyLabel = "Chiave pubblicabile"
+    override val analyticsKeyHint = "Salvata in modo cifrato su questo dispositivo."
+    override val analyticsSave = "Salva destinazione"
+    override val analyticsTestConnection = "Prova connessione"
+    override val analyticsTesting = "Prova in corso..."
+    override val analyticsTestSucceeded = "Connesso. Questo kiosk ora invia i dati."
+    override val analyticsTestFailed = "Impossibile raggiungere la destinazione."
+    override val analyticsTestQueued = "In coda dietro agli eventi esistenti; verrà inviato insieme a loro."
+    override val analyticsStatus = "Stato"
+    override val analyticsQueued = "In attesa di invio"
+    override val analyticsLastUpload = "Ultimo invio"
+    override val analyticsNeverUploaded = "Mai"
+    override val analyticsLastError = "Ultimo errore"
+    override val analyticsBackingOff = "In attesa prima di ritentare"
+    override val analyticsActivated = "L'invio è attivo"
+    override val analyticsNotActivated = "Non ancora attivo"
+    override val analyticsKioskCode = "Codice kiosk"
+    override val analyticsKioskCodeUnusual = "Non corrisponde al formato consueto. Verrà comunque usato."
+    override val analyticsPolicyUrls = "Link alle norme"
+    override val analyticsPrivacyUrlLabel = "URL informativa privacy"
+    override val analyticsTermsUrlLabel = "URL termini di servizio"
+    override val analyticsClearCredentials = "Cancella credenziali"
+    override val analyticsClearWarning = "Questo rimuove la destinazione ed elimina tutto ciò che era ancora in attesa di invio."
+    override val analyticsCleared = "Credenziali cancellate."
+    override val analyticsTestUnavailableNotConfigured = "Inserisci prima una destinazione."
+    override val analyticsTestUnavailableDisabled = "Attiva l'analisi per provare la connessione."
+    override val analyticsKeyUnusual = "Questa non sembra una chiave pubblicabile. Verifica di non aver incollato una chiave segreta."
+    override val analyticsPolicyUrlsMissing = "Nessun link alle norme impostato. L'attivazione li registrerà vuoti."
+    override val analyticsInstallId = "ID installazione"
+    override val analyticsFailedAttempts = "Tentativi falliti"
+    override val analyticsRetryIn = "Nuovo tentativo tra"
 }
 
 // ── Turkish ───────────────────────────────────────────────────────────────────
@@ -1770,6 +2045,45 @@ object TurkishStrings : Strings {
     override val frequencyCountHeader = "Adet"
     override val frequencyTotalHeader = "Toplam"
     override val recentDonations = "Son bağışlar"
+
+    // Analytics
+    override val analyticsTitle = "Analitik"
+    override val analyticsSettings = "Analitik ve raporlama"
+    override val analyticsEnabledLabel = "Analitik verisi gönder"
+    override val analyticsEnabledHint = "Sadece bu kiosktan bağış toplamları ve arıza bildirimleri."
+    override val analyticsDestination = "Hedef"
+    override val analyticsUrlLabel = "Proje URL'si"
+    override val analyticsKeyLabel = "Yayınlanabilir anahtar"
+    override val analyticsKeyHint = "Bu cihazda şifreli olarak saklanır."
+    override val analyticsSave = "Hedefi kaydet"
+    override val analyticsTestConnection = "Bağlantıyı test et"
+    override val analyticsTesting = "Test ediliyor..."
+    override val analyticsTestSucceeded = "Bağlandı. Bu kiosk artık veri gönderiyor."
+    override val analyticsTestFailed = "Hedefe ulaşılamadı."
+    override val analyticsTestQueued = "Mevcut olayların arkasında sırada; onlarla birlikte gönderilecek."
+    override val analyticsStatus = "Durum"
+    override val analyticsQueued = "Gönderim bekleniyor"
+    override val analyticsLastUpload = "Son gönderim"
+    override val analyticsNeverUploaded = "Hiç"
+    override val analyticsLastError = "Son hata"
+    override val analyticsBackingOff = "Tekrar denemeden önce bekleniyor"
+    override val analyticsActivated = "Raporlama açık"
+    override val analyticsNotActivated = "Henüz rapor gönderilmiyor"
+    override val analyticsKioskCode = "Kiosk kodu"
+    override val analyticsKioskCodeUnusual = "Bu, olağan kod biçimine uymuyor. Yine de kullanılacak."
+    override val analyticsPolicyUrls = "Politika bağlantıları"
+    override val analyticsPrivacyUrlLabel = "Gizlilik politikası URL'si"
+    override val analyticsTermsUrlLabel = "Kullanım şartları URL'si"
+    override val analyticsClearCredentials = "Kimlik bilgilerini temizle"
+    override val analyticsClearWarning = "Bu, hedefi kaldırır ve gönderilmeyi bekleyen her şeyi siler."
+    override val analyticsCleared = "Kimlik bilgileri temizlendi."
+    override val analyticsTestUnavailableNotConfigured = "Önce bir hedef girin."
+    override val analyticsTestUnavailableDisabled = "Bağlantıyı test etmek için analitiği açın."
+    override val analyticsKeyUnusual = "Bu, yayınlanabilir bir anahtara benzemiyor. Gizli bir anahtar yapıştırmadığınızdan emin olun."
+    override val analyticsPolicyUrlsMissing = "Politika bağlantısı ayarlanmadı. Etkinleştirme bunları boş olarak kaydeder."
+    override val analyticsInstallId = "Kurulum kimliği"
+    override val analyticsFailedAttempts = "Başarısız denemeler"
+    override val analyticsRetryIn = "Yeniden deneme"
 }
 
 // ── Arabic ────────────────────────────────────────────────────────────────────
@@ -1993,4 +2307,43 @@ object ArabicStrings : Strings {
     override val frequencyCountHeader = "العدد"
     override val frequencyTotalHeader = "الإجمالي"
     override val recentDonations = "التبرعات الأخيرة"
+
+    // Analytics
+    override val analyticsTitle = "التحليلات"
+    override val analyticsSettings = "التحليلات والتقارير"
+    override val analyticsEnabledLabel = "إرسال بيانات التحليلات"
+    override val analyticsEnabledHint = "إجماليات التبرعات وتقارير الأعطال، من هذا الكشك فقط."
+    override val analyticsDestination = "الوجهة"
+    override val analyticsUrlLabel = "رابط المشروع"
+    override val analyticsKeyLabel = "المفتاح القابل للنشر"
+    override val analyticsKeyHint = "محفوظ بشكل مشفر على هذا الجهاز."
+    override val analyticsSave = "حفظ الوجهة"
+    override val analyticsTestConnection = "اختبار الاتصال"
+    override val analyticsTesting = "جارٍ الاختبار..."
+    override val analyticsTestSucceeded = "تم الاتصال. هذا الكشك يرسل التقارير الآن."
+    override val analyticsTestFailed = "تعذر الوصول إلى الوجهة."
+    override val analyticsTestQueued = "في الطابور خلف الأحداث الحالية؛ سيُرسل معها."
+    override val analyticsStatus = "الحالة"
+    override val analyticsQueued = "في انتظار الإرسال"
+    override val analyticsLastUpload = "آخر رفع"
+    override val analyticsNeverUploaded = "أبداً"
+    override val analyticsLastError = "آخر خطأ"
+    override val analyticsBackingOff = "في انتظار قبل إعادة المحاولة"
+    override val analyticsActivated = "الإرسال مفعّل"
+    override val analyticsNotActivated = "لم يبدأ الإرسال بعد"
+    override val analyticsKioskCode = "رمز الكشك"
+    override val analyticsKioskCodeUnusual = "لا يطابق الصيغة المعتادة للرمز. سيُستخدم رغم ذلك."
+    override val analyticsPolicyUrls = "روابط السياسات"
+    override val analyticsPrivacyUrlLabel = "رابط سياسة الخصوصية"
+    override val analyticsTermsUrlLabel = "رابط الشروط"
+    override val analyticsClearCredentials = "مسح بيانات الاعتماد"
+    override val analyticsClearWarning = "يؤدي هذا إلى إزالة الوجهة وحذف كل ما ينتظر الإرسال."
+    override val analyticsCleared = "تم مسح بيانات الاعتماد."
+    override val analyticsTestUnavailableNotConfigured = "أدخل وجهة أولاً."
+    override val analyticsTestUnavailableDisabled = "فعّل التحليلات لاختبار الاتصال."
+    override val analyticsKeyUnusual = "هذا لا يبدو مفتاحاً قابلاً للنشر. تأكد من أنك لم تلصق مفتاحاً سرياً."
+    override val analyticsPolicyUrlsMissing = "لا توجد روابط سياسات محددة. سيسجلها التفعيل فارغة."
+    override val analyticsInstallId = "معرّف التثبيت"
+    override val analyticsFailedAttempts = "المحاولات الفاشلة"
+    override val analyticsRetryIn = "إعادة المحاولة خلال"
 }
