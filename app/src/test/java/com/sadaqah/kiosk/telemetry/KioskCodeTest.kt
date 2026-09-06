@@ -1,5 +1,6 @@
 package com.sadaqah.kiosk.telemetry
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -25,5 +26,12 @@ class KioskCodeTest {
     @Test
     fun blankIsNotFlagged() {
         assertTrue(KioskCode.looksConventional(""))
+    }
+
+    /** A code that validates as conventional only because validation trims it
+     *  must not be stored with the whitespace that made that necessary. */
+    @Test
+    fun normalizeStripsWhitespaceSoTheStoredValueMatchesWhatWasValidated() {
+        assertEquals("SK-0042", KioskCode.normalize(" SK-0042 "))
     }
 }

@@ -38,6 +38,7 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import com.sadaqah.kiosk.model.Settings
+import com.sadaqah.kiosk.model.SettingsBootstrap
 import com.sadaqah.kiosk.model.SettingsImport
 import com.sadaqah.kiosk.ui.theme.SadaqahKioskTheme
 import com.google.gson.Gson
@@ -198,11 +199,15 @@ class MainActivity : FragmentActivity() {
         LogoColorExtractor.refresh(this, settings.logoUri)
 
         donationHistory = DonationHistory(this)
-        // Lazy-init the donation-stats anchor. If never set, fix it to "now" so
-        // throughput averages have a defined denominator. Reset Averages will
-        // re-set it later.
-        if (settings.donationStatsStartedAtMs == 0L) {
-            settings = settings.copy(donationStatsStartedAtMs = System.currentTimeMillis())
+        // Bootstrap this device's own installId and donation-stats anchor. Runs
+        // unconditionally — not gated on "did we have stored settings?" — so a
+        // genuinely fresh install gets both on its first boot, not its second.
+        // Reset Averages will re-set the anchor later.
+        val bootstrap = SettingsBootstrap.apply(settings, System.currentTimeMillis()) {
+            java.util.UUID.randomUUID().toString()
+        }
+        if (bootstrap.changed) {
+            settings = bootstrap.settings
             saveSettings(settings)
         }
 
@@ -242,13 +247,6 @@ class MainActivity : FragmentActivity() {
             }
             if (!json.contains("\"analyticsEnabled\"")) {
                 migrated = migrated.copy(analyticsEnabled = false); dirty = true
-            }
-            // Minted once and never regenerated: a new installId on an existing
-            // kiosk would read as a new device in the data and silently split its
-            // history in two.
-            if (migrated.installId.isBlank()) {
-                migrated = migrated.copy(installId = java.util.UUID.randomUUID().toString())
-                dirty = true
             }
         }
         if (dirty) {

@@ -70,9 +70,15 @@ class TelemetryOutbox(
 
     /** Removes the queue entirely. Used when credentials are cleared: the rows
      *  name a kiosk, so leaving them on disk would strand identified data an
-     *  operator has just withdrawn the basis for holding. */
+     *  operator has just withdrawn the basis for holding.
+     *
+     *  Also removes the sibling `.tmp` [writeAll] stages compaction through: a
+     *  crash between its write and its atomic move would otherwise leave a full
+     *  copy of the queue on disk that nothing else ever cleans up once
+     *  telemetry is off. */
     fun clear(): Unit = synchronized(lock) {
         file.delete()
+        File(file.parentFile, file.name + ".tmp").delete()
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
