@@ -61,7 +61,15 @@ object TelemetryUrl {
         // underscore in `my_project.supabase.co` or a raw IDN like `münchen.de`.
         // Falling back to the raw authority is safe only because the check above
         // has already rejected any authority containing '@'.
-        val host = uri.host ?: uri.rawAuthority
+        // Two extra conditions on the fallback, because a raw authority is
+        // unparsed. Percent-encoding hides the very delimiters rejected above —
+        // "%3F" is a query and "%40" is userinfo, and both were rejected before
+        // this fallback existed, so accepting them here would be a regression that
+        // puts a secret back into baseUrl. And a bare ":8443" is non-blank while
+        // naming no host at all.
+        val host = uri.host ?: uri.rawAuthority?.takeIf { raw ->
+            !raw.contains('%') && raw.substringBefore(':').isNotBlank()
+        }
         if (host.isNullOrBlank()) return UrlVerdict.Invalid("That URL has no host.")
 
         // The scheme is lowercased explicitly because HtTpS:// is accepted (schemes
