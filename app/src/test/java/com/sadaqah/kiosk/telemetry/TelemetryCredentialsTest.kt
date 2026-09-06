@@ -289,10 +289,24 @@ class TelemetryCredentialsTest {
         assertTrue(TelemetryUrl.check("https://:8443") is UrlVerdict.Invalid)
     }
 
-    /** The tightening must not cost the hosts the fallback exists to serve. */
+    /**
+     * M6: the underscore forces uri.host null, so this is the case that
+     * genuinely reaches the raw-authority fallback with a port attached — the
+     * tightening (the '%' and empty-host-portion guards) must not cost it.
+     */
     @Test
-    fun theFallbackStillAcceptsTheHostsItWasAddedFor() {
-        assertTrue(TelemetryUrl.check("https://my_project.supabase.co") is UrlVerdict.Valid)
+    fun theFallbackAcceptsAPortedUnderscoreHost() {
+        assertTrue(TelemetryUrl.check("https://my_project.supabase.co:8443") is UrlVerdict.Valid)
+    }
+
+    /**
+     * An ordinary host parses with a non-null uri.host and never reaches the
+     * fallback branch at all, port or not. This proves only that a normal ported
+     * host still works — not anything about the fallback's guards, which is what
+     * the previous version of this test wrongly claimed to cover.
+     */
+    @Test
+    fun anOrdinaryPortedHostIsAcceptedWithoutTouchingTheFallback() {
         assertTrue(TelemetryUrl.check("https://abc.supabase.co:8443") is UrlVerdict.Valid)
     }
 }

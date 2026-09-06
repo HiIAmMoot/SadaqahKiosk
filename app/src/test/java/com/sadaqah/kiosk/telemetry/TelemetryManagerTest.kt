@@ -91,16 +91,37 @@ class TelemetryManagerTest {
     }
 
     /**
-     * A single-row 409 means the row is already stored under its client-generated
-     * id — success, not a refusal. It must be removed from the outbox exactly
-     * like a fresh 201 would be, not kept for endless retry.
+     * A single-row 409 whose body confirms SQLSTATE 23505 means the row is
+     * already stored under its client-generated id — success, not a refusal. It
+     * must be removed from the outbox exactly like a fresh 201 would be, not
+     * kept for endless retry.
      */
     @Test
     fun aSingleRow409RemovesTheRowFromTheQueue() {
         val outbox = outboxWith("a")
-        val result = manager(outbox, ConstantPoster(HttpResponse(409, "duplicate key"))).flush()
+        val result = manager(
+            outbox,
+            ConstantPoster(HttpResponse(409, "duplicate key value violates unique constraint (SQLSTATE 23505)"))
+        ).flush()
         assertEquals(FlushBlock.NONE, result)
         assertEquals("a stored duplicate must not be left queued forever", 0, outbox.size())
+    }
+
+    /**
+     * FIX 1: PostgREST also answers 409 for a foreign-key or exclusion violation,
+     * neither of which means the row was stored. Only a body naming SQLSTATE
+     * 23505 may be treated as "already stored" — anything else must stay queued
+     * exactly like an ordinary retryable failure, never deleted on a guess.
+     */
+    @Test
+    fun aSingleRow409WithoutTheUniqueViolationSqlstateStaysQueued() {
+        val outbox = outboxWith("a")
+        val result = manager(
+            outbox,
+            ConstantPoster(HttpResponse(409, "insert or update violates foreign key constraint (SQLSTATE 23503)"))
+        ).flush()
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals("an unconfirmed 409 must never be deleted from the outbox", 1, outbox.size())
     }
 
     /**
@@ -176,9 +197,14 @@ class TelemetryManagerTest {
     @Test
     fun anEmptyQueueIsNotAFailure() {
         val store = InMemoryStatusStore()
+        // Seeded non-zero, per M7 in the review: seeding 0 and asserting 0 passes
+        // against a manager that writes no status at all, which proves nothing.
+        // Seeding a distinctive value means the assertion below only passes if
+        // an empty queue genuinely leaves status untouched.
+        store.write(store.read().copy(consecutiveFailures = 5))
         val result = manager(TelemetryOutbox(temp.newFile()), ConstantPoster(HttpResponse(500, null)), statusStore = store).flush()
         assertEquals(FlushBlock.EMPTY_QUEUE, result)
-        assertEquals("nothing to send is not a failure", 0, store.read().consecutiveFailures)
+        assertEquals("nothing to send is not a failure", 5, store.read().consecutiveFailures)
     }
 
     @Test
@@ -423,5 +449,62 @@ class TelemetryManagerTest {
         assertEquals(now, store.read().lastSuccessMs)
         assertTrue("a flush with a genuine failure must still back off", store.read().backoffUntilMs > now)
         assertEquals(1, store.read().consecutiveFailures)
+    }
+
+    // ── FIX 3: activate() on a kiosk with a deep backlog ────────────────────
+
+    /**
+     * peek() only ever takes DEFAULT_BATCH rows from the head of the queue, and
+     * the activation row is appended at the tail. On a kiosk with at least that
+     * many rows already queued, this flush's page never reaches the activation
+     * row at all, so nothing is known yet about the destination — reporting
+     * Failed here would tell the operator a healthy destination is broken.
+     */
+    @Test
+    fun activationBehindADeepBacklogIsQueuedNotFailed() {
+        val backlog = (1..TelemetryOutbox.DEFAULT_BATCH).map { "id-$it" }.toTypedArray()
+        val outbox = outboxWith(*backlog)
+        // 503 rather than 201, so the backlog batch itself is not removed —
+        // isolating the assertion to what activate() reports, not queue mechanics.
+        val poster = ConstantPoster(HttpResponse(503, "down"))
+        val result = manager(outbox, poster).activate()
+        assertEquals(
+            "a row the page never reached must be Queued, not Failed",
+            ActivationResult.Queued,
+            result
+        )
+        assertEquals(
+            "the activation row and the entire backlog must still be queued",
+            TelemetryOutbox.DEFAULT_BATCH + 1,
+            outbox.size()
+        )
+    }
+
+    // ── FIX 4: a fresh destination must be testable immediately ────────────
+
+    /**
+     * Operator types a wrong URL, activation fails, backoff climbs. Operator
+     * fixes the URL and presses "Test connection" again (a fresh save(), then
+     * activate()). Before this fix, BACKING_OFF could block that retest for up
+     * to 60 minutes even though the destination is now correct.
+     */
+    @Test
+    fun activateResetsAStaleBackoffSoAFreshDestinationIsTestableImmediately() {
+        val store = InMemoryStatusStore()
+        store.write(
+            store.read().copy(
+                consecutiveFailures = 6,
+                backoffUntilMs = now + 55 * 60 * 1000,
+                lastError = "HTTP 000 old destination unreachable"
+            )
+        )
+        val outbox = TelemetryOutbox(temp.newFile())
+        val poster = ConstantPoster(HttpResponse(201, null))
+        val result = manager(outbox, poster, statusStore = store).activate()
+        assertEquals(
+            "a freshly-saved destination must not be refused by a stale backoff",
+            ActivationResult.Succeeded,
+            result
+        )
     }
 }

@@ -21,6 +21,22 @@ class KioskCodeTest {
         assertFalse(KioskCode.looksConventional("mosque-front-door"))
     }
 
+    /** The actual vendor format from the spec ("How a kiosk identifies itself"):
+     *  country-region-city-mosque_slug-number. This is the shape every real
+     *  vendor kiosk uses, and it must be recognised or the advisory warning
+     *  fires on 100% of correctly-provisioned kiosks. */
+    @Test
+    fun theRealVendorFormatFromTheSpecIsRecognised() {
+        assertTrue(KioskCode.looksConventional("nl-gld-arnhem-nour_al_houda-01"))
+    }
+
+    /** The convention is permissive about segment count on purpose — the site
+     *  repository owns the exact shape, this is only an advisory restatement. */
+    @Test
+    fun aShorterHyphenatedCodeEndingInDigitsIsAlsoRecognised() {
+        assertTrue(KioskCode.looksConventional("us-ca-07"))
+    }
+
     /** A fork with no code scheme is a supported deployment. Blank must not be
      *  reported as a problem, or the warning fires on every such kiosk forever. */
     @Test

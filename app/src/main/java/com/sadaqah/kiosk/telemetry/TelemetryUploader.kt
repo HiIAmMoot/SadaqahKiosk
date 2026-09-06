@@ -7,10 +7,15 @@ package com.sadaqah.kiosk.telemetry
  * first is safely on the server, the second never will be. They are reported
  * apart so the caller can log the difference rather than lose it.
  * [uploadedIds] covers two different server answers that are the same outcome
- * for the outbox: a fresh `201` and a `409` on a single-row request, which means
- * the client-generated id — the primary key — was already stored, almost always
- * by an earlier attempt at this same row. Either way the donation is on the
+ * for the outbox: a fresh `201` and a `409` on a single-row request that the
+ * response body confirms as SQLSTATE `23505` (unique_violation) — meaning the
+ * client-generated id, the primary key, was already stored, almost always by
+ * an earlier attempt at this same row. Either way the donation is on the
  * server, so either way the id is named here rather than in [rejectedIds].
+ * A 409 the body does not confirm as `23505` (an unconfirmable body, or a
+ * different SQLSTATE such as a foreign-key violation) is **not** "already
+ * stored" — see [HttpResponse.isAlreadyStored] — and lands in neither set; the
+ * row stays queued rather than being reported here on a guess.
  *
  * One invariant governs everything in [rejectedIds], because the outbox is the
  * only copy of a donation and the caller deletes whatever this reports: **a row
