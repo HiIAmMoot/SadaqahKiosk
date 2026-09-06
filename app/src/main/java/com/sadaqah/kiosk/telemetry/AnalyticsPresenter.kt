@@ -40,10 +40,13 @@ data class AnalyticsView(
     val queued: Int,
     val neverUploaded: Boolean,
     val lastSuccessMs: Long,
-    val lastSuccessAgeMs: Long?,
     val error: String?,
     val backingOff: Boolean,
-    val backoffRemainingMs: Long,
+    /** Seconds, not millis: the screen shows seconds, and converting in the
+     *  composable is arithmetic no test can reach. Rounded up, so a wait of
+     *  900ms reads as "1" rather than "0" — a countdown that displays zero
+     *  while still waiting reads as a stuck kiosk. */
+    val backoffRemainingSeconds: Long,
     val consecutiveFailures: Int,
     val privacyPolicyUrl: String,
     val termsUrl: String,
@@ -98,7 +101,6 @@ object AnalyticsPresenter {
             queued = status.queued,
             neverUploaded = neverUploaded,
             lastSuccessMs = status.lastSuccessMs,
-            lastSuccessAgeMs = if (neverUploaded) null else nowMs - status.lastSuccessMs,
             // An error is shown unless a success has happened since it was
             // recorded. Queue depth is not evidence of that: TelemetryManager.flush
             // can empty the outbox by permanently rejecting rows (deleting the
@@ -107,7 +109,8 @@ object AnalyticsPresenter {
             // still be shown, not the case this used to suppress.
             error = status.lastError?.takeIf { status.lastSuccessMs <= status.lastErrorAtMs },
             backingOff = status.backoffUntilMs > nowMs,
-            backoffRemainingMs = (status.backoffUntilMs - nowMs).coerceAtLeast(0L),
+            backoffRemainingSeconds =
+                (status.backoffUntilMs - nowMs).coerceAtLeast(0L).let { (it + 999) / 1000 },
             consecutiveFailures = status.consecutiveFailures,
             privacyPolicyUrl = settings.analyticsPrivacyPolicyUrl,
             termsUrl = settings.analyticsTermsUrl,
