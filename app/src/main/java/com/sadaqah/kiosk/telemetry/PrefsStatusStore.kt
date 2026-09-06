@@ -23,7 +23,8 @@ class PrefsStatusStore(
         lastError = prefs.getString(KEY_LAST_ERROR, null),
         lastErrorAtMs = prefs.getLong(KEY_LAST_ERROR_AT, 0L),
         consecutiveFailures = prefs.getInt(KEY_FAILURES, 0),
-        backoffUntilMs = prefs.getLong(KEY_BACKOFF_UNTIL, 0L)
+        backoffUntilMs = prefs.getLong(KEY_BACKOFF_UNTIL, 0L),
+        droppedCount = prefs.getInt(KEY_DROPPED, 0)
     )
 
     override fun write(status: TelemetryStatus) {
@@ -33,6 +34,7 @@ class PrefsStatusStore(
             .putLong(KEY_LAST_ERROR_AT, status.lastErrorAtMs)
             .putInt(KEY_FAILURES, status.consecutiveFailures)
             .putLong(KEY_BACKOFF_UNTIL, status.backoffUntilMs)
+            .putInt(KEY_DROPPED, status.droppedCount)
             .apply()
     }
 
@@ -42,5 +44,6 @@ class PrefsStatusStore(
         const val KEY_LAST_ERROR_AT = "last_error_at_ms"
         const val KEY_FAILURES = "consecutive_failures"
         const val KEY_BACKOFF_UNTIL = "backoff_until_ms"
+        const val KEY_DROPPED = "dropped_count"
     }
 }

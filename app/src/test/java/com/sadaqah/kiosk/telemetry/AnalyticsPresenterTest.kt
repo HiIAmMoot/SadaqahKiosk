@@ -304,4 +304,11 @@ class AnalyticsPresenterTest {
     fun installIdIsCarriedThrough() {
         assertEquals("install-77", view(settings = Settings(installId = "install-77")).installId)
     }
+
+    /** A drained queue beside a stale error is indistinguishable from data loss
+     *  unless the loss is stated outright. */
+    @Test
+    fun droppedEventsAreSurfaced() {
+        assertEquals(7, view(status = TelemetryStatus(droppedCount = 7)).dropped)
+    }
 }
