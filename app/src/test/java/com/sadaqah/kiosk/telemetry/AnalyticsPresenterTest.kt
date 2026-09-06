@@ -238,24 +238,21 @@ class AnalyticsPresenterTest {
 
     // ── FIX 5: gaps that would otherwise force computation into the composable ─
 
+
+
     @Test
-    fun lastSuccessAgeMsIsNullWhenNeverUploaded() {
-        assertEquals(null, view(status = TelemetryStatus(lastSuccessMs = 0L)).lastSuccessAgeMs)
+    fun backoffRemainingSecondsIsZeroWhenNotBackingOff() {
+        assertEquals(0L, view(status = TelemetryStatus(backoffUntilMs = now - 30_000)).backoffRemainingSeconds)
     }
 
     @Test
-    fun lastSuccessAgeMsIsTheElapsedTimeSinceTheLastSuccess() {
-        assertEquals(90_000L, view(status = TelemetryStatus(lastSuccessMs = now - 90_000)).lastSuccessAgeMs)
+    fun aPartialSecondOfBackoffRoundsUpRatherThanDisplayingZero() {
+        assertEquals(1L, view(status = TelemetryStatus(backoffUntilMs = now + 900)).backoffRemainingSeconds)
     }
 
     @Test
-    fun backoffRemainingMsIsZeroWhenNotBackingOff() {
-        assertEquals(0L, view(status = TelemetryStatus(backoffUntilMs = now - 30_000)).backoffRemainingMs)
-    }
-
-    @Test
-    fun backoffRemainingMsIsTheTimeUntilTheDeadline() {
-        assertEquals(45_000L, view(status = TelemetryStatus(backoffUntilMs = now + 45_000)).backoffRemainingMs)
+    fun backoffRemainingSecondsIsTheTimeUntilTheDeadline() {
+        assertEquals(45L, view(status = TelemetryStatus(backoffUntilMs = now + 45_000)).backoffRemainingSeconds)
     }
 
     @Test

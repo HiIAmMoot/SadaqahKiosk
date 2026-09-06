@@ -283,7 +283,7 @@ fun AnalyticsSettingsScreen(
                         if (view.backingOff) {
                             AnalyticsStatusLine(
                                 strings.analyticsBackingOff,
-                                "${strings.analyticsRetryIn} ${view.backoffRemainingMs / 1000}${strings.seconds}",
+                                "${strings.analyticsRetryIn} ${view.backoffRemainingSeconds}${strings.seconds}",
                                 warningColor
                             )
                         }
