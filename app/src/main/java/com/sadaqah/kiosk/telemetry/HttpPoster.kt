@@ -19,15 +19,26 @@ data class HttpResponse(val code: Int, val body: String?) {
     val isPermanentRejection: Boolean
         get() = code in ROW_LEVEL_REFUSALS
 
+    /** The server already holds a row with this client-generated id. On a single-row
+     *  request that is success — the donation is stored, and the retry that produced
+     *  it was the safe kind. On a batch it is not: PostgREST inserts a batch as one
+     *  statement, so a collision aborts the whole thing and the other rows never
+     *  landed, which is why it falls back to sending them individually. */
+    val isAlreadyStored: Boolean get() = code == 409
+
     companion object {
         /** No HTTP status at all — DNS, socket, timeout. Distinct from any real
          *  status, which is always >= 100, so callers can treat it as retryable
          *  without special-casing null. */
         const val TRANSPORT_FAILURE = -1
 
-        /** 400 malformed, 409 conflict, 413 too large, 422 unprocessable — all
-         *  statements about the row itself. */
-        private val ROW_LEVEL_REFUSALS = setOf(400, 409, 413, 422)
+        /** 400 malformed, 413 too large, 422 unprocessable — all statements about
+         *  the row itself. 409 (conflict, duplicate primary key) used to live here
+         *  too, but with no `Prefer: resolution=ignore-duplicates` header the only
+         *  way a client-generated id collides is a retry of a row already safely
+         *  stored — see [isAlreadyStored]. That is success, not a refusal, so it
+         *  is handled separately rather than counted as one. */
+        private val ROW_LEVEL_REFUSALS = setOf(400, 413, 422)
 
         /** One definition of the 2xx range, reachable from a bare status code so
          *  a caller holding only the number need not build a response to ask. */

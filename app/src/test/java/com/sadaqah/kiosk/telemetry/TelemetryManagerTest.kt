@@ -52,7 +52,7 @@ class TelemetryManagerTest {
         enabled: Boolean = true,
         activated: Boolean = true,
         credentials: TelemetryCredentials = TelemetryCredentials(InMemorySecretStore())
-            .apply { save("https://abc.supabase.co", "anon-key") },
+            .apply { save("https://abc.supabase.co", "publishable-key") },
         statusStore: TelemetryStatusStore = InMemoryStatusStore(),
         upload: ((TelemetryConfig, List<QueuedEvent>) -> UploadOutcome)? = null
     ) = TelemetryManager(
@@ -72,7 +72,7 @@ class TelemetryManagerTest {
         networkAvailable = { online },
         clock = { now },
         upload = upload ?: { config, batch ->
-            TelemetryUploader(config.baseUrl, config.anonKey, poster).upload(batch)
+            TelemetryUploader(config.baseUrl, config.publishableKey, poster).upload(batch)
         }
     )
 
@@ -88,6 +88,19 @@ class TelemetryManagerTest {
         val result = manager(outbox, ConstantPoster(HttpResponse(201, null))).flush()
         assertEquals(FlushBlock.NONE, result)
         assertEquals(0, outbox.size())
+    }
+
+    /**
+     * A single-row 409 means the row is already stored under its client-generated
+     * id — success, not a refusal. It must be removed from the outbox exactly
+     * like a fresh 201 would be, not kept for endless retry.
+     */
+    @Test
+    fun aSingleRow409RemovesTheRowFromTheQueue() {
+        val outbox = outboxWith("a")
+        val result = manager(outbox, ConstantPoster(HttpResponse(409, "duplicate key"))).flush()
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals("a stored duplicate must not be left queued forever", 0, outbox.size())
     }
 
     /**
@@ -242,10 +255,10 @@ class TelemetryManagerTest {
     }
 
     @Test
-    fun theStoredErrorNeverContainsTheAnonKey() {
+    fun theStoredErrorNeverContainsThePublishableKey() {
         val store = InMemoryStatusStore()
-        manager(outboxWith("a"), ConstantPoster(HttpResponse(500, "rejected key anon-key")), statusStore = store).flush()
-        assertFalse(store.read().lastError!!.contains("anon-key"))
+        manager(outboxWith("a"), ConstantPoster(HttpResponse(500, "rejected key publishable-key")), statusStore = store).flush()
+        assertFalse(store.read().lastError!!.contains("publishable-key"))
     }
 
     @Test

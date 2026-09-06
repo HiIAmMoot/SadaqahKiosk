@@ -47,7 +47,7 @@ class TelemetryManager(
      *  the success branch below must not be fooled by. Production wiring never
      *  overrides this. */
     private val upload: (TelemetryConfig, List<QueuedEvent>) -> UploadOutcome = { config, batch ->
-        TelemetryUploader(config.baseUrl, config.anonKey, posterFor(config)).upload(batch)
+        TelemetryUploader(config.baseUrl, config.publishableKey, posterFor(config)).upload(batch)
     }
 ) {
     /** Set at the end of every [flush] call (and cleared at the start of every
