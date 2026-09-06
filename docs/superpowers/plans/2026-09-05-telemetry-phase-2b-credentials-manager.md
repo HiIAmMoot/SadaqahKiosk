@@ -63,8 +63,14 @@ The split keeps every decision in a file with no `android.*` import, so the whol
 **Interfaces:**
 - Consumes: nothing.
 - Produces:
-  - `interface SecretStore { fun put(key: String, value: String); fun get(key: String): String?; fun remove(key: String) }`
+  - `interface SecretStore { fun put(key: String, value: String): Boolean; fun get(key: String): String?; fun remove(key: String) }`
+    **(amended after the Task 1 review — `put` returns whether the value was stored.
+    The interface promised never to throw and the adapter's `put`/`remove` were
+    unguarded; guarding them silently would have told an operator their credentials
+    saved when they had not.)**
   - `class InMemorySecretStore : SecretStore`
+  - `class UnwritableSecretStore : SecretStore` — writes always fail, for the
+    storage-unavailable path the in-memory fake cannot reach
   - `class KeystoreSecretStore(context: Context, prefsName: String = "telemetry_secrets") : SecretStore`
 
 - [ ] **Step 1: Write the failing test**
@@ -378,6 +384,18 @@ class TelemetryCredentialsTest {
         assertNull("the key must not outlive the url", store.get("telemetry_anon_key"))
     }
 
+    /**
+     * A kiosk whose Keystore is unusable must say so, not accept the credentials and
+     * silently never report. The operator is standing at the machine and can retry.
+     */
+    @Test
+    fun aStoreThatCannotWriteIsReportedRatherThanAccepted() {
+        val creds = TelemetryCredentials(UnwritableSecretStore())
+        val verdict = creds.save("https://abc.supabase.co", "anon-key")
+        assertTrue(verdict is UrlVerdict.Invalid)
+        assertFalse("a failed save must not look configured", creds.isConfigured())
+    }
+
     /** A generated toString on a credential holder is how keys reach logcat. */
     @Test
     fun theConfigDoesNotPrintItsKey() {
@@ -466,8 +484,14 @@ class TelemetryCredentials(private val store: SecretStore) {
         val verdict = TelemetryUrl.check(baseUrl)
         if (verdict !is UrlVerdict.Valid) return verdict
 
-        store.put(KEY_URL, verdict.normalised)
-        store.put(KEY_ANON, key)
+        // A store that cannot write must not be reported as configured. Both halves
+        // are attempted, then checked: a half-written destination would read as
+        // configured and fail every flush afterwards.
+        val stored = store.put(KEY_URL, verdict.normalised) && store.put(KEY_ANON, key)
+        if (!stored) {
+            clear()
+            return UrlVerdict.Invalid("This device could not store the credentials securely.")
+        }
         return verdict
     }
 
@@ -488,7 +512,7 @@ class TelemetryCredentials(private val store: SecretStore) {
 - [ ] **Step 4: Run the tests**
 
 Run: `./gradlew testDebugUnitTest --tests "*TelemetryCredentialsTest*"`
-Expected: PASS, 13 tests.
+Expected: PASS, 14 tests.
 
 - [ ] **Step 5: Mutation-check the two that matter**
 
