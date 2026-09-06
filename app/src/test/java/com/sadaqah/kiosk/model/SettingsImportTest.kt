@@ -1,6 +1,7 @@
 package com.sadaqah.kiosk.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -86,5 +87,24 @@ class SettingsImportTest {
         assertEquals("https://example.org/privacy", merged.analyticsPrivacyPolicyUrl)
         assertEquals(false, merged.autoUpdateEnabled)
         assertEquals("Front Door", merged.kioskName)
+    }
+
+    /**
+     * Test mode bypasses the biometric gate and forces the logged-in and
+     * reader-connected states. A bench device's export must not unlock the
+     * settings screen on every kiosk that imports it.
+     */
+    @Test
+    fun testModeIsNeverInherited() {
+        val merged = SettingsImport.merge(Settings(testMode = false), Settings(testMode = true))
+        assertFalse("a security relaxation is chosen on the device, never imported", merged.testMode)
+    }
+
+    /** And it is forced off, not merely preserved — a bench device importing a
+     *  production export should also come back to a locked state. */
+    @Test
+    fun testModeIsForcedOffEvenWhenTheDeviceHadItOn() {
+        val merged = SettingsImport.merge(Settings(testMode = true), Settings(testMode = false))
+        assertFalse(merged.testMode)
     }
 }
