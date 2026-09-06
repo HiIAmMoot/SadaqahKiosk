@@ -28,6 +28,12 @@ object SettingsImport {
         // A one-shot signature-check bypass. Riding an export onto a whole fleet
         // would disable that check across every kiosk that imports it, so force
         // it off on import rather than ever inheriting it.
-        skipApkSignatureCheckOnce = false
+        skipApkSignatureCheckOnce = false,
+        // Test mode forces isLoggedIn and isCardReaderConnected true and bypasses
+        // the biometric gate. An export taken from a bench device would carry that
+        // onto every kiosk importing it, unlocking the settings screen on machines
+        // standing in public. Same reasoning as the signature-check bypass above:
+        // a security relaxation is never inherited, only chosen on the device.
+        testMode = false
     )
 }

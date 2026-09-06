@@ -284,11 +284,20 @@ class TelemetryOutboxTest {
     @Test
     fun clearOnAnAbsentFileIsHarmlessAndLeavesTheOutboxUsable() {
         val box = outbox()
+        // Append first. Clearing a file that never existed passes against an empty
+        // clear() -- the file is absent either way -- so the queue has to have
+        // something to lose before its removal proves anything.
+        box.appendDonation("before")
         box.clear()
-        assertFalse(file.exists())
-        box.appendDonation("a")
+        assertFalse("clear must delete, not truncate", file.exists())
+
+        // And clearing again, now that it really is absent, must not throw.
+        box.clear()
+
+        box.appendDonation("after")
         assertTrue(file.exists())
-        assertEquals(listOf("a"), box.peek().map { it.id })
+        assertEquals("the cleared queue keeps none of what preceded it",
+            listOf("after"), box.peek().map { it.id })
     }
 
     /** The temp file `writeAll` stages compaction through must not survive a
