@@ -121,15 +121,17 @@ class TelemetryUploaderTest {
     // ── Duplicates (409) ─────────────────────────────────────────────────────
 
     /**
-     * Without `resolution=ignore-duplicates`, a 409 on a single-row request means
-     * the client-generated id — the primary key — already made it to the server,
-     * almost always on an earlier attempt at this same row. That is success: the
-     * donation is stored, and the id belongs in uploadedIds so the caller deletes
-     * it from the outbox, not in rejectedIds.
+     * Without `resolution=ignore-duplicates`, a 409 on a single-row request whose
+     * body confirms SQLSTATE 23505 means the client-generated id — the primary
+     * key — already made it to the server, almost always on an earlier attempt at
+     * this same row. That is success: the donation is stored, and the id belongs
+     * in uploadedIds so the caller deletes it from the outbox, not in rejectedIds.
      */
     @Test
     fun aSingleRow409IsReportedAsUploadedNotRejected() {
-        val poster = RecordingPoster { _, _ -> HttpResponse(409, "duplicate key") }
+        val poster = RecordingPoster { _, _ ->
+            HttpResponse(409, "duplicate key value violates unique constraint (SQLSTATE 23505)")
+        }
         val outcome = uploader(poster).upload(listOf(event("already-there")))
 
         assertEquals("one batch request, no per-row fallback for a lone row",
@@ -141,17 +143,61 @@ class TelemetryUploaderTest {
     }
 
     /**
-     * PostgREST runs a batch insert as one statement, so a 409 on a *multi-row*
-     * request means one row collided and the whole statement aborted — the other
-     * rows never landed either. Treating the batch as wholesale-uploaded would
-     * wrongly credit rows the server never received, so this must fall back to
-     * sending them individually exactly as a row-level refusal does.
+     * FIX 1: PostgREST also returns 409 for a foreign-key violation (23503),
+     * which means the row was rejected, not stored. It must not be credited to
+     * uploadedIds — it must stay queued and retried, exactly like an ordinary
+     * retryable failure, and it must not be treated as a permanent rejection
+     * either, since we cannot actually prove it is bad.
+     */
+    @Test
+    fun aSingleRow409NamingAForeignKeyViolationIsNeitherUploadedNorRejected() {
+        val poster = RecordingPoster { _, _ ->
+            HttpResponse(409, "insert or update on table violates foreign key constraint (SQLSTATE 23503)")
+        }
+        val outcome = uploader(poster).upload(listOf(event("e1")))
+
+        assertTrue("an unconfirmed 409 must not be credited as uploaded", outcome.uploadedIds.isEmpty())
+        assertTrue("an unconfirmed 409 must not be treated as a rejection either", outcome.rejectedIds.isEmpty())
+        assertTrue("the row stays queued and the flush is retryable", outcome.retryableFailure)
+    }
+
+    /** A null body — PostgREST should always send one, but the code must not
+     *  assume it — must be treated as retryable, never as a confirmed duplicate. */
+    @Test
+    fun aSingleRow409WithANullBodyIsRetryableRatherThanStored() {
+        val poster = RecordingPoster { _, _ -> HttpResponse(409, null) }
+        val outcome = uploader(poster).upload(listOf(event("e1")))
+
+        assertTrue(outcome.uploadedIds.isEmpty())
+        assertTrue(outcome.rejectedIds.isEmpty())
+        assertTrue(outcome.retryableFailure)
+    }
+
+    /** A body that names no SQLSTATE at all must be treated the same way. */
+    @Test
+    fun aSingleRow409NamingNoSqlstateIsRetryableRatherThanStored() {
+        val poster = RecordingPoster { _, _ -> HttpResponse(409, "duplicate key value violates constraint") }
+        val outcome = uploader(poster).upload(listOf(event("e1")))
+
+        assertTrue(outcome.uploadedIds.isEmpty())
+        assertTrue(outcome.rejectedIds.isEmpty())
+        assertTrue(outcome.retryableFailure)
+    }
+
+    /**
+     * PostgREST runs a batch insert as one statement, so a 409 naming the unique
+     * violation on a *multi-row* request means one row collided and the whole
+     * statement aborted — the other rows never landed either. Treating the batch
+     * as wholesale-uploaded would wrongly credit rows the server never received,
+     * so this must fall back to sending them individually exactly as a row-level
+     * refusal does. Must not regress once isAlreadyStored requires a confirmed
+     * body: this still has to route to the fallback, not just fall through.
      */
     @Test
     fun aMultiRow409TriggersThePerRowFallback() {
         val poster = RecordingPoster { _, body ->
             val isBatch = JsonParser.parseString(body).asJsonArray.size() > 1
-            if (isBatch) HttpResponse(409, "duplicate key") else HttpResponse(201, null)
+            if (isBatch) HttpResponse(409, "duplicate key (SQLSTATE 23505)") else HttpResponse(201, null)
         }
         val outcome = uploader(poster).upload(listOf(event("e1"), event("e2")))
 
@@ -162,16 +208,16 @@ class TelemetryUploaderTest {
 
     /**
      * The realistic shape of a retried batch: one row already landed from the
-     * earlier attempt (409), the rest are genuinely new (201). Both outcomes are
-     * "on the server", so both ids must come back uploaded.
+     * earlier attempt (409, confirmed 23505), the rest are genuinely new (201).
+     * Both outcomes are "on the server", so both ids must come back uploaded.
      */
     @Test
     fun aFallbackMixingSuccessAndDuplicateReportsEveryRowUploaded() {
         val poster = RecordingPoster { _, body ->
             val isBatch = JsonParser.parseString(body).asJsonArray.size() > 1
             when {
-                isBatch -> HttpResponse(409, "duplicate key")
-                body.contains("\"already-there\"") -> HttpResponse(409, "duplicate key")
+                isBatch -> HttpResponse(409, "duplicate key (SQLSTATE 23505)")
+                body.contains("\"already-there\"") -> HttpResponse(409, "duplicate key (SQLSTATE 23505)")
                 else -> HttpResponse(201, null)
             }
         }

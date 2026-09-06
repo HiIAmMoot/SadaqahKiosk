@@ -1244,3 +1244,24 @@ Open question for whoever plans that phase: credentials. Auto-provisioning wants
 the Supabase key on the device, but the encrypted envelope needs the operator's
 password. Passing that password over adb puts it in shell history and in the
 process list. Decide it deliberately rather than defaulting to plaintext.
+
+## Required of phase 2c
+
+Carried from the final whole-branch review of 2b, so they do not get lost between
+"reviewed" and "someone picks it up":
+
+- **Wire `TelemetryOutbox.clear()` to the clear-credentials action.** It has no
+  caller today, so the invariant "clearing credentials must not strand identified
+  data on disk" exists only in a comment and a test of an uncalled method — 2c's
+  "clear the credentials" control on `AnalyticsSettingsScreen` is the call site.
+- **Surface "events dropped".** `status()` has no signal for the outbox's own age/
+  count eviction, so a `queued = 0` next to a stale `lastError` can read as
+  success when rows were actually discarded. Close this before the screen ships,
+  not after.
+- **Do not call `status()` on every recomposition.** It re-parses the whole
+  outbox file on each call — harmless headless, expensive on the UI thread from a
+  Compose screen. Read it once into state instead.
+- **Show the kiosk code prominently right after an import.** `kioskCode` is
+  deliberately importable and deliberately not a device key (`installId` still
+  distinguishes devices), but a cloned code is only safe if it is visible at the
+  bench — surface it right after import so an operator notices before it ships.
