@@ -268,4 +268,31 @@ class TelemetryCredentialsTest {
         override fun get(key: String): String? = delegate.get(key)
         override fun remove(key: String) = delegate.remove(key)
     }
+
+    /**
+     * The raw-authority fallback that lets underscore and IDN hosts through is
+     * unparsed, so percent-encoding can smuggle back the delimiters rejected
+     * above: %3F is a query, %40 is userinfo, %23 is a fragment. All three were
+     * rejected before that fallback existed, and a secret in the query lands in
+     * baseUrl, which TelemetryConfig prints in full.
+     */
+    @Test
+    fun percentEncodedDelimitersCannotSmuggleASecretIntoTheHost() {
+        assertTrue(TelemetryUrl.check("https://abc.supabase.co%3Fapikey=SECRET") is UrlVerdict.Invalid)
+        assertTrue(TelemetryUrl.check("https://user:pass%40abc.supabase.co") is UrlVerdict.Invalid)
+        assertTrue(TelemetryUrl.check("https://abc.supabase.co%23tok=SECRET") is UrlVerdict.Invalid)
+    }
+
+    /** ":8443" is a non-blank authority that names no host. */
+    @Test
+    fun aBarePortIsRejected() {
+        assertTrue(TelemetryUrl.check("https://:8443") is UrlVerdict.Invalid)
+    }
+
+    /** The tightening must not cost the hosts the fallback exists to serve. */
+    @Test
+    fun theFallbackStillAcceptsTheHostsItWasAddedFor() {
+        assertTrue(TelemetryUrl.check("https://my_project.supabase.co") is UrlVerdict.Valid)
+        assertTrue(TelemetryUrl.check("https://abc.supabase.co:8443") is UrlVerdict.Valid)
+    }
 }
