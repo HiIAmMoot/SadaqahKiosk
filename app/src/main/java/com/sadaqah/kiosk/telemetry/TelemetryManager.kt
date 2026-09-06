@@ -190,6 +190,7 @@ class TelemetryManager(
                     // (a donation amount, a stack trace fragment) that never went
                     // through the redactor.
                     lastError = t::class.java.name,
+                    lastErrorAtMs = finishedAt,
                     consecutiveFailures = failures,
                     backoffUntilMs = finishedAt + TelemetryGate.backoffDelayMs(failures)
                 )
@@ -214,6 +215,11 @@ class TelemetryManager(
                 statusStore.write(
                     before.copy(
                         lastError = outcome.lastError,
+                        // Only advanced when a non-null error is actually written —
+                        // outcome.lastError is nullable in principle even though
+                        // every reachable retryableFailure path in TelemetryUploader
+                        // sets it alongside retryable = true.
+                        lastErrorAtMs = if (outcome.lastError != null) finishedAt else before.lastErrorAtMs,
                         consecutiveFailures = failures,
                         backoffUntilMs = finishedAt + TelemetryGate.backoffDelayMs(failures),
                         // A partial success still moves the marker: rows did land, and

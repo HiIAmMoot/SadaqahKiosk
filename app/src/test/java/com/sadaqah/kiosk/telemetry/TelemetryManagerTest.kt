@@ -146,6 +146,16 @@ class TelemetryManagerTest {
         assertTrue("a failure must push the next attempt out", status.backoffUntilMs > now)
     }
 
+    /** FIX 1: a stale queue depth is not evidence an error is history — the
+     *  presenter instead trusts lastErrorAtMs against lastSuccessMs, so every
+     *  site that writes a non-null lastError must also stamp when. */
+    @Test
+    fun aRetryableFailureRecordsWhenTheErrorWasWritten() {
+        val store = InMemoryStatusStore()
+        manager(outboxWith("a"), ConstantPoster(HttpResponse(503, "down")), statusStore = store).flush()
+        assertEquals(now, store.read().lastErrorAtMs)
+    }
+
     @Test
     fun aSuccessResetsTheFailureCount() {
         val store = InMemoryStatusStore()
@@ -332,6 +342,7 @@ class TelemetryManagerTest {
             "java.lang.IllegalStateException",
             store.read().lastError
         )
+        assertEquals("FIX 1: the throw path must also stamp when it happened", now, store.read().lastErrorAtMs)
     }
 
     @Test
@@ -505,6 +516,27 @@ class TelemetryManagerTest {
             "a freshly-saved destination must not be refused by a stale backoff",
             ActivationResult.Succeeded,
             result
+        )
+    }
+
+    /**
+     * FIX 1: activate()'s pre-flush reset clears lastError to null, and a clean
+     * success afterwards also clears it to null — neither writes a non-null
+     * lastError, so neither may touch lastErrorAtMs. If either did, a stale
+     * timestamp would masquerade as fresh, or a genuinely fresh one could be
+     * wiped out from under an error still worth showing.
+     */
+    @Test
+    fun activateDoesNotDisturbTheStoredErrorTimestampSinceItOnlyClearsTheErrorItself() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(lastError = "HTTP 000 old destination unreachable", lastErrorAtMs = 555L))
+        val outbox = TelemetryOutbox(temp.newFile())
+        val poster = ConstantPoster(HttpResponse(201, null))
+        manager(outbox, poster, statusStore = store).activate()
+        assertEquals(
+            "neither the pre-flush reset nor a clean success may touch lastErrorAtMs",
+            555L,
+            store.read().lastErrorAtMs
         )
     }
 }

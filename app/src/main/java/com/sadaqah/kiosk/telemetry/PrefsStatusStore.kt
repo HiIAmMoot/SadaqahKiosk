@@ -21,6 +21,7 @@ class PrefsStatusStore(
         queued = 0,
         lastSuccessMs = prefs.getLong(KEY_LAST_SUCCESS, 0L),
         lastError = prefs.getString(KEY_LAST_ERROR, null),
+        lastErrorAtMs = prefs.getLong(KEY_LAST_ERROR_AT, 0L),
         consecutiveFailures = prefs.getInt(KEY_FAILURES, 0),
         backoffUntilMs = prefs.getLong(KEY_BACKOFF_UNTIL, 0L)
     )
@@ -29,18 +30,16 @@ class PrefsStatusStore(
         prefs.edit()
             .putLong(KEY_LAST_SUCCESS, status.lastSuccessMs)
             .putString(KEY_LAST_ERROR, status.lastError)
+            .putLong(KEY_LAST_ERROR_AT, status.lastErrorAtMs)
             .putInt(KEY_FAILURES, status.consecutiveFailures)
             .putLong(KEY_BACKOFF_UNTIL, status.backoffUntilMs)
             .apply()
     }
 
-    fun clear() {
-        prefs.edit().clear().apply()
-    }
-
     private companion object {
         const val KEY_LAST_SUCCESS = "last_success_ms"
         const val KEY_LAST_ERROR = "last_error"
+        const val KEY_LAST_ERROR_AT = "last_error_at_ms"
         const val KEY_FAILURES = "consecutive_failures"
         const val KEY_BACKOFF_UNTIL = "backoff_until_ms"
     }
