@@ -21,7 +21,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -104,7 +103,12 @@ fun AnalyticsSettingsScreen(
     // underlying value changes (e.g. after a successful save or a clear),
     // same pattern the rest of this app uses for text-entry mirrors.
     var urlInput by remember(view.baseUrl) { mutableStateOf(view.baseUrl) }
-    var keyInput by rememberSaveable(view.maskedKey) { mutableStateOf("") }
+    // Deliberately plain `remember`, not `rememberSaveable`: this mirrors a
+    // plaintext secret the operator is typing, and `rememberSaveable` would
+    // parcel it into the Activity's savedInstanceState bundle on every onStop —
+    // outside the encrypted SecretStore that is the one thing this screen
+    // promises about the key. Do not "fix" this back to rememberSaveable.
+    var keyInput by remember(view.maskedKey) { mutableStateOf("") }
     var saveError by remember { mutableStateOf<String?>(null) }
     var showClearConfirm by remember { mutableStateOf(false) }
 
@@ -296,7 +300,7 @@ fun AnalyticsSettingsScreen(
                         if (view.backingOff) {
                             AnalyticsStatusLine(
                                 strings.analyticsBackingOff,
-                                "${strings.analyticsRetryIn} ${view.backoffRemainingSeconds}${strings.seconds}",
+                                "${strings.analyticsRetryIn} ${view.backoffRemainingSeconds} ${strings.seconds}",
                                 warningColor
                             )
                         }
