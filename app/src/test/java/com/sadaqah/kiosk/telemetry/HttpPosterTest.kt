@@ -59,9 +59,65 @@ class HttpPosterTest {
     @Test
     fun rowLevelRefusalsArePermanent() {
         assertTrue(HttpResponse(400, null).isPermanentRejection)
-        assertTrue(HttpResponse(409, null).isPermanentRejection)
         assertTrue(HttpResponse(413, null).isPermanentRejection)
         assertTrue(HttpResponse(422, null).isPermanentRejection)
+    }
+
+    /**
+     * 409 used to sit in ROW_LEVEL_REFUSALS. Without
+     * `resolution=ignore-duplicates` the only way a client-generated primary key
+     * collides is a retry of a row already stored, so a 409 whose body confirms
+     * SQLSTATE 23505 is not a refusal at all — it is
+     * [HttpResponse.isAlreadyStored], handled separately by TelemetryUploader.
+     */
+    @Test
+    fun conflictIsNotAPermanentRejectionButIsAlreadyStored() {
+        val response = HttpResponse(409, "duplicate key value violates unique constraint (SQLSTATE 23505)")
+        assertFalse("409 must not be treated as a refused row", response.isPermanentRejection)
+        assertTrue(response.isAlreadyStored)
+    }
+
+    @Test
+    fun onlyFourZeroNineIsAlreadyStored() {
+        for (code in listOf(200, 201, 400, 401, 403, 404, 413, 422, 500)) {
+            assertFalse(
+                "HTTP $code must not be isAlreadyStored",
+                HttpResponse(code, "(SQLSTATE 23505)").isAlreadyStored
+            )
+        }
+    }
+
+    /**
+     * FIX 1: PostgREST maps the whole integrity-violation family onto 409, not
+     * just a duplicate primary key. 23503 (foreign_key_violation) and 23P01
+     * (exclusion_violation) mean the row was rejected and never stored — the
+     * opposite of isAlreadyStored. Only 23505 (unique_violation) may be trusted.
+     */
+    @Test
+    fun aForeignKeyConflictIsNotAlreadyStored() {
+        val response = HttpResponse(409, "insert or update violates foreign key constraint (SQLSTATE 23503)")
+        assertFalse("an FK violation must not be treated as stored", response.isAlreadyStored)
+        assertFalse("an FK violation is not a row-level refusal either — it must stay retryable",
+            response.isPermanentRejection)
+    }
+
+    @Test
+    fun anExclusionViolationConflictIsNotAlreadyStored() {
+        val response = HttpResponse(409, "conflicting key value violates exclusion constraint (SQLSTATE 23P01)")
+        assertFalse(response.isAlreadyStored)
+    }
+
+    /** PostgREST returns its JSON error body even under `return=minimal`, but a
+     *  caller must never assume it is present — a null body must not be treated
+     *  as confirmation of anything. */
+    @Test
+    fun aConflictWithNoBodyIsNotAlreadyStored() {
+        assertFalse(HttpResponse(409, null).isAlreadyStored)
+    }
+
+    @Test
+    fun aConflictNamingNoSqlstateAtAllIsNotAlreadyStored() {
+        assertFalse(HttpResponse(409, "duplicate key value violates constraint").isAlreadyStored)
     }
 
     /**

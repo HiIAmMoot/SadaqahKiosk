@@ -4,17 +4,27 @@ package com.sadaqah.kiosk.telemetry
  * What happened to one batch.
  *
  * [uploadedIds] and [rejectedIds] are both safe to remove from the outbox — the
- * first succeeded, the second never will. They are reported apart so the caller
- * can log the difference rather than lose it.
+ * first is safely on the server, the second never will be. They are reported
+ * apart so the caller can log the difference rather than lose it.
+ * [uploadedIds] covers two different server answers that are the same outcome
+ * for the outbox: a fresh `201` and a `409` on a single-row request that the
+ * response body confirms as SQLSTATE `23505` (unique_violation) — meaning the
+ * client-generated id, the primary key, was already stored, almost always by
+ * an earlier attempt at this same row. Either way the donation is on the
+ * server, so either way the id is named here rather than in [rejectedIds].
+ * A 409 the body does not confirm as `23505` (an unconfirmable body, or a
+ * different SQLSTATE such as a foreign-key violation) is **not** "already
+ * stored" — see [HttpResponse.isAlreadyStored] — and lands in neither set; the
+ * row stays queued rather than being reported here on a guess.
  *
- * One invariant governs everything below, because the outbox is the only copy of
- * a donation and the caller deletes whatever this reports: **a row is named in
- * [rejectedIds] only when another row in the same request succeeded against the
- * same endpoint in the same flush.** That sibling success is the only evidence
- * that separates "the server refuses this row" from "the server is refusing
- * everything right now", and without it the row stays queued. Anything not
- * proven dead is retried; the outbox's age cap, not this class, is what finally
- * retires a row nobody will ever accept.
+ * One invariant governs everything in [rejectedIds], because the outbox is the
+ * only copy of a donation and the caller deletes whatever this reports: **a row
+ * is named in [rejectedIds] only when another row in the same request succeeded
+ * (in either of the senses above) against the same endpoint in the same flush.**
+ * That sibling success is the only evidence that separates "the server refuses
+ * this row" from "the server is refusing everything right now", and without it
+ * the row stays queued. Anything not proven dead is retried; the outbox's age
+ * cap, not this class, is what finally retires a row nobody will ever accept.
  */
 data class UploadOutcome(
     val uploadedIds: Set<String>,
@@ -32,7 +42,10 @@ data class UploadOutcome(
  */
 class TelemetryUploader(
     baseUrl: String,
-    private val anonKey: String,
+    // Supabase's term for this key; the underlying Postgres role it authenticates
+    // as is still called `anon` (unchanged), so a 42501 error hint mentioning
+    // `anon` is naming the role, not a stale key type.
+    private val publishableKey: String,
     private val poster: HttpPoster
 ) {
     private val restRoot = baseUrl.trimEnd('/') + "/rest/v1/"
@@ -52,16 +65,30 @@ class TelemetryUploader(
             when {
                 response.isSuccess -> uploaded += forTable.map { it.id }
 
-                // A rejected batch may contain exactly one bad row. Retrying the
-                // rows individually isolates it, so the rest of the queue is not
-                // held hostage by a row that will never be accepted.
-                response.isPermanentRejection && forTable.size > 1 -> {
+                // A single-row request answering 409 is not a rejection: the
+                // client-generated id is the primary key, so a collision on a
+                // batch of one means this exact row is already stored — a retry
+                // absorbed exactly as intended. Checked before the rejection
+                // branch below, and before the size>1 guard, since forTable.size
+                // == 1 here by construction (the size>1 branch is 409-or-rejection).
+                response.isAlreadyStored && forTable.size == 1 ->
+                    uploaded += forTable.map { it.id }
+
+                // A rejected batch may contain exactly one bad row — and a batch
+                // answering 409 is the same shape: PostgREST runs a batch insert as
+                // one statement, so a collision aborts the whole thing and every
+                // other row in it never landed either. Either way, retrying the
+                // rows individually isolates what actually happened to each one, so
+                // the rest of the queue is not held hostage by a row that will
+                // never be accepted (or wrongly credited alongside one that was
+                // never inserted).
+                (response.isPermanentRejection || response.isAlreadyStored) && forTable.size > 1 -> {
                     val uploadedHere = mutableSetOf<String>()
                     val rejectedHere = mutableSetOf<String>()
                     for (event in forTable) {
                         val single = send(table, listOf(event))
                         when {
-                            single.isSuccess -> uploadedHere += event.id
+                            single.isSuccess || single.isAlreadyStored -> uploadedHere += event.id
                             single.isPermanentRejection -> {
                                 rejectedHere += event.id
                                 lastError = describe(single)
@@ -117,12 +144,21 @@ class TelemetryUploader(
         poster.post(
             url = restRoot + table,
             headers = mapOf(
-                "apikey" to anonKey,
-                "Authorization" to "Bearer $anonKey",
+                "apikey" to publishableKey,
+                "Authorization" to "Bearer $publishableKey",
                 "Content-Type" to "application/json",
-                // The client generates each id, so a retry after an ambiguous
-                // failure is absorbed rather than double-counting a donation.
-                "Prefer" to "return=minimal,resolution=ignore-duplicates"
+                // The client generates each id, which is the primary key on the
+                // target table, so a retry after an ambiguous failure collides on
+                // that key rather than double-counting a donation — the row is
+                // simply already there, and the server says so with 409 (see
+                // HttpResponse.isAlreadyStored). Deliberately NOT
+                // "resolution=ignore-duplicates" or "return=representation":
+                // both make PostgREST take its upsert path, which requires SELECT
+                // on the table, and the device key is granted INSERT only — the
+                // combination is what makes a leaked key (assumed leaked, since
+                // it ships on every kiosk) worthless to read with. Requesting
+                // either returns 401 (verified against the live project).
+                "Prefer" to "return=minimal"
             ),
             body = events.joinToString(",", prefix = "[", postfix = "]") { it.payload }
         )
@@ -132,7 +168,7 @@ class TelemetryUploader(
      *  value — a server can echo back tokens we did not put in the request. */
     private fun describe(response: HttpResponse): String {
         val body = TelemetryRedactor.truncate(
-            TelemetryRedactor.scrub(response.body, anonKey)
+            TelemetryRedactor.scrub(response.body, publishableKey)
         ) ?: ""
         return "HTTP ${response.code} $body".trim()
     }

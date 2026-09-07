@@ -1,4 +1,4 @@
-package com.sadaqah.kiosk.telemetry
+﻿package com.sadaqah.kiosk.telemetry
 
 import com.google.gson.JsonParser
 import org.junit.Assert.*
@@ -7,7 +7,7 @@ import org.junit.Test
 class TelemetryUploaderTest {
 
     private val baseUrl = "https://proj.supabase.co"
-    private val anonKey = "anon-key-123"
+    private val publishableKey = "publishable-key-123"
 
     /** Records every request so tests can assert on what was actually sent. */
     private class RecordingPoster(
@@ -23,7 +23,7 @@ class TelemetryUploaderTest {
     private fun event(id: String, table: String = TelemetryTables.DONATIONS) =
         QueuedEvent(id, table, """{"id":"$id","amount_cents":100}""", 1_000L)
 
-    private fun uploader(poster: HttpPoster) = TelemetryUploader(baseUrl, anonKey, poster)
+    private fun uploader(poster: HttpPoster) = TelemetryUploader(baseUrl, publishableKey, poster)
 
     // ── Request shape ────────────────────────────────────────────────────────
 
@@ -37,27 +37,32 @@ class TelemetryUploaderTest {
     @Test
     fun toleratesABaseUrlWithATrailingSlash() {
         val poster = RecordingPoster()
-        TelemetryUploader("https://proj.supabase.co/", anonKey, poster).upload(listOf(event("e1")))
+        TelemetryUploader("https://proj.supabase.co/", publishableKey, poster).upload(listOf(event("e1")))
         assertEquals("https://proj.supabase.co/rest/v1/donation_events", poster.calls[0].first)
     }
 
     @Test
-    fun sendsTheAnonKeyAsHeadersNeverInTheUrl() {
+    fun sendsThePublishableKeyAsHeadersNeverInTheUrl() {
         val poster = RecordingPoster()
         uploader(poster).upload(listOf(event("e1")))
         val (url, headers, _) = poster.calls[0]
-        assertEquals(anonKey, headers["apikey"])
-        assertEquals("Bearer $anonKey", headers["Authorization"])
-        assertFalse("the key must not leak into the URL", url.contains(anonKey))
+        assertEquals(publishableKey, headers["apikey"])
+        assertEquals("Bearer $publishableKey", headers["Authorization"])
+        assertFalse("the key must not leak into the URL", url.contains(publishableKey))
     }
 
+    /**
+     * `resolution=ignore-duplicates` makes PostgREST take its upsert path, which
+     * requires SELECT on the table — a grant the device key deliberately never
+     * has. Asserting on the exact header value, not just "does not contain the
+     * old fragment", so a typo'd replacement (e.g. leaving a stray comma) cannot
+     * pass this test by accident.
+     */
     @Test
-    fun requestsDuplicateTolerantInserts() {
+    fun sendsExactlyReturnMinimalAndNothingElse() {
         val poster = RecordingPoster()
         uploader(poster).upload(listOf(event("e1")))
-        val prefer = poster.calls[0].second["Prefer"]!!
-        assertTrue("retries must not double-count: $prefer",
-            prefer.contains("resolution=ignore-duplicates"))
+        assertEquals("return=minimal", poster.calls[0].second["Prefer"])
     }
 
     @Test
@@ -111,6 +116,116 @@ class TelemetryUploaderTest {
         assertTrue(outcome.rejectedIds.isEmpty())
         assertFalse(outcome.retryableFailure)
         assertNull(outcome.lastError)
+    }
+
+    // ── Duplicates (409) ─────────────────────────────────────────────────────
+
+    /**
+     * Without `resolution=ignore-duplicates`, a 409 on a single-row request whose
+     * body confirms SQLSTATE 23505 means the client-generated id — the primary
+     * key — already made it to the server, almost always on an earlier attempt at
+     * this same row. That is success: the donation is stored, and the id belongs
+     * in uploadedIds so the caller deletes it from the outbox, not in rejectedIds.
+     */
+    @Test
+    fun aSingleRow409IsReportedAsUploadedNotRejected() {
+        val poster = RecordingPoster { _, _ ->
+            HttpResponse(409, "duplicate key value violates unique constraint (SQLSTATE 23505)")
+        }
+        val outcome = uploader(poster).upload(listOf(event("already-there")))
+
+        assertEquals("one batch request, no per-row fallback for a lone row",
+            1, poster.calls.size)
+        assertEquals(setOf("already-there"), outcome.uploadedIds)
+        assertTrue("a stored duplicate must not be counted as rejected",
+            outcome.rejectedIds.isEmpty())
+        assertFalse(outcome.retryableFailure)
+    }
+
+    /**
+     * FIX 1: PostgREST also returns 409 for a foreign-key violation (23503),
+     * which means the row was rejected, not stored. It must not be credited to
+     * uploadedIds — it must stay queued and retried, exactly like an ordinary
+     * retryable failure, and it must not be treated as a permanent rejection
+     * either, since we cannot actually prove it is bad.
+     */
+    @Test
+    fun aSingleRow409NamingAForeignKeyViolationIsNeitherUploadedNorRejected() {
+        val poster = RecordingPoster { _, _ ->
+            HttpResponse(409, "insert or update on table violates foreign key constraint (SQLSTATE 23503)")
+        }
+        val outcome = uploader(poster).upload(listOf(event("e1")))
+
+        assertTrue("an unconfirmed 409 must not be credited as uploaded", outcome.uploadedIds.isEmpty())
+        assertTrue("an unconfirmed 409 must not be treated as a rejection either", outcome.rejectedIds.isEmpty())
+        assertTrue("the row stays queued and the flush is retryable", outcome.retryableFailure)
+    }
+
+    /** A null body — PostgREST should always send one, but the code must not
+     *  assume it — must be treated as retryable, never as a confirmed duplicate. */
+    @Test
+    fun aSingleRow409WithANullBodyIsRetryableRatherThanStored() {
+        val poster = RecordingPoster { _, _ -> HttpResponse(409, null) }
+        val outcome = uploader(poster).upload(listOf(event("e1")))
+
+        assertTrue(outcome.uploadedIds.isEmpty())
+        assertTrue(outcome.rejectedIds.isEmpty())
+        assertTrue(outcome.retryableFailure)
+    }
+
+    /** A body that names no SQLSTATE at all must be treated the same way. */
+    @Test
+    fun aSingleRow409NamingNoSqlstateIsRetryableRatherThanStored() {
+        val poster = RecordingPoster { _, _ -> HttpResponse(409, "duplicate key value violates constraint") }
+        val outcome = uploader(poster).upload(listOf(event("e1")))
+
+        assertTrue(outcome.uploadedIds.isEmpty())
+        assertTrue(outcome.rejectedIds.isEmpty())
+        assertTrue(outcome.retryableFailure)
+    }
+
+    /**
+     * PostgREST runs a batch insert as one statement, so a 409 naming the unique
+     * violation on a *multi-row* request means one row collided and the whole
+     * statement aborted — the other rows never landed either. Treating the batch
+     * as wholesale-uploaded would wrongly credit rows the server never received,
+     * so this must fall back to sending them individually exactly as a row-level
+     * refusal does. Must not regress once isAlreadyStored requires a confirmed
+     * body: this still has to route to the fallback, not just fall through.
+     */
+    @Test
+    fun aMultiRow409TriggersThePerRowFallback() {
+        val poster = RecordingPoster { _, body ->
+            val isBatch = JsonParser.parseString(body).asJsonArray.size() > 1
+            if (isBatch) HttpResponse(409, "duplicate key (SQLSTATE 23505)") else HttpResponse(201, null)
+        }
+        val outcome = uploader(poster).upload(listOf(event("e1"), event("e2")))
+
+        assertEquals("the batch request plus one per row", 3, poster.calls.size)
+        assertEquals(setOf("e1", "e2"), outcome.uploadedIds)
+        assertTrue(outcome.rejectedIds.isEmpty())
+    }
+
+    /**
+     * The realistic shape of a retried batch: one row already landed from the
+     * earlier attempt (409, confirmed 23505), the rest are genuinely new (201).
+     * Both outcomes are "on the server", so both ids must come back uploaded.
+     */
+    @Test
+    fun aFallbackMixingSuccessAndDuplicateReportsEveryRowUploaded() {
+        val poster = RecordingPoster { _, body ->
+            val isBatch = JsonParser.parseString(body).asJsonArray.size() > 1
+            when {
+                isBatch -> HttpResponse(409, "duplicate key (SQLSTATE 23505)")
+                body.contains("\"already-there\"") -> HttpResponse(409, "duplicate key (SQLSTATE 23505)")
+                else -> HttpResponse(201, null)
+            }
+        }
+        val outcome = uploader(poster).upload(listOf(event("already-there"), event("fresh")))
+
+        assertEquals(setOf("already-there", "fresh"), outcome.uploadedIds)
+        assertTrue(outcome.rejectedIds.isEmpty())
+        assertFalse(outcome.retryableFailure)
     }
 
     // ── Retryable failures ───────────────────────────────────────────────────
@@ -173,10 +288,8 @@ class TelemetryUploaderTest {
         assertEquals(setOf("good1", "good2"), outcome.uploadedIds)
         assertEquals(setOf("poison"), outcome.rejectedIds)
         assertFalse("a poison row is permanent, not retryable", outcome.retryableFailure)
-        assertTrue("every insert, batch or fallback, must be duplicate-tolerant",
-            poster.calls.all {
-                it.second["Prefer"] == "return=minimal,resolution=ignore-duplicates"
-            })
+        assertTrue("every request, batch or fallback, carries the same Prefer header",
+            poster.calls.all { it.second["Prefer"] == "return=minimal" })
     }
 
     @Test
@@ -206,6 +319,35 @@ class TelemetryUploaderTest {
         assertTrue(outcome.uploadedIds.isEmpty())
         assertTrue("the row stays queued for the next flush", outcome.retryableFailure)
         assertTrue("the operator still sees why", outcome.lastError!!.contains("400"))
+    }
+
+    /**
+     * Same guarantee as the 400 poison-row case, for the other two codes in
+     * ROW_LEVEL_REFUSALS. Written after the 409 change specifically to prove that
+     * removing 409 from the set left 413 and 422 still triggering the fallback
+     * (and still honoured once a sibling corroborates them) — a *lone* row can't
+     * tell the two paths apart, since the fallback needs size > 1 either way, so
+     * this uses the same corroborated-batch shape as aRejectedBatchIsRetriedRowByRow.
+     */
+    @Test
+    fun aRejectedBatchIsRetriedRowByRowFor413And422TooNotJust400() {
+        for (code in listOf(413, 422)) {
+            val poster = RecordingPoster { _, body ->
+                val isBatch = JsonParser.parseString(body).asJsonArray.size() > 1
+                when {
+                    isBatch -> HttpResponse(code, "refused")
+                    body.contains("\"poison\"") -> HttpResponse(code, "refused")
+                    else -> HttpResponse(201, null)
+                }
+            }
+            val outcome = uploader(poster).upload(listOf(event("good1"), event("poison")))
+            assertEquals("HTTP $code: the good row must still upload",
+                setOf("good1"), outcome.uploadedIds)
+            assertEquals("HTTP $code: a corroborated refusal is still honoured",
+                setOf("poison"), outcome.rejectedIds)
+            assertFalse("HTTP $code: a row-level refusal is permanent, not retryable",
+                outcome.retryableFailure)
+        }
     }
 
     /**
@@ -362,10 +504,10 @@ class TelemetryUploaderTest {
 
     @Test
     fun lastErrorNeverContainsTheAnonKey() {
-        val poster = RecordingPoster { _, _ -> HttpResponse(401, "bad key $anonKey rejected") }
+        val poster = RecordingPoster { _, _ -> HttpResponse(401, "bad key $publishableKey rejected") }
         val outcome = uploader(poster).upload(listOf(event("e1")))
         assertFalse("an error surfaced in the UI must not expose the key",
-            outcome.lastError!!.contains(anonKey))
+            outcome.lastError!!.contains(publishableKey))
     }
 
     /** The reason describe() uses the house redactor rather than a manual

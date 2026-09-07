@@ -249,4 +249,80 @@ class TelemetryOutboxTest {
         assertEquals(2, box.size())
         assertFalse(File(file.parentFile, file.name + ".tmp").exists())
     }
+
+    // ── Clear ────────────────────────────────────────────────────────────────
+
+    @Test
+    fun clearEmptiesTheQueue() {
+        val outbox = outbox()
+        outbox.appendDonation("a")
+        outbox.appendDonation("b")
+        outbox.clear()
+        assertEquals(0, outbox.size())
+        assertTrue(outbox.peek().isEmpty())
+    }
+
+    /**
+     * Clearing credentials must not strand identified data on disk: the rows
+     * name a kiosk, and an operator who turns telemetry off has withdrawn the basis
+     * for holding them. The file itself goes, not just its contents.
+     */
+    @Test
+    fun clearRemovesTheFileRatherThanLeavingAnEmptyOne() {
+        val outbox = outbox()
+        outbox.appendDonation("a")
+        outbox.clear()
+        assertFalse(file.exists())
+    }
+
+    /** A no-op `clear()`, a `writeText("")` truncate, and a bare `delete()` all
+     *  pass "size is 0 on an absent file" trivially — `readAll()` returns empty
+     *  for any absent file regardless. What only the real implementation
+     *  satisfies is that the outbox is left in the same usable state a genuine
+     *  delete-then-recreate leaves it in: the file is gone, and append still
+     *  works and brings it back. */
+    @Test
+    fun clearOnAnAbsentFileIsHarmlessAndLeavesTheOutboxUsable() {
+        val box = outbox()
+        // Append first. Clearing a file that never existed passes against an empty
+        // clear() -- the file is absent either way -- so the queue has to have
+        // something to lose before its removal proves anything.
+        box.appendDonation("before")
+        box.clear()
+        assertFalse("clear must delete, not truncate", file.exists())
+
+        // And clearing again, now that it really is absent, must not throw.
+        box.clear()
+
+        box.appendDonation("after")
+        assertTrue(file.exists())
+        assertEquals("the cleared queue keeps none of what preceded it",
+            listOf("after"), box.peek().map { it.id })
+    }
+
+    /** The temp file `writeAll` stages compaction through must not survive a
+     *  clear, or a crash mid-compaction followed by "telemetry just got turned
+     *  off" leaves identified rows on disk forever. */
+    @Test
+    fun clearRemovesAStrandedTempFileToo() {
+        val box = outbox()
+        box.appendDonation("a")
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        tmp.writeText("leftover from a crashed compaction\n")
+        assertTrue(tmp.exists())
+
+        box.clear()
+
+        assertFalse(file.exists())
+        assertFalse(tmp.exists())
+    }
+
+    @Test
+    fun theQueueStillWorksAfterBeingCleared() {
+        val outbox = outbox()
+        outbox.appendDonation("a")
+        outbox.clear()
+        outbox.appendDonation("b")
+        assertEquals(listOf("b"), outbox.peek().map { it.id })
+    }
 }

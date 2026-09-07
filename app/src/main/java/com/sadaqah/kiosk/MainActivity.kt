@@ -38,6 +38,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.fragment.app.FragmentActivity
 import androidx.lifecycle.lifecycleScope
 import com.sadaqah.kiosk.model.Settings
+import com.sadaqah.kiosk.model.SettingsBootstrap
+import com.sadaqah.kiosk.model.SettingsImport
 import com.sadaqah.kiosk.ui.theme.SadaqahKioskTheme
 import com.google.gson.Gson
 import com.sadaqah.kiosk.donations.DonationHistory
@@ -197,11 +199,15 @@ class MainActivity : FragmentActivity() {
         LogoColorExtractor.refresh(this, settings.logoUri)
 
         donationHistory = DonationHistory(this)
-        // Lazy-init the donation-stats anchor. If never set, fix it to "now" so
-        // throughput averages have a defined denominator. Reset Averages will
-        // re-set it later.
-        if (settings.donationStatsStartedAtMs == 0L) {
-            settings = settings.copy(donationStatsStartedAtMs = System.currentTimeMillis())
+        // Bootstrap this device's own installId and donation-stats anchor. Runs
+        // unconditionally — not gated on "did we have stored settings?" — so a
+        // genuinely fresh install gets both on its first boot, not its second.
+        // Reset Averages will re-set the anchor later.
+        val bootstrap = SettingsBootstrap.apply(settings, System.currentTimeMillis()) {
+            java.util.UUID.randomUUID().toString()
+        }
+        if (bootstrap.changed) {
+            settings = bootstrap.settings
             saveSettings(settings)
         }
 
@@ -238,6 +244,9 @@ class MainActivity : FragmentActivity() {
                     "https://github.com/HiIAmMoot/SadaqahKiosk"
                 }
                 migrated = migrated.copy(updateRepoUrl = url); dirty = true
+            }
+            if (!json.contains("\"analyticsEnabled\"")) {
+                migrated = migrated.copy(analyticsEnabled = false); dirty = true
             }
         }
         if (dirty) {
@@ -1416,7 +1425,7 @@ class MainActivity : FragmentActivity() {
         val result = SettingsExportFile.parse(jsonString, password)
         if (result !is ImportResult.Success) return result
 
-        settings = result.settings.copy(logoUri = null)
+        settings = SettingsImport.merge(settings, result.settings)
         saveSettings(settings)
         TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
 
@@ -1431,7 +1440,7 @@ class MainActivity : FragmentActivity() {
     fun importSettingsOnly(jsonString: String): ImportResult {
         val result = SettingsExportFile.parseSettingsOnly(jsonString)
         if (result !is ImportResult.Success) return result
-        settings = result.settings.copy(logoUri = null)
+        settings = SettingsImport.merge(settings, result.settings)
         saveSettings(settings)
         TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
         return result
