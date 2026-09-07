@@ -105,6 +105,9 @@ class MainActivity : FragmentActivity() {
     private var networkDismissJob: Job? = null
     private var restartCountResetJob: Job? = null
     private var silentLoginWatchdogJob: Job? = null
+    /** The nightly 02:00 maintenance loop. Held so there is exactly one of it
+     *  (see [scheduleDailyLoginReset]) and so [onDestroy] can stop it. */
+    private var dailyMaintenanceJob: Job? = null
     private var connectivityPollJob: Job? = null
     private var wifiCycleJob: Job? = null
     private var bluetoothCycleJob: Job? = null
@@ -994,32 +997,63 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    /**
+     * Arms the nightly 02:00 maintenance window, and keeps it armed.
+     *
+     * **Idempotent by design.** Calling this while the loop is running is a
+     * no-op, and that is load-bearing rather than tidy: the loop calls
+     * [performReinit], which calls [authenticate], which calls this. Cancelling
+     * and relaunching here would kill the very coroutine mid-pass, losing that
+     * night’s update maintenance and telemetry flush. It also stops a kiosk
+     * that logs in repeatedly from accumulating one nightly coroutine per login,
+     * which the previous fire-and-forget version did.
+     *
+     * **Why it loops.** The old version was armed once and re-armed only from
+     * [authenticate] — but [performReinit] returns early when there is no
+     * network, so it never reached that call. A kiosk that happened to be
+     * offline at 02:00 therefore lost nightly reinit, auto-update maintenance
+     * *and* the telemetry flush permanently, until an operator logged in by
+     * hand. Being offline at 02:00 now simply means trying again tomorrow.
+     *
+     * [affiliateKey] is unused by the loop itself ([performReinit] reads the
+     * property); it is kept because the single caller already passes it.
+     */
     fun scheduleDailyLoginReset(affiliateKey: String) {
-        lifecycleScope.launch {
-            val now = java.time.LocalDateTime.now()
-            val today2am = now.toLocalDate().atTime(2, 0)
-            val next2am = if (now < today2am) today2am else today2am.plusDays(1)
+        if (dailyMaintenanceJob?.isActive == true) return
+        dailyMaintenanceJob = lifecycleScope.launch {
+            while (true) {
+                delay(DailyMaintenanceSchedule.millisUntilNext(System.currentTimeMillis()))
 
-            val durationUntil2am = java.time.Duration.between(now, next2am).toMillis()
-
-            delay(durationUntil2am)
-
-            Log.d("SumUpDebug", "Scheduled reinit at 2am")
-            performReinit()
-            // After the nightly reinit, run update maintenance: check, download,
-            // install if grace expired / pinning differs. UpdateManager handles
-            // all preflight (battery, network, device-owner).
-            try {
-                updateManager.refreshSettings(settings)
-                updateManager.runDailyMaintenance()
-            } catch (e: Exception) {
-                Log.e("UpdateManager", "Daily maintenance threw: ${e.message}")
+                Log.d("SumUpDebug", "Scheduled reinit at 2am")
+                // Guarded, unlike before: this used to sit outside any try, which
+                // was survivable when the coroutine ended after a single pass. In
+                // a loop an escape here would end the loop for good — exactly the
+                // failure this rewrite exists to remove.
+                try {
+                    performReinit()
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (e: Exception) {
+                    Log.e("SumUpDebug", "Nightly reinit threw: ${e.message}")
+                }
+                // After the nightly reinit, run update maintenance: check, download,
+                // install if grace expired / pinning differs. UpdateManager handles
+                // all preflight (battery, network, device-owner).
+                try {
+                    updateManager.refreshSettings(settings)
+                    updateManager.runDailyMaintenance()
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (e: Exception) {
+                    Log.e("UpdateManager", "Daily maintenance threw: ${e.message}")
+                }
+                // The floor. A kiosk busy enough never to idle for
+                // screensaverIdleTimeoutSec during opening hours reports here and
+                // nowhere else, so this must sit outside the guards above — a
+                // reinit or update-maintenance failure must not also cost the
+                // nightly flush. flushTelemetry carries its own guard.
+                flushTelemetry("nightly")
             }
-            // The floor. A kiosk busy enough never to idle for
-            // screensaverIdleTimeoutSec during opening hours reports here and
-            // nowhere else, so this must sit outside the try above — an update
-            // maintenance failure must not also cost the nightly flush.
-            flushTelemetry("nightly")
         }
     }
 
@@ -1515,6 +1549,7 @@ class MainActivity : FragmentActivity() {
         cardReaderPageTimeoutJob?.cancel()
         bluetoothWatchdogJob?.cancel()
         telemetryFlushTickerJob?.cancel()
+        dailyMaintenanceJob?.cancel()
         // Only if something actually flushed — otherwise this would spawn the
         // thread purely in order to shut it down.
         if (telemetryFlushDispatcherLazy.isInitialized()) telemetryFlushDispatcher.close()
