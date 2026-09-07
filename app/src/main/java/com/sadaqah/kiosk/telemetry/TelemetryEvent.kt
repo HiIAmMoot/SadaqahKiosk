@@ -24,7 +24,8 @@ data class EventIdentity(
     companion object {
         /** Identity is built here rather than at each call site, so the manager's
          *  runtime snapshot and a donation event can never disagree about who this
-         *  kiosk is. Both call this; neither maps the fields itself. */
+         *  kiosk is. Callers take identity from here rather than mapping the fields
+         *  themselves. */
         fun from(settings: Settings, appVersion: String) = EventIdentity(
             code = settings.kioskCode,
             installId = settings.installId,
