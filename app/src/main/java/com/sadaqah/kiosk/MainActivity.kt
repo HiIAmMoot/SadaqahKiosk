@@ -59,6 +59,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.math.BigDecimal
@@ -176,6 +177,15 @@ class MainActivity : FragmentActivity() {
                 authenticate(affiliateKey)
             }
         }
+
+        // Armed here, not only from authenticate(), because authenticate returns
+        // early both in test mode and when there is no network -- so a kiosk that
+        // restarted during an outage would come back with nothing scheduled and
+        // stay that way until an operator logged in by hand. That is the same
+        // silent death this loop exists to prevent, reached from a different
+        // door. Safe to call unconditionally: arming is idempotent, so the call
+        // above has already won if it got there first.
+        scheduleDailyLoginReset(affiliateKey)
 
         val json = prefs.getString("settings", null)
         if (!json.isNullOrEmpty()) {
@@ -870,7 +880,7 @@ class MainActivity : FragmentActivity() {
     fun scheduleDailyLoginReset(affiliateKey: String) {
         if (dailyMaintenanceJob?.isActive == true) return
         dailyMaintenanceJob = lifecycleScope.launch {
-            while (true) {
+            while (isActive) {
                 delay(DailyMaintenanceSchedule.millisUntilNext(System.currentTimeMillis()))
 
                 Log.d("SumUpDebug", "Scheduled reinit at 2am")
@@ -882,8 +892,12 @@ class MainActivity : FragmentActivity() {
                     performReinit()
                 } catch (c: CancellationException) {
                     throw c
-                } catch (e: Exception) {
-                    Log.e("SumUpDebug", "Nightly reinit threw: ${e.message}")
+                } catch (t: Throwable) {
+                    // Throwable, not Exception: an Error here would end the loop,
+                    // and the only thing that re-arms it is authenticate(), which
+                    // a pinned kiosk may never call again. One bad night must not
+                    // cost every future one.
+                    Log.e("SumUpDebug", "Nightly reinit threw: ${t::class.java.name}")
                 }
                 // After the nightly reinit, run update maintenance: check, download,
                 // install if grace expired / pinning differs. UpdateManager handles
@@ -893,8 +907,9 @@ class MainActivity : FragmentActivity() {
                     updateManager.runDailyMaintenance()
                 } catch (c: CancellationException) {
                     throw c
-                } catch (e: Exception) {
-                    Log.e("UpdateManager", "Daily maintenance threw: ${e.message}")
+                } catch (t: Throwable) {
+                    // As above: ending this loop silently disables auto-update.
+                    Log.e("UpdateManager", "Daily maintenance threw: ${t::class.java.name}")
                 }
             }
         }
