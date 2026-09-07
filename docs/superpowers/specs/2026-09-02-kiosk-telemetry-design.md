@@ -181,8 +181,8 @@ the insert-only RLS policy remains what actually contains the damage.
 
 `detail` and `stack_trace` are scrubbed before being written to the outbox, not at
 upload time — an unscrubbed value must never reach disk. Redacted: the SumUp
-affiliate key (exact match), and any token-shaped run of 20+ base64/hex
-characters. This rule gets a dedicated unit test.
+affiliate key (exact match), and any token-shaped run of 32+ base64/hex
+characters excluding `/` so file paths survive. This rule gets a dedicated unit test.
 
 ---
 
@@ -344,7 +344,6 @@ telemetry/
 ├── TelemetryOutbox.kt      # Append-only JSONL queue: append, peek batch, remove, cap
 ├── TelemetryRedactor.kt    # Scrubs secrets before anything reaches disk
 ├── TelemetryCredentials.kt # AndroidKeyStore-encrypted Supabase URL + anon key
-├── SecretsEnvelope.kt      # Password-based encrypt/decrypt for the settings export
 ├── TelemetryGate.kt        # Pure: may we flush right now?
 ├── TelemetryUploader.kt    # Supabase REST insert over HttpURLConnection
 └── TelemetryManager.kt     # Orchestrator: enqueue, schedule, flush
@@ -387,9 +386,13 @@ the 02:00 window already exists.
 ### Gate
 
 `TelemetryGate` is pure and answers one question: given *enabled*, *configured*,
-*consented*, *network available*, *backoff deadline* and *queue depth*, should we
+*activated*, *network available*, *backoff deadline* and *queue depth*, should we
 flush now? Keeping this separate from the manager makes the policy testable
 without a device.
+
+Password-based encryption for the settings export shipped separately as
+`settingsio/SecretsCrypto.kt` — it protects the SumUp affiliate key whether or not
+telemetry is ever configured, so it does not belong under `telemetry/`.
 
 ### Crash handler
 
