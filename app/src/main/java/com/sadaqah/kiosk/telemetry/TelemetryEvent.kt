@@ -22,11 +22,9 @@ data class EventIdentity(
     val appVersion: String
 ) {
     companion object {
-        /** One construction site, so the manager's runtime snapshot and a
-         *  donation event can never disagree about who this kiosk is. Before
-         *  this existed, `MainActivity`'s `runtime` lambda built the only copy;
-         *  a second one in [DonationEvents] would have drifted the first time
-         *  identity sourcing changed. */
+        /** Identity is built here rather than at each call site, so the manager's
+         *  runtime snapshot and a donation event can never disagree about who this
+         *  kiosk is. Both call this; neither maps the fields itself. */
         fun from(settings: Settings, appVersion: String) = EventIdentity(
             code = settings.kioskCode,
             installId = settings.installId,
