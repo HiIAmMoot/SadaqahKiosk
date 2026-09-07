@@ -99,22 +99,19 @@ class DonationEventsTest {
      * so an `if (settings.analyticsEnabled)` at the call site is a decision
      * nothing checks — which is how phase 2b shipped a mint inside an
      * unreachable branch.
+     *
+     * Asserting the exact result, not merely "not a Report": NotEnabled and
+     * AmountUnrepresentable must stay distinguishable, because the caller
+     * records a loss for one and does nothing for the other. A shared nullable
+     * return would make every donation on a disabled kiosk a recorded loss.
+     * Do not add a separate `assertNotEquals(AmountUnrepresentable, …)` test —
+     * this assertion already implies it, and `DonationEventResult` having three
+     * distinct members means collapsing them does not even compile.
      */
     @Test
     fun analyticsOffProducesNotEnabled() {
         assertEquals(
             DonationEventResult.NotEnabled,
-            result("10.00", Settings())
-        )
-    }
-
-    @Test
-    fun analyticsOffIsNotTreatedAsALoss() {
-        // NotEnabled and AmountUnrepresentable must stay distinguishable: the
-        // caller records a loss for one and does nothing for the other, and a
-        // shared null would make every donation on a disabled kiosk a loss.
-        assertNotEquals(
-            DonationEventResult.AmountUnrepresentable,
             result("10.00", Settings())
         )
     }
@@ -350,12 +347,12 @@ object DonationEvents {
 - [ ] **Step 5: Run the tests to verify they pass**
 
 Run: `./gradlew testDebugUnitTest --tests "*DonationEventsTest*"`
-Expected: PASS, 16 tests.
+Expected: PASS, 15 tests.
 
 - [ ] **Step 6: Run the full suite and build**
 
 Run: `./gradlew assembleDebug testDebugUnitTest`
-Expected: BUILD SUCCESSFUL, **400** tests (384 + 16), 0 failures. Report the number you actually see.
+Expected: BUILD SUCCESSFUL, **399** tests (384 + 15), 0 failures. Report the number you actually see.
 
 - [ ] **Step 7: Mutation check (i) — the gate is load-bearing**
 
@@ -363,6 +360,11 @@ Temporarily delete the `if (!settings.analyticsEnabled) return DonationEventResu
 Run: `./gradlew testDebugUnitTest --tests "*DonationEventsTest*"`
 Expected: FAIL at `analyticsOffProducesNotEnabled`.
 **Restore the line.** Record the failure message in your report.
+
+This check also covers the spec's fourth mandated mutation — returning
+`AmountUnrepresentable` instead of `NotEnabled` for a disabled kiosk fails this same
+test, and collapsing the two into one member does not compile, because
+`DonationEventResult` declares them as distinct types. There is no separate check for it.
 
 - [ ] **Step 8: Mutation check (ii) — the rounding mode is load-bearing**
 
@@ -378,16 +380,7 @@ Run: `./gradlew testDebugUnitTest --tests "*DonationEventsTest*"`
 Expected: FAIL at `anAmountBeyondIntCentsIsUnrepresentable`.
 **Restore `.intValueExact()`.** Record the failure.
 
-- [ ] **Step 10: Mutation check (iv) — the two non-reporting cases must stay apart**
-
-Temporarily make the gate return the wrong one — change
-`if (!settings.analyticsEnabled) return DonationEventResult.NotEnabled` to
-`… return DonationEventResult.AmountUnrepresentable`.
-Run: `./gradlew testDebugUnitTest --tests "*DonationEventsTest*"`
-Expected: FAIL at **both** `analyticsOffProducesNotEnabled` and `analyticsOffIsNotTreatedAsALoss`. The second is the one that matters: it is what stops a future refactor from collapsing these into a single nullable return, which would make a disabled kiosk record a data loss on every donation it takes.
-**Restore `NotEnabled`.** Record both failures.
-
-- [ ] **Step 11: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add app/src/main/java/com/sadaqah/kiosk/telemetry/DonationEvents.kt \
@@ -613,7 +606,7 @@ Expected: PASS, all pre-existing uploader tests included. If `aRejectedBatchIsRe
 - [ ] **Step 5: Run the full suite and build**
 
 Run: `./gradlew assembleDebug testDebugUnitTest`
-Expected: BUILD SUCCESSFUL, **405** tests (400 + 5), 0 failures.
+Expected: BUILD SUCCESSFUL, **404** tests (399 + 5), 0 failures.
 
 - [ ] **Step 6: Mutation check (iv) — counting must stop at the first success**
 
@@ -806,7 +799,7 @@ with:
 - [ ] **Step 5: Build and run the full suite**
 
 Run: `./gradlew assembleDebug testDebugUnitTest`
-Expected: BUILD SUCCESSFUL, **405** tests, 0 failures — this task adds no tests and must break none.
+Expected: BUILD SUCCESSFUL, **404** tests, 0 failures — this task adds no tests and must break none.
 
 - [ ] **Step 6: Verify the append is off the main thread and the amount never reaches a log**
 
@@ -1112,7 +1105,7 @@ Leave `refreshAnalyticsSnapshot`'s `Dispatchers.IO` alone. It calls `credentials
 - [ ] **Step 10: Build, run the full suite, and verify the new inertness shape**
 
 Run: `./gradlew assembleDebug testDebugUnitTest`
-Expected: BUILD SUCCESSFUL, **405** tests, 0 failures.
+Expected: BUILD SUCCESSFUL, **404** tests, 0 failures.
 
 Then run each of these and check the count against the expected value. **These numbers changed in this phase** — a previous phase's expectation of "exactly one append" is now wrong, and a mismatch here is a real finding, not a stale grep:
 
