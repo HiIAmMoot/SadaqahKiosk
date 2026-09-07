@@ -897,7 +897,7 @@ class MainActivity : FragmentActivity() {
                     // and the only thing that re-arms it is authenticate(), which
                     // a pinned kiosk may never call again. One bad night must not
                     // cost every future one.
-                    Log.e("SumUpDebug", "Nightly reinit threw: ${t::class.java.name}")
+                    Log.e("SumUpDebug", "Nightly reinit threw: ${t::class.java.name}: ${t.message}")
                 }
                 // After the nightly reinit, run update maintenance: check, download,
                 // install if grace expired / pinning differs. UpdateManager handles
@@ -909,7 +909,7 @@ class MainActivity : FragmentActivity() {
                     throw c
                 } catch (t: Throwable) {
                     // As above: ending this loop silently disables auto-update.
-                    Log.e("UpdateManager", "Daily maintenance threw: ${t::class.java.name}")
+                    Log.e("UpdateManager", "Daily maintenance threw: ${t::class.java.name}: ${t.message}")
                 }
             }
         }
