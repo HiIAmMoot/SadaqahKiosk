@@ -58,17 +58,26 @@ import com.sumup.merchant.reader.api.SumUpLogin
 import com.sumup.merchant.reader.api.SumUpPayment
 import com.sumup.merchant.reader.ReaderModuleCoreState
 import com.sumup.merchant.reader.api.SumUpState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.math.BigDecimal
+import java.util.concurrent.Executors
 
 private const val INACTIVITY_BOUNCE_MS = 5L * 60 * 1000 // 5 min on settings / custom-amount → back to donation
+
+/** How often a flush is retried while the screensaver stays up. The screensaver
+ *  coming up already flushes once; this exists because that attempt can be
+ *  refused by a backoff of up to 60 minutes and would then never be retried
+ *  until 02:00. */
+private const val TELEMETRY_FLUSH_TICK_MS = 30L * 60 * 1000 // 30 min
 
 /** How long the Bluetooth radio may stay off before the watchdog switches it back on.
  *  The kiosk cannot take donations without it, so recovery is worth more than patience.
@@ -147,11 +156,7 @@ class MainActivity : FragmentActivity() {
                 TelemetryRuntime(
                     enabled = settings.analyticsEnabled,
                     activated = settings.analyticsActivatedAtMs != 0L,
-                    identity = EventIdentity(
-                        code = settings.kioskCode,
-                        installId = settings.installId,
-                        appVersion = BuildConfig.VERSION_NAME
-                    ),
+                    identity = EventIdentity.from(settings, BuildConfig.VERSION_NAME),
                     privacyPolicyUrl = settings.analyticsPrivacyPolicyUrl,
                     termsUrl = settings.analyticsTermsUrl
                 )
@@ -159,6 +164,28 @@ class MainActivity : FragmentActivity() {
             networkAvailable = { isOnlineNow() }
         )
     }
+
+    /**
+     * Serialises every flush against every other flush and against `activate()`.
+     *
+     * [TelemetryManager] documents itself as unsafe for concurrent callers: it
+     * keeps its last upload outcome and last attempted ids in plain fields, and
+     * `activate()` reads them to tell a row it never sent apart from one it sent
+     * and could not confirm. Before this phase only the Test button called into
+     * it; now a timer does too, and two callers on `Dispatchers.IO` could
+     * interleave and let one read the other's outcome. One thread makes that
+     * impossible by construction rather than by a lock no test can reach.
+     *
+     * Held through a `lazy` rather than `by lazy` so [onDestroy] can close it
+     * only if something actually used it — a kiosk that never configures
+     * analytics never spawns the thread.
+     */
+    private val telemetryFlushDispatcherLazy = lazy {
+        Executors.newSingleThreadExecutor { r -> Thread(r, "telemetry-flush") }
+            .asCoroutineDispatcher()
+    }
+    private val telemetryFlushDispatcher get() = telemetryFlushDispatcherLazy.value
+    private var telemetryFlushTickerJob: Job? = null
 
     var settings: Settings by mutableStateOf(Settings())
     var isLoggedIn by mutableStateOf(false)
@@ -361,6 +388,7 @@ class MainActivity : FragmentActivity() {
         hideSystemBars()
 
         startConnectivityPolling()
+        startTelemetryFlushTicker()
         if (!isNetworkAvailable) {
             startWifiCyclingWhileOffline()
             startSavedNetworkFallback()
@@ -408,6 +436,11 @@ class MainActivity : FragmentActivity() {
                             isScreensaverActive = true
                             Log.d("Screensaver", "Activated after idle")
                             disconnectCardReader()
+                            // The app's own definition of "nobody is using this",
+                            // and it has already released the card reader on the
+                            // line above — so a flush here cannot contend for the
+                            // network with a live transaction.
+                            flushTelemetry("screensaver")
                         }
 
                         // Inactivity bounce: after 5 min of no interaction on either
@@ -622,6 +655,13 @@ class MainActivity : FragmentActivity() {
                     if (settings.donationTrackingEnabled) {
                         lastPaymentAmount?.let { donationHistory.append(it) }
                     }
+                    // A sibling of the line above, never nested inside it:
+                    // donationTrackingEnabled governs the on-panel history
+                    // screen and nothing else. Tying telemetry to it would mean
+                    // an operator who hides the local history for privacy at the
+                    // panel silently stops all remote reporting too. Telemetry
+                    // has its own master switch, checked inside eventFor.
+                    lastPaymentAmount?.let { appendDonationTelemetry(it) }
                     lastPaymentAmount = null
                     showThankYouScreen()
                 } else {
@@ -826,6 +866,12 @@ class MainActivity : FragmentActivity() {
         isScreensaverActive = true
         finishActivity(2)
         disconnectCardReader()
+        // Same reasoning as the idle path: the reader is released, so this is a
+        // safe moment. Not funnelled through a shared helper with that site —
+        // one lives inside a composition-scoped LaunchedEffect and this is an
+        // activity method, and a wrapper across that boundary costs more than
+        // the duplicated call.
+        flushTelemetry("screensaver")
     }
 
     fun disconnectCardReader() {
@@ -969,6 +1015,11 @@ class MainActivity : FragmentActivity() {
             } catch (e: Exception) {
                 Log.e("UpdateManager", "Daily maintenance threw: ${e.message}")
             }
+            // The floor. A kiosk busy enough never to idle for
+            // screensaverIdleTimeoutSec during opening hours reports here and
+            // nowhere else, so this must sit outside the try above — an update
+            // maintenance failure must not also cost the nightly flush.
+            flushTelemetry("nightly")
         }
     }
 
@@ -1404,6 +1455,12 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+        // Outside the `when`, so every restore path flushes: exactly when a
+        // backlog can finally move. Edge-triggered — the connectivity poll calls
+        // this only on a genuine online/offline transition (`online !=
+        // isNetworkAvailable`), so it does not fire every second while online.
+        // The kiosk was offline a moment ago, so it was not mid-transaction.
+        flushTelemetry("network-restored")
     }
 
     // ── Auto-restart on unrecoverable conditions ─────────────────────────────
@@ -1457,6 +1514,10 @@ class MainActivity : FragmentActivity() {
         savedNetworkFallbackJob?.cancel()
         cardReaderPageTimeoutJob?.cancel()
         bluetoothWatchdogJob?.cancel()
+        telemetryFlushTickerJob?.cancel()
+        // Only if something actually flushed — otherwise this would spawn the
+        // thread purely in order to shut it down.
+        if (telemetryFlushDispatcherLazy.isInitialized()) telemetryFlushDispatcher.close()
         if (::updateManager.isInitialized) updateManager.dispose()
     }
 
@@ -1632,22 +1693,40 @@ class MainActivity : FragmentActivity() {
      */
     private fun refreshAnalyticsSnapshot(then: (() -> Unit)? = null) {
         lifecycleScope.launch {
-            val snapshot = withContext(Dispatchers.IO) {
-                AnalyticsSnapshot(telemetryCredentials.load(), telemetryManager.status())
-            }
-            // Guards the one case `then` doesn't cover: onAnalyticsTestConnection's
-            // network call can outlive the screen (operator backs out mid-test).
-            // Without this, its completion would land here and repopulate the
-            // holder with a freshly-decrypted key after closeAnalyticsSettings()
-            // nulled it — reviving exactly what that null was for. `then != null`
-            // is the open flow, where showAnalyticsSettings is still false at this
-            // point by design (see openAnalyticsSettings), so it must not be caught
-            // by this check.
+            // Checked BEFORE the work, not only after it: since phase 3a every
+            // automatic flush calls this, and `load()` is a Keystore decrypt while
+            // `status()` parses the whole outbox file. Returning here is what makes
+            // those costs belong to the analytics screen rather than to every
+            // flush a closed-screen kiosk performs. The identical check below is
+            // NOT redundant — it catches the operator backing out mid-flight.
             if (then == null && !showAnalyticsSettings) return@launch
-            analyticsSnapshot = snapshot
-            analyticsNowMs = System.currentTimeMillis()
-            then?.invoke()
-            startAnalyticsBackoffTickerIfNeeded()
+            try {
+                val snapshot = withContext(Dispatchers.IO) {
+                    AnalyticsSnapshot(telemetryCredentials.load(), telemetryManager.status())
+                }
+                // Guards the one case `then` doesn't cover: onAnalyticsTestConnection's
+                // network call can outlive the screen (operator backs out mid-test).
+                // Without this, its completion would land here and repopulate the
+                // holder with a freshly-decrypted key after closeAnalyticsSettings()
+                // nulled it — reviving exactly what that null was for. `then != null`
+                // is the open flow, where showAnalyticsSettings is still false at this
+                // point by design (see openAnalyticsSettings), so it must not be caught
+                // by this check.
+                if (then == null && !showAnalyticsSettings) return@launch
+                analyticsSnapshot = snapshot
+                analyticsNowMs = System.currentTimeMillis()
+                then?.invoke()
+                startAnalyticsBackoffTickerIfNeeded()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                // status() reads the outbox file and load() touches the Keystore;
+                // this coroutine is its own, so flushTelemetry's catch cannot cover
+                // it, and nothing above has a caller left to handle a throw. An
+                // escape reaches the default handler and kills an unattended kiosk.
+                // Only the class name — never lastError, never a key, never a payload.
+                Log.e("Telemetry", "analytics snapshot refresh failed: ${t::class.java.name}")
+            }
         }
     }
 
@@ -1704,7 +1783,11 @@ class MainActivity : FragmentActivity() {
     fun onAnalyticsTestConnection() {
         analyticsTestState = TestConnectionState.Running
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { telemetryManager.activate() }
+            // The flush dispatcher, not Dispatchers.IO: activate() reads the
+            // manager's last-outcome fields, and a scheduled flush running
+            // concurrently on a shared pool could overwrite them between this
+            // call's own flush and its read.
+            val result = withContext(telemetryFlushDispatcher) { telemetryManager.activate() }
             val strings = TranslationManager.currentStrings()
             analyticsTestState = when (result) {
                 is ActivationResult.Succeeded -> {
@@ -1757,6 +1840,145 @@ class MainActivity : FragmentActivity() {
     fun onAnalyticsClearCredentials() {
         TelemetryTeardown.clearEverything(telemetryCredentials, telemetryOutbox, telemetryStatusStore)
         refreshAnalyticsSnapshot()
+    }
+
+    /**
+     * Queues one completed donation for telemetry, off the main thread, and
+     * never fails the donation flow.
+     *
+     * Every decision lives in [DonationEvents.eventFor] — including whether to
+     * report at all — because this method cannot be unit-tested and a decision
+     * here is a decision nothing checks.
+     *
+     * `settings` is read on the main thread and captured before the launch:
+     * it is Compose state, and reading it from a background dispatcher would be
+     * a cross-thread read of a `mutableStateOf`.
+     *
+     * Deliberately NOT on `telemetryFlushDispatcher`: [TelemetryOutbox] is
+     * synchronized per file path so a concurrent append is already safe, and a
+     * flush holds that lock only across `peek` and `remove`, never across the
+     * upload. Sharing the flush thread would park this row behind an upload
+     * that can run for minutes in the per-row fallback, for no benefit. A row
+     * appended between a flush's `peek` and `remove` is harmless — `remove`
+     * deletes only the ids the uploader named.
+     */
+    private fun appendDonationTelemetry(amount: BigDecimal) {
+        val settingsNow = settings
+        val occurredAtMs = System.currentTimeMillis()
+        lifecycleScope.launch(Dispatchers.IO) {
+            try {
+                when (val result = DonationEvents.eventFor(
+                    settingsNow, BuildConfig.VERSION_NAME, amount, occurredAtMs
+                )) {
+                    // The normal state of most kiosks. Nothing is written to disk.
+                    DonationEventResult.NotEnabled -> Unit
+
+                    DonationEventResult.AmountUnrepresentable -> {
+                        // The scale, never the value: a log line is not a redacted
+                        // sink, and the amount is donor-adjacent data.
+                        Log.e("Telemetry", "donation not representable in cents (scale=${amount.scale()})")
+                        recordTelemetryLoss()
+                    }
+
+                    is DonationEventResult.Report -> try {
+                        telemetryOutbox.append(
+                            result.event.id,
+                            result.event.table,
+                            result.event.payloadJson()
+                        )
+                    } catch (c: CancellationException) {
+                        throw c
+                    } catch (t: Throwable) {
+                        // TelemetryOutbox.append documents that it throws on a full
+                        // disk or a failed mkdirs, that the caller owns that
+                        // decision, and that the caller sits on the donation path.
+                        // This is that caller, so the only correct decision is to
+                        // lose the row quietly and record that it happened.
+                        Log.e("Telemetry", "outbox append failed: ${t::class.java.name}")
+                        recordTelemetryLoss()
+                    }
+                }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                // Last resort, and not redundant with the inner catch: recording
+                // the loss is itself capable of throwing. telemetryStatusStore is
+                // `by lazy`, so on a kiosk whose Analytics screen was never opened
+                // the first touch constructs PrefsStatusStore, whose initialiser
+                // calls getSharedPreferences — which fails on exactly the full disk
+                // that sent us into the inner catch. Nothing here has a caller left
+                // to handle it: lifecycleScope installs no CoroutineExceptionHandler,
+                // so an escape reaches the default handler and kills the process on
+                // the thank-you screen. The donation flow is sacred; telemetry dies
+                // silently instead.
+                Log.e("Telemetry", "donation telemetry failed outright: ${t::class.java.name}")
+            }
+        }
+    }
+
+    /**
+     * One event lost locally and unrecoverably. Folded into
+     * [TelemetryStatus.droppedCount] rather than a field of its own: for anyone
+     * who eventually reads the screen it is the same fact as an eviction, and
+     * this kiosk can run unattended for weeks, so nothing here waits on a human
+     * to see or clear it.
+     *
+     * Through `update {}` rather than a read-then-write, because this runs on a
+     * background thread and races the flush's own status writes, which straddle
+     * a network call that can run for minutes (finding I4, Ruling BA).
+     */
+    private fun recordTelemetryLoss() {
+        telemetryStatusStore.update { it.copy(droppedCount = it.droppedCount + 1) }
+    }
+
+    /**
+     * Asks the manager to flush, off the main thread and serialised.
+     *
+     * Decides nothing. [TelemetryGate] owns whether a flush may happen — it
+     * refuses a disabled, unconfigured, unactivated, offline, empty-queued or
+     * backing-off kiosk — so the call sites only pick moments worth asking at.
+     * [reason] exists so the log says which moment.
+     */
+    private fun flushTelemetry(reason: String) {
+        lifecycleScope.launch {
+            try {
+                val block = withContext(telemetryFlushDispatcher) { telemetryManager.flush() }
+                // A FlushBlock, never an error string: lastError may carry a server
+                // response body, and it is redacted for the screen, not for logcat.
+                Log.d("Telemetry", "flush($reason) -> $block")
+                // Keeps an open analytics screen current after a flush the operator
+                // did not trigger. Cheap when the screen is closed: refreshAnalyticsSnapshot
+                // returns before its Keystore decrypt and outbox parse, not after.
+                refreshAnalyticsSnapshot()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                // flush() reads the outbox file (IOException) and first-touches the
+                // lazily-built telemetry stack, whose stores call getSharedPreferences.
+                // Nothing above has a caller left to handle that: an escape reaches
+                // the default handler and kills a kiosk that is, at 02:00, unattended.
+                // Only the class name — never lastError, never a response body.
+                Log.e("Telemetry", "flush($reason) threw: ${t::class.java.name}")
+            }
+        }
+    }
+
+    /**
+     * Retries a flush every 30 minutes for as long as the screensaver is up.
+     *
+     * One always-running loop that reads the flag, rather than a job started and
+     * stopped alongside the screensaver: entering the screensaver already
+     * produces its own flush, so this loop's only job is the later retry, and a
+     * loop with no lifecycle coupling has no start/stop ordering to get wrong.
+     */
+    private fun startTelemetryFlushTicker() {
+        telemetryFlushTickerJob?.cancel()
+        telemetryFlushTickerJob = lifecycleScope.launch {
+            while (true) {
+                delay(TELEMETRY_FLUSH_TICK_MS)
+                if (isScreensaverActive) flushTelemetry("idle-tick")
+            }
+        }
     }
 
     // ── Update flow entry points (called from UI) ──────────────────────────────
