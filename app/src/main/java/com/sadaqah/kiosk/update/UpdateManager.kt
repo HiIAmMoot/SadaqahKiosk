@@ -11,6 +11,7 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.edit
 import com.sadaqah.kiosk.BuildConfig
 import com.sadaqah.kiosk.model.Settings
+import com.sadaqah.kiosk.recovery.DailyMaintenanceSchedule
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -185,7 +186,7 @@ class UpdateManager(
     private fun nextDailyMaintenanceAfter(fromMillis: Long): Long {
         val cal = java.util.Calendar.getInstance().apply {
             timeInMillis = fromMillis
-            set(java.util.Calendar.HOUR_OF_DAY, 2)
+            set(java.util.Calendar.HOUR_OF_DAY, DailyMaintenanceSchedule.HOUR)
             set(java.util.Calendar.MINUTE, 0)
             set(java.util.Calendar.SECOND, 0)
             set(java.util.Calendar.MILLISECOND, 0)
