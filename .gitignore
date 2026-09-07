@@ -34,3 +34,9 @@ keystore.properties
 
 # Captures (Android Studio profiler recordings)
 /captures/
+
+# Agent/CI scratch — build and test logs redirected to a file for reading.
+# Leaked into a commit twice; ignored so it cannot happen a third time.
+test-output.txt
+*-test-output.txt
+build-output.txt
