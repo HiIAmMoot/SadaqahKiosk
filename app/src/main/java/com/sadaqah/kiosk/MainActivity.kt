@@ -43,6 +43,8 @@ import com.google.gson.Gson
 import com.sadaqah.kiosk.donations.DonationHistory
 import com.sadaqah.kiosk.recovery.*
 import com.sadaqah.kiosk.screens.*
+import com.sadaqah.kiosk.settingsio.ImportResult
+import com.sadaqah.kiosk.settingsio.SettingsExportFile
 import com.sadaqah.kiosk.update.ReleaseInfo
 import com.sadaqah.kiosk.update.SemVer
 import com.sadaqah.kiosk.update.UpdateManager
@@ -53,9 +55,11 @@ import com.sumup.merchant.reader.api.SumUpLogin
 import com.sumup.merchant.reader.api.SumUpPayment
 import com.sumup.merchant.reader.ReaderModuleCoreState
 import com.sumup.merchant.reader.api.SumUpState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import java.math.BigDecimal
@@ -80,6 +84,9 @@ class MainActivity : FragmentActivity() {
     private var networkDismissJob: Job? = null
     private var restartCountResetJob: Job? = null
     private var silentLoginWatchdogJob: Job? = null
+    /** The nightly 02:00 maintenance loop. Held so there is exactly one of it
+     *  (see [scheduleDailyLoginReset]) and so [onDestroy] can stop it. */
+    private var dailyMaintenanceJob: Job? = null
     private var connectivityPollJob: Job? = null
     private var wifiCycleJob: Job? = null
     private var bluetoothCycleJob: Job? = null
@@ -170,6 +177,15 @@ class MainActivity : FragmentActivity() {
                 authenticate(affiliateKey)
             }
         }
+
+        // Armed here, not only from authenticate(), because authenticate returns
+        // early both in test mode and when there is no network -- so a kiosk that
+        // restarted during an outage would come back with nothing scheduled and
+        // stay that way until an operator logged in by hand. That is the same
+        // silent death this loop exists to prevent, reached from a different
+        // door. Safe to call unconditionally: arming is idempotent, so the call
+        // above has already won if it got there first.
+        scheduleDailyLoginReset(affiliateKey)
 
         val json = prefs.getString("settings", null)
         if (!json.isNullOrEmpty()) {
@@ -388,8 +404,9 @@ class MainActivity : FragmentActivity() {
                     onOfflineSettingsClick = ::onOfflineSettingsClick,
                     isScreensaverActive = isScreensaverActive,
                     onResetScreensaver = ::resetScreensaver,
-                    onExportSettings = ::exportSettings,
-                    onImportSettings = ::importSettings,
+                    onExportSettings = { include, password -> exportSettings(include, password) },
+                    onImportSettings = { json, password -> importSettings(json, password) },
+                    onImportSettingsOnly = { json -> importSettingsOnly(json) },
                     isNetworkAvailable = isNetworkAvailable,
                     isPinned = isPinned,
                     isBluetoothEnabled = isBluetoothEnabled,
@@ -839,26 +856,61 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    /**
+     * Arms the nightly 02:00 maintenance window, and keeps it armed.
+     *
+     * **Idempotent by design.** Calling this while the loop is running is a
+     * no-op, and that is load-bearing rather than tidy: the loop calls
+     * [performReinit], which calls [authenticate], which calls this. Cancelling
+     * and relaunching here would kill the very coroutine mid-pass, losing that
+     * night’s update maintenance — turning a missed night into a broken
+     * one. It also stops a kiosk that logs in repeatedly from accumulating one
+     * nightly coroutine per login, which the previous version did.
+     *
+     * **Why it loops.** This used to be armed once and re-armed only from
+     * [authenticate], but [performReinit] returns early when there is no
+     * network, so it never reached that call. A kiosk that happened to be
+     * offline at 02:00 therefore ran no nightly reinit and installed no updates
+     * until its process next started — silently, and for as long as a pinned
+     * kiosk goes without restarting. Being offline at 02:00 now costs one night.
+     *
+     * [affiliateKey] is unused by the loop itself ([performReinit] reads the
+     * property); it is kept because the single caller already passes it.
+     */
     fun scheduleDailyLoginReset(affiliateKey: String) {
-        lifecycleScope.launch {
-            val now = java.time.LocalDateTime.now()
-            val today2am = now.toLocalDate().atTime(2, 0)
-            val next2am = if (now < today2am) today2am else today2am.plusDays(1)
+        if (dailyMaintenanceJob?.isActive == true) return
+        dailyMaintenanceJob = lifecycleScope.launch {
+            while (isActive) {
+                delay(DailyMaintenanceSchedule.millisUntilNext(System.currentTimeMillis()))
 
-            val durationUntil2am = java.time.Duration.between(now, next2am).toMillis()
-
-            delay(durationUntil2am)
-
-            Log.d("SumUpDebug", "Scheduled reinit at 2am")
-            performReinit()
-            // After the nightly reinit, run update maintenance: check, download,
-            // install if grace expired / pinning differs. UpdateManager handles
-            // all preflight (battery, network, device-owner).
-            try {
-                updateManager.refreshSettings(settings)
-                updateManager.runDailyMaintenance()
-            } catch (e: Exception) {
-                Log.e("UpdateManager", "Daily maintenance threw: ${e.message}")
+                Log.d("SumUpDebug", "Scheduled reinit at 2am")
+                // Guarded, unlike before: this used to sit outside any try, which
+                // was survivable when the coroutine ended after a single pass. In
+                // a loop an escape here would end the loop for good — exactly the
+                // failure this rewrite exists to remove.
+                try {
+                    performReinit()
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    // Throwable, not Exception: an Error here would end the loop,
+                    // and the only thing that re-arms it is authenticate(), which
+                    // a pinned kiosk may never call again. One bad night must not
+                    // cost every future one.
+                    Log.e("SumUpDebug", "Nightly reinit threw: ${t::class.java.name}: ${t.message}")
+                }
+                // After the nightly reinit, run update maintenance: check, download,
+                // install if grace expired / pinning differs. UpdateManager handles
+                // all preflight (battery, network, device-owner).
+                try {
+                    updateManager.refreshSettings(settings)
+                    updateManager.runDailyMaintenance()
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    // As above: ending this loop silently disables auto-update.
+                    Log.e("UpdateManager", "Daily maintenance threw: ${t::class.java.name}: ${t.message}")
+                }
             }
         }
     }
@@ -1348,6 +1400,7 @@ class MainActivity : FragmentActivity() {
         savedNetworkFallbackJob?.cancel()
         cardReaderPageTimeoutJob?.cancel()
         bluetoothWatchdogJob?.cancel()
+        dailyMaintenanceJob?.cancel()
         if (::updateManager.isInitialized) updateManager.dispose()
     }
 
@@ -1391,42 +1444,47 @@ class MainActivity : FragmentActivity() {
         }
     }
 
-    fun exportSettings(includeAffiliateKey: Boolean): String {
-        val exportData = if (includeAffiliateKey) {
-            mapOf(
-                "settings" to settings,
-                "affiliateKey" to affiliateKey
-            )
+    /**
+     * Serialises settings, encrypting secrets under [password] when
+     * [includeSecrets] is set. Runs key derivation, so call it off the UI thread.
+     */
+    fun exportSettings(includeSecrets: Boolean, password: String): String {
+        val secrets = if (includeSecrets && affiliateKey.isNotBlank()) {
+            mapOf(SettingsExportFile.KEY_AFFILIATE to affiliateKey)
         } else {
-            mapOf(
-                "settings" to settings
-            )
+            emptyMap()
         }
-        return Gson().toJson(exportData)
+        return SettingsExportFile.build(settings, secrets, password.ifBlank { null })
     }
 
-    fun importSettings(jsonString: String): Boolean {
-        return try {
-            val importData = Gson().fromJson(jsonString, Map::class.java)
+    /**
+     * Applies an exported file. Nothing is written until the whole file has been
+     * parsed and decrypted, so a wrong password leaves the device untouched.
+     * Runs key derivation, so call it off the UI thread.
+     */
+    fun importSettings(jsonString: String, password: String?): ImportResult {
+        val result = SettingsExportFile.parse(jsonString, password)
+        if (result !is ImportResult.Success) return result
 
-            val settingsJson = Gson().toJson(importData["settings"])
-            val importedSettings = Gson().fromJson(settingsJson, Settings::class.java)
-            settings = importedSettings.copy(logoUri = null)
-            saveSettings(settings)
+        settings = result.settings.copy(logoUri = null)
+        saveSettings(settings)
+        TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
 
-            TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
-
-            val importedKey = importData["affiliateKey"] as? String
-            if (!importedKey.isNullOrBlank()) {
-                affiliateKey = importedKey
-                prefs.edit() { putString("affiliate_key", affiliateKey) }
-            }
-
-            true
-        } catch (e: Exception) {
-            Log.e("SettingsImport", "Error importing settings: ${e.message}")
-            false
+        result.secrets[SettingsExportFile.KEY_AFFILIATE]?.takeIf { it.isNotBlank() }?.let { key ->
+            affiliateKey = key
+            prefs.edit { putString("affiliate_key", key) }
         }
+        return result
+    }
+
+    /** Applies configuration from an export while leaving its encrypted secrets behind. */
+    fun importSettingsOnly(jsonString: String): ImportResult {
+        val result = SettingsExportFile.parseSettingsOnly(jsonString)
+        if (result !is ImportResult.Success) return result
+        settings = result.settings.copy(logoUri = null)
+        saveSettings(settings)
+        TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
+        return result
     }
 
     fun authenticateWithBiometrics(context: Context, onSuccess: () -> Unit, onError: (String) -> Unit) {
@@ -1702,8 +1760,9 @@ fun AppUI(
     onOfflineSettingsClick: () -> Unit,
     isScreensaverActive: Boolean,
     onResetScreensaver: () -> Unit,
-    onExportSettings: (Boolean) -> String,
-    onImportSettings: (String) -> Boolean,
+    onExportSettings: (Boolean, String) -> String,
+    onImportSettings: (String, String?) -> ImportResult,
+    onImportSettingsOnly: (String) -> ImportResult,
     isNetworkAvailable: Boolean,
     isPinned: Boolean,
     isBluetoothEnabled: Boolean,
@@ -1815,6 +1874,7 @@ fun AppUI(
                 onRefresh = onRefresh,
                 onExportSettings = onExportSettings,
                 onImportSettings = onImportSettings,
+                onImportSettingsOnly = onImportSettingsOnly,
                 connectCardReader = connectCardReader,
                 isLoggedIn = isLoggedIn,
                 isPinned = isPinned,

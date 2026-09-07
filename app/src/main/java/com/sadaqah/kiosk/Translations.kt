@@ -120,6 +120,12 @@ interface Strings {
     val exportMessage: String
     val includeAffiliateKey: String
     val export: String
+    val exportPassword: String
+    val exportPasswordHint: String
+    val importPassword: String
+    val importPasswordRequired: String
+    val importWrongPassword: String
+    val importSettingsOnly: String
     val importTitle: String
     val importMessage: String
     val pasteJsonHere: String
@@ -137,6 +143,7 @@ interface Strings {
     val orPasteJsonBelow: String
     val validJson: String
     val importing: String
+    val exporting: String
 
     val tapToPayExperimental: String
     val useTapToPay: String
@@ -347,6 +354,12 @@ object DutchStrings : Strings {
     override val exportMessage = "Exporteer uw instellingen naar een bestand?"
     override val includeAffiliateKey = "Inclusief Affiliate Key"
     override val export = "Exporteren"
+    override val exportPassword = "Wachtwoord"
+    override val exportPasswordHint = "Nodig om dit bestand te importeren. Kan niet worden hersteld."
+    override val importPassword = "Importwachtwoord"
+    override val importPasswordRequired = "Dit bestand is beveiligd met een wachtwoord. Voer het wachtwoord in om te importeren."
+    override val importWrongPassword = "Onjuist wachtwoord"
+    override val importSettingsOnly = "Alleen instellingen importeren"
     override val importTitle = "Instellingen Importeren"
     override val importMessage = "Plak uw geëxporteerde instellingen JSON:"
     override val pasteJsonHere = "Plak JSON hier"
@@ -364,6 +377,7 @@ object DutchStrings : Strings {
     override val orPasteJsonBelow = "Of plak JSON hieronder:"
     override val validJson = "Geldige JSON"
     override val importing = "Importeren..."
+    override val exporting = "Exporteren..."
 
     override val tapToPayExperimental = "Experimenteel – mogelijk niet beschikbaar op alle apparaten"
     override val useTapToPay = "Gebruik Tap to Pay"
@@ -564,6 +578,12 @@ object EnglishStrings : Strings {
     override val exportMessage = "Export your settings to a file?"
     override val includeAffiliateKey = "Include Affiliate Key"
     override val export = "Export"
+    override val exportPassword = "Password"
+    override val exportPasswordHint = "Needed to import this file. It cannot be recovered if lost."
+    override val importPassword = "Import password"
+    override val importPasswordRequired = "This file is password protected. Enter its password to import."
+    override val importWrongPassword = "Wrong password"
+    override val importSettingsOnly = "Import settings only"
     override val importTitle = "Import Settings"
     override val importMessage = "Paste your exported settings JSON:"
     override val pasteJsonHere = "Paste JSON here"
@@ -581,6 +601,7 @@ object EnglishStrings : Strings {
     override val orPasteJsonBelow = "Or paste JSON below:"
     override val validJson = "Valid JSON"
     override val importing = "Importing..."
+    override val exporting = "Exporting..."
 
     override val tapToPayExperimental = "Experimental – may not be available on all devices"
     override val useTapToPay = "Use Tap to Pay"
@@ -697,6 +718,12 @@ object GermanStrings : Strings {
     override val exportMessage = "Einstellungen in eine Datei exportieren?"
     override val includeAffiliateKey = "Affiliate Key einbeziehen"
     override val export = "Exportieren"
+    override val exportPassword = "Passwort"
+    override val exportPasswordHint = "Zum Importieren dieser Datei erforderlich. Kann nicht wiederhergestellt werden."
+    override val importPassword = "Import-Passwort"
+    override val importPasswordRequired = "Diese Datei ist passwortgeschützt. Geben Sie das Passwort ein, um zu importieren."
+    override val importWrongPassword = "Falsches Passwort"
+    override val importSettingsOnly = "Nur Einstellungen importieren"
     override val importTitle = "Einstellungen Importieren"
     override val importMessage = "Exportierte JSON-Einstellungen einfügen:"
     override val pasteJsonHere = "JSON hier einfügen"
@@ -714,6 +741,7 @@ object GermanStrings : Strings {
     override val orPasteJsonBelow = "Oder JSON unten einfügen:"
     override val validJson = "Gültige JSON"
     override val importing = "Importieren..."
+    override val exporting = "Exportieren..."
 
     override val tapToPayExperimental = "Experimentell – möglicherweise nicht auf allen Geräten verfügbar"
     override val useTapToPay = "Tap to Pay verwenden"
@@ -914,6 +942,12 @@ object FrenchStrings : Strings {
     override val exportMessage = "Exporter vos paramètres dans un fichier?"
     override val includeAffiliateKey = "Inclure Clé Affilié"
     override val export = "Exporter"
+    override val exportPassword = "Mot de passe"
+    override val exportPasswordHint = "Requis pour importer ce fichier. Irrécupérable en cas de perte."
+    override val importPassword = "Mot de passe d'importation"
+    override val importPasswordRequired = "Ce fichier est protégé par un mot de passe. Saisissez-le pour importer."
+    override val importWrongPassword = "Mot de passe incorrect"
+    override val importSettingsOnly = "Importer uniquement les paramètres"
     override val importTitle = "Importer Paramètres"
     override val importMessage = "Coller votre JSON de paramètres exportés:"
     override val pasteJsonHere = "Coller JSON ici"
@@ -931,6 +965,7 @@ object FrenchStrings : Strings {
     override val orPasteJsonBelow = "Ou coller JSON ci-dessous:"
     override val validJson = "JSON valide"
     override val importing = "Importation..."
+    override val exporting = "Exportation..."
 
     override val tapToPayExperimental = "Expérimental – peut ne pas être disponible sur tous les appareils"
     override val useTapToPay = "Utiliser Tap to Pay"
@@ -1131,6 +1166,12 @@ object SpanishStrings : Strings {
     override val exportMessage = "¿Exportar configuración a un archivo?"
     override val includeAffiliateKey = "Incluir Clave Afiliado"
     override val export = "Exportar"
+    override val exportPassword = "Contraseña"
+    override val exportPasswordHint = "Necesaria para importar este archivo. No se puede recuperar."
+    override val importPassword = "Contraseña de importación"
+    override val importPasswordRequired = "Este archivo está protegido con contraseña. Introdúzcala para importar."
+    override val importWrongPassword = "Contraseña incorrecta"
+    override val importSettingsOnly = "Importar solo ajustes"
     override val importTitle = "Importar Configuración"
     override val importMessage = "Pega tu JSON de configuración exportado:"
     override val pasteJsonHere = "Pegar JSON aquí"
@@ -1148,6 +1189,7 @@ object SpanishStrings : Strings {
     override val orPasteJsonBelow = "O pegar JSON aquí:"
     override val validJson = "JSON válido"
     override val importing = "Importando..."
+    override val exporting = "Exportando..."
 
     override val tapToPayExperimental = "Experimental – puede no estar disponible en todos los dispositivos"
     override val useTapToPay = "Usar Tap to Pay"
@@ -1348,6 +1390,12 @@ object ItalianStrings : Strings {
     override val exportMessage = "Esportare le impostazioni in un file?"
     override val includeAffiliateKey = "Includi Chiave Affiliato"
     override val export = "Esporta"
+    override val exportPassword = "Password"
+    override val exportPasswordHint = "Necessaria per importare questo file. Non è recuperabile."
+    override val importPassword = "Password di importazione"
+    override val importPasswordRequired = "Questo file è protetto da password. Inseriscila per importare."
+    override val importWrongPassword = "Password errata"
+    override val importSettingsOnly = "Importa solo impostazioni"
     override val importTitle = "Importa Impostazioni"
     override val importMessage = "Incolla il tuo JSON di impostazioni esportato:"
     override val pasteJsonHere = "Incolla JSON qui"
@@ -1365,6 +1413,7 @@ object ItalianStrings : Strings {
     override val orPasteJsonBelow = "O incolla JSON qui sotto:"
     override val validJson = "JSON valido"
     override val importing = "Importazione..."
+    override val exporting = "Esportazione..."
 
     override val tapToPayExperimental = "Sperimentale – potrebbe non essere disponibile su tutti i dispositivi"
     override val useTapToPay = "Usa Tap to Pay"
@@ -1565,6 +1614,12 @@ object TurkishStrings : Strings {
     override val exportMessage = "Ayarlar bir dosyaya aktarılsın mı?"
     override val includeAffiliateKey = "Ortaklık Anahtarını Dahil Et"
     override val export = "Dışa Aktar"
+    override val exportPassword = "Parola"
+    override val exportPasswordHint = "Bu dosyayı içe aktarmak için gerekli. Kaybedilirse kurtarılamaz."
+    override val importPassword = "İçe aktarma parolası"
+    override val importPasswordRequired = "Bu dosya parola korumalı. İçe aktarmak için parolayı girin."
+    override val importWrongPassword = "Yanlış parola"
+    override val importSettingsOnly = "Yalnızca ayarları içe aktar"
     override val importTitle = "Ayarları İçe Aktar"
     override val importMessage = "Dışa aktarılan JSON ayarlarını yapıştırın:"
     override val pasteJsonHere = "JSON buraya yapıştırın"
@@ -1582,6 +1637,7 @@ object TurkishStrings : Strings {
     override val orPasteJsonBelow = "Veya aşağıya JSON yapıştırın:"
     override val validJson = "Geçerli JSON"
     override val importing = "İçe aktarılıyor..."
+    override val exporting = "Dışa aktarılıyor..."
 
     override val tapToPayExperimental = "Deneysel – tüm cihazlarda mevcut olmayabilir"
     override val useTapToPay = "Tap to Pay Kullan"
@@ -1782,6 +1838,12 @@ object ArabicStrings : Strings {
     override val exportMessage = "هل تريد تصدير الإعدادات إلى ملف؟"
     override val includeAffiliateKey = "تضمين مفتاح الشريك"
     override val export = "تصدير"
+    override val exportPassword = "كلمة المرور"
+    override val exportPasswordHint = "مطلوبة لاستيراد هذا الملف. لا يمكن استعادتها عند فقدانها."
+    override val importPassword = "كلمة مرور الاستيراد"
+    override val importPasswordRequired = "هذا الملف محمي بكلمة مرور. أدخل كلمة المرور للاستيراد."
+    override val importWrongPassword = "كلمة المرور غير صحيحة"
+    override val importSettingsOnly = "استيراد الإعدادات فقط"
     override val importTitle = "استيراد الإعدادات"
     override val importMessage = "الصق JSON الإعدادات المصدرة:"
     override val pasteJsonHere = "الصق JSON هنا"
@@ -1799,6 +1861,7 @@ object ArabicStrings : Strings {
     override val orPasteJsonBelow = "أو الصق JSON أدناه:"
     override val validJson = "JSON صالح"
     override val importing = "جارٍ الاستيراد..."
+    override val exporting = "جارٍ التصدير..."
 
     override val tapToPayExperimental = "تجريبي – قد لا يكون متاحاً على جميع الأجهزة"
     override val useTapToPay = "استخدم Tap to Pay"

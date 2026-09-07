@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -31,6 +32,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
@@ -42,6 +44,10 @@ import com.sadaqah.kiosk.components.ActionButton
 import com.sadaqah.kiosk.components.ColorSettingRow
 import com.sadaqah.kiosk.components.SettingsSection
 import com.sadaqah.kiosk.screens.ScreensaverStyle
+import com.sadaqah.kiosk.settingsio.ImportResult
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen(
@@ -51,8 +57,9 @@ fun SettingsScreen(
     onResetApp: () -> Unit,
     onBack: () -> Unit,
     onRefresh: () -> Unit,
-    onExportSettings: (Boolean) -> String,
-    onImportSettings: (String) -> Boolean,
+    onExportSettings: (Boolean, String) -> String,
+    onImportSettings: (String, String?) -> ImportResult,
+    onImportSettingsOnly: (String) -> ImportResult,
     connectCardReader: () -> Unit,
     isLoggedIn: Boolean,
     isPinned: Boolean,
@@ -97,6 +104,10 @@ fun SettingsScreen(
     var showImportDialog by remember { mutableStateOf(false) }
     var includeAffiliateKey by remember { mutableStateOf(false) }
     var pendingExportJson by remember { mutableStateOf<String?>(null) }
+    var exportPassword by remember { mutableStateOf("") }
+    var importPassword by remember { mutableStateOf("") }
+    var isProcessingSecrets by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
     val exportFileLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.CreateDocument("application/json")
@@ -122,6 +133,7 @@ fun SettingsScreen(
                 pendingExportJson = null
                 showExportDialog = false
                 includeAffiliateKey = false
+                exportPassword = ""
             } catch (e: Exception) {
                 Toast.makeText(
                     context,
@@ -646,14 +658,32 @@ fun SettingsScreen(
             settings = settings,
             includeAffiliateKey = includeAffiliateKey,
             onIncludeKeyChange = { includeAffiliateKey = it },
+            password = exportPassword,
+            onPasswordChange = { exportPassword = it },
+            isBusy = isProcessingSecrets,
             onConfirm = {
-                val jsonData = onExportSettings(includeAffiliateKey)
-                pendingExportJson = jsonData
-                exportFileLauncher.launch("kiosk_settings.json")
+                // Captured before the coroutine starts — a dismiss mid-derivation
+                // must not be able to clear these out from under the running export.
+                val includeKeyAtConfirm = includeAffiliateKey
+                val passwordAtConfirm = exportPassword
+                isProcessingSecrets = true
+                scope.launch {
+                    try {
+                        // Key derivation is deliberately slow — keep it off the UI thread.
+                        val jsonData = withContext(Dispatchers.Default) {
+                            onExportSettings(includeKeyAtConfirm, passwordAtConfirm)
+                        }
+                        pendingExportJson = jsonData
+                        exportFileLauncher.launch("kiosk_settings.json")
+                    } finally {
+                        isProcessingSecrets = false
+                    }
+                }
             },
             onDismiss = {
                 showExportDialog = false
                 includeAffiliateKey = false
+                exportPassword = ""
             }
         )
     }
@@ -662,17 +692,49 @@ fun SettingsScreen(
         ImportDialog(
             strings = strings,
             settings = settings,
+            password = importPassword,
+            onPasswordChange = { importPassword = it },
+            isBusy = isProcessingSecrets,
             onImport = { jsonInput ->
-                val success = onImportSettings(jsonInput)
-                if (success) {
+                isProcessingSecrets = true
+                scope.launch {
+                    try {
+                        val result = withContext(Dispatchers.Default) {
+                            onImportSettings(jsonInput, importPassword.ifBlank { null })
+                        }
+                        when (result) {
+                            is ImportResult.Success -> {
+                                Toast.makeText(context, strings.settingsImportedSuccessfully, Toast.LENGTH_SHORT).show()
+                                importPassword = ""
+                                onRefresh()
+                                showImportDialog = false
+                            }
+                            ImportResult.PasswordRequired ->
+                                Toast.makeText(context, strings.importPasswordRequired, Toast.LENGTH_LONG).show()
+                            ImportResult.WrongPassword ->
+                                Toast.makeText(context, strings.importWrongPassword, Toast.LENGTH_LONG).show()
+                            ImportResult.Malformed ->
+                                Toast.makeText(context, strings.failedToImportSettings, Toast.LENGTH_LONG).show()
+                        }
+                    } finally {
+                        isProcessingSecrets = false
+                    }
+                }
+            },
+            onImportSettingsOnly = { jsonInput ->
+                val result = onImportSettingsOnly(jsonInput)
+                if (result is ImportResult.Success) {
                     Toast.makeText(context, strings.settingsImportedSuccessfully, Toast.LENGTH_SHORT).show()
                     onRefresh()
                     showImportDialog = false
                 } else {
-                    Toast.makeText(context, strings.failedToImportSettings, Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, strings.failedToImportSettings, Toast.LENGTH_LONG).show()
                 }
             },
-            onDismiss = { showImportDialog = false }
+            onDismiss = {
+                showImportDialog = false
+                importPassword = ""
+            }
         )
     }
 
@@ -833,11 +895,14 @@ fun ExportDialog(
     settings: Settings,
     includeAffiliateKey: Boolean,
     onIncludeKeyChange: (Boolean) -> Unit,
+    password: String,
+    onPasswordChange: (String) -> Unit,
+    isBusy: Boolean,
     onConfirm: () -> Unit,
     onDismiss: () -> Unit
 ) {
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isBusy) onDismiss() },
         containerColor = Color(settings.backgroundColor),
         title = {
             Text(
@@ -865,20 +930,46 @@ fun ExportDialog(
                         color = Color(settings.buttonBorderColor)
                     )
                 }
+                if (includeAffiliateKey) {
+                    Spacer(modifier = Modifier.height(responsiveDp(12.dp)))
+                    OutlinedTextField(
+                        value = password,
+                        onValueChange = onPasswordChange,
+                        label = { Text(strings.exportPassword) },
+                        singleLine = true,
+                        visualTransformation = PasswordVisualTransformation(),
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                    Spacer(modifier = Modifier.height(responsiveDp(8.dp)))
+                    Text(
+                        strings.exportPasswordHint,
+                        color = Color(settings.buttonBorderColor),
+                        fontSize = responsiveSp(14.0)
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = onConfirm,
-                colors = ButtonDefaults.buttonColors(containerColor = Color(settings.buttonColor)),
+                enabled = !isBusy && (!includeAffiliateKey || password.isNotBlank()),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = Color(settings.buttonColor),
+                    disabledContainerColor = Color.Gray
+                ),
                 border = BorderStroke(responsiveDp(2.dp), Color(settings.buttonBorderColor))
             ) {
-                Text(strings.export, color = Color(settings.buttonBorderColor))
+                if (isBusy) {
+                    Text(strings.exporting, color = Color(settings.buttonBorderColor))
+                } else {
+                    Text(strings.export, color = Color(settings.buttonBorderColor))
+                }
             }
         },
         dismissButton = {
             Button(
                 onClick = onDismiss,
+                enabled = !isBusy,
                 colors = ButtonDefaults.buttonColors(containerColor = Color.Gray)
             ) {
                 Text(strings.cancel, color = Color.White)
@@ -891,13 +982,16 @@ fun ExportDialog(
 fun ImportDialog(
     strings: Strings,
     settings: Settings,
+    password: String,
+    onPasswordChange: (String) -> Unit,
+    isBusy: Boolean,
     onImport: (String) -> Unit,
+    onImportSettingsOnly: (String) -> Unit,
     onDismiss: () -> Unit
 ) {
     var importJsonInput by remember { mutableStateOf("") }
     var selectedFileName by remember { mutableStateOf<String?>(null) }
     var validationError by remember { mutableStateOf<String?>(null) }
-    var isImporting by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
     LaunchedEffect(importJsonInput) {
@@ -954,7 +1048,7 @@ fun ImportDialog(
     }
 
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!isBusy) onDismiss() },
         containerColor = Color(settings.backgroundColor),
         title = {
             Text(
@@ -1046,6 +1140,16 @@ fun ImportDialog(
                     modifier = Modifier.fillMaxWidth()
                 )
 
+                Spacer(modifier = Modifier.height(responsiveDp(12.dp)))
+                OutlinedTextField(
+                    value = password,
+                    onValueChange = onPasswordChange,
+                    label = { Text(strings.importPassword) },
+                    singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+
                 if (validationError != null && importJsonInput.isNotBlank()) {
                     Spacer(modifier = Modifier.height(responsiveDp(8.dp)))
                     Row(
@@ -1084,34 +1188,47 @@ fun ImportDialog(
             }
         },
         confirmButton = {
-            Button(
-                onClick = {
-                    if (validationError == null && importJsonInput.isNotBlank()) {
-                        isImporting = true
-                        onImport(importJsonInput)
-                    }
-                },
-                enabled = importJsonInput.isNotBlank() && validationError == null && !isImporting,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = Color(settings.buttonColor),
-                    disabledContainerColor = Color.Gray
-                ),
-                border = BorderStroke(responsiveDp(2.dp), Color(settings.buttonBorderColor))
-            ) {
-                if (isImporting) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                // An operator without the password can still take the configuration —
+                // an explicit choice, never a silent downgrade.
+                TextButton(
+                    onClick = { onImportSettingsOnly(importJsonInput) },
+                    enabled = importJsonInput.isNotBlank() && validationError == null && !isBusy
+                ) {
                     Text(
-                        text = strings.importing,
+                        strings.importSettingsOnly,
                         color = Color(settings.buttonBorderColor)
                     )
-                } else {
-                    Text(strings.import, color = Color(settings.buttonBorderColor))
+                }
+                Spacer(modifier = Modifier.width(responsiveDp(8.dp)))
+                Button(
+                    onClick = {
+                        if (validationError == null && importJsonInput.isNotBlank()) {
+                            onImport(importJsonInput)
+                        }
+                    },
+                    enabled = importJsonInput.isNotBlank() && validationError == null && !isBusy,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = Color(settings.buttonColor),
+                        disabledContainerColor = Color.Gray
+                    ),
+                    border = BorderStroke(responsiveDp(2.dp), Color(settings.buttonBorderColor))
+                ) {
+                    if (isBusy) {
+                        Text(
+                            text = strings.importing,
+                            color = Color(settings.buttonBorderColor)
+                        )
+                    } else {
+                        Text(strings.import, color = Color(settings.buttonBorderColor))
+                    }
                 }
             }
         },
         dismissButton = {
             Button(
                 onClick = onDismiss,
-                enabled = !isImporting,
+                enabled = !isBusy,
                 colors = ButtonDefaults.buttonColors(containerColor = Color.Gray)
             ) {
                 Text(strings.cancel, color = Color.White)
