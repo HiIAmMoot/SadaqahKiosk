@@ -202,10 +202,14 @@ class TelemetryUploader(
          *  Ten, not three: the cap's cost is a stall — genuinely bad rows at the
          *  head of the queue block the rows behind them until the outbox's
          *  30-day age cap retires them — and ten leaves margin for a scattered
-         *  handful while still cutting a uniform sweep by 90%. A stall is also
-         *  the visible, reversible direction: consecutiveFailures and a
-         *  lastError reading "HTTP 400 …" are on the analytics screen, and that
-         *  is the diagnostic that leads someone to the schema. */
+         *  handful while still cutting a uniform sweep by 90%. A stalled row is
+         *  eventually retired by the outbox's age cap, but not promptly:
+         *  compaction only rewrites the file once at least `compactSlack` rows
+         *  are droppable in one pass, so on a low-volume kiosk a stall can
+         *  outlast 30 days by a wide margin. What bounds it in practice is the
+         *  operator: consecutiveFailures and a lastError reading "HTTP 400 …" are
+         *  on the analytics screen, and that is the diagnostic that leads someone
+         *  to the schema. */
         private const val MAX_FALLBACK_REFUSALS_WITHOUT_SUCCESS = 10
     }
 }

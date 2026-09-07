@@ -615,9 +615,13 @@ class TelemetryUploaderTest {
     }
 
     /**
-     * The pre-existing `break` on a transport failure must still win outright,
-     * ahead of the cap: every remaining row would burn a full connect-plus-read
-     * timeout and stay queued regardless.
+     * Not a precedence test — a transport failure (-1) can never satisfy
+     * isPermanentRejection ({400, 413, 422}), so the two branches are mutually
+     * exclusive by type and cannot race. What this pins is that the pre-existing
+     * `break` still stops the sweep at the first dropped connection when the batch
+     * is large: every remaining row would burn a full connect-plus-read timeout and
+     * stay queued regardless. The older 3-row version of this test could not tell a
+     * stop-at-one from a completed sweep; at 30 rows, 2 calls versus 31 is decisive.
      */
     @Test
     fun aTransportFailureMidFallbackStopsBeforeTheCapEverCounts() {

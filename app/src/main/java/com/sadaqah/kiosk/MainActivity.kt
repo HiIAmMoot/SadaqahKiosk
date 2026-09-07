@@ -1693,22 +1693,40 @@ class MainActivity : FragmentActivity() {
      */
     private fun refreshAnalyticsSnapshot(then: (() -> Unit)? = null) {
         lifecycleScope.launch {
-            val snapshot = withContext(Dispatchers.IO) {
-                AnalyticsSnapshot(telemetryCredentials.load(), telemetryManager.status())
-            }
-            // Guards the one case `then` doesn't cover: onAnalyticsTestConnection's
-            // network call can outlive the screen (operator backs out mid-test).
-            // Without this, its completion would land here and repopulate the
-            // holder with a freshly-decrypted key after closeAnalyticsSettings()
-            // nulled it — reviving exactly what that null was for. `then != null`
-            // is the open flow, where showAnalyticsSettings is still false at this
-            // point by design (see openAnalyticsSettings), so it must not be caught
-            // by this check.
+            // Checked BEFORE the work, not only after it: since phase 3a every
+            // automatic flush calls this, and `load()` is a Keystore decrypt while
+            // `status()` parses the whole outbox file. Returning here is what makes
+            // those costs belong to the analytics screen rather than to every
+            // flush a closed-screen kiosk performs. The identical check below is
+            // NOT redundant — it catches the operator backing out mid-flight.
             if (then == null && !showAnalyticsSettings) return@launch
-            analyticsSnapshot = snapshot
-            analyticsNowMs = System.currentTimeMillis()
-            then?.invoke()
-            startAnalyticsBackoffTickerIfNeeded()
+            try {
+                val snapshot = withContext(Dispatchers.IO) {
+                    AnalyticsSnapshot(telemetryCredentials.load(), telemetryManager.status())
+                }
+                // Guards the one case `then` doesn't cover: onAnalyticsTestConnection's
+                // network call can outlive the screen (operator backs out mid-test).
+                // Without this, its completion would land here and repopulate the
+                // holder with a freshly-decrypted key after closeAnalyticsSettings()
+                // nulled it — reviving exactly what that null was for. `then != null`
+                // is the open flow, where showAnalyticsSettings is still false at this
+                // point by design (see openAnalyticsSettings), so it must not be caught
+                // by this check.
+                if (then == null && !showAnalyticsSettings) return@launch
+                analyticsSnapshot = snapshot
+                analyticsNowMs = System.currentTimeMillis()
+                then?.invoke()
+                startAnalyticsBackoffTickerIfNeeded()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                // status() reads the outbox file and load() touches the Keystore;
+                // this coroutine is its own, so flushTelemetry's catch cannot cover
+                // it, and nothing above has a caller left to handle a throw. An
+                // escape reaches the default handler and kills an unattended kiosk.
+                // Only the class name — never lastError, never a key, never a payload.
+                Log.e("Telemetry", "analytics snapshot refresh failed: ${t::class.java.name}")
+            }
         }
     }
 
@@ -1929,9 +1947,8 @@ class MainActivity : FragmentActivity() {
                 // response body, and it is redacted for the screen, not for logcat.
                 Log.d("Telemetry", "flush($reason) -> $block")
                 // Keeps an open analytics screen current after a flush the operator
-                // did not trigger. Safe when the screen is closed: this function's
-                // own guard returns early rather than decrypting the Keystore for a
-                // screen nobody is looking at.
+                // did not trigger. Cheap when the screen is closed: refreshAnalyticsSnapshot
+                // returns before its Keystore decrypt and outbox parse, not after.
                 refreshAnalyticsSnapshot()
             } catch (c: CancellationException) {
                 throw c
