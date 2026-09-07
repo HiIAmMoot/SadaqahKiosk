@@ -85,6 +85,20 @@ class TelemetryUploader(
                 (response.isPermanentRejection || response.isAlreadyStored) && forTable.size > 1 -> {
                     val uploadedHere = mutableSetOf<String>()
                     val rejectedHere = mutableSetOf<String>()
+                    // Refusals seen while nothing has landed yet. This fallback
+                    // exists to test one hypothesis — one bad row among many —
+                    // and a run of refusals with no success refutes it, so the
+                    // remaining rows have nothing left to teach. Left unbounded
+                    // it costs a request per row (up to DEFAULT_BATCH = 100) on
+                    // every flush, forever, against a drifted schema — which
+                    // mattered less when a human pressed the button and watched
+                    // it fail, and matters now that a timer presses it unwatched.
+                    //
+                    // Counting deliberately STOPS at the first success rather
+                    // than resetting: from then on the hypothesis is confirmed
+                    // and every further refusal is corroborated, so removing it
+                    // drains the queue and the sweep is worth finishing.
+                    var refusalsWithoutSuccess = 0
                     for (event in forTable) {
                         val single = send(table, listOf(event))
                         when {
@@ -92,6 +106,14 @@ class TelemetryUploader(
                             single.isPermanentRejection -> {
                                 rejectedHere += event.id
                                 lastError = describe(single)
+                                // Nothing is deleted by a capped sweep: the cap
+                                // can only fire while uploadedHere is empty, so
+                                // breaking out lands in the isEmpty() branch
+                                // below, which discards rejectedHere and keeps
+                                // every row. The only new behaviour is stopping.
+                                if (uploadedHere.isEmpty() &&
+                                    ++refusalsWithoutSuccess >= MAX_FALLBACK_REFUSALS_WITHOUT_SUCCESS
+                                ) break
                             }
                             else -> {
                                 // The network went away mid-fallback. Every
@@ -171,5 +193,19 @@ class TelemetryUploader(
             TelemetryRedactor.scrub(response.body, publishableKey)
         ) ?: ""
         return "HTTP ${response.code} $body".trim()
+    }
+
+    companion object {
+        /** How many individual refusals the per-row fallback absorbs before
+         *  giving up, while nothing has yet succeeded.
+         *
+         *  Ten, not three: the cap's cost is a stall — genuinely bad rows at the
+         *  head of the queue block the rows behind them until the outbox's
+         *  30-day age cap retires them — and ten leaves margin for a scattered
+         *  handful while still cutting a uniform sweep by 90%. A stall is also
+         *  the visible, reversible direction: consecutiveFailures and a
+         *  lastError reading "HTTP 400 …" are on the analytics screen, and that
+         *  is the diagnostic that leads someone to the schema. */
+        private const val MAX_FALLBACK_REFUSALS_WITHOUT_SUCCESS = 10
     }
 }
