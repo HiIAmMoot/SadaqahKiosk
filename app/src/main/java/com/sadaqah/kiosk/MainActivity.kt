@@ -58,6 +58,7 @@ import com.sumup.merchant.reader.api.SumUpLogin
 import com.sumup.merchant.reader.api.SumUpPayment
 import com.sumup.merchant.reader.ReaderModuleCoreState
 import com.sumup.merchant.reader.api.SumUpState
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -1786,34 +1787,52 @@ class MainActivity : FragmentActivity() {
         val settingsNow = settings
         val occurredAtMs = System.currentTimeMillis()
         lifecycleScope.launch(Dispatchers.IO) {
-            when (val result = DonationEvents.eventFor(
-                settingsNow, BuildConfig.VERSION_NAME, amount, occurredAtMs
-            )) {
-                // The normal state of most kiosks. Nothing is written to disk.
-                DonationEventResult.NotEnabled -> Unit
+            try {
+                when (val result = DonationEvents.eventFor(
+                    settingsNow, BuildConfig.VERSION_NAME, amount, occurredAtMs
+                )) {
+                    // The normal state of most kiosks. Nothing is written to disk.
+                    DonationEventResult.NotEnabled -> Unit
 
-                DonationEventResult.AmountUnrepresentable -> {
-                    // The scale, never the value: a log line is not a redacted
-                    // sink, and the amount is donor-adjacent data.
-                    Log.e("Telemetry", "donation not representable in cents (scale=${amount.scale()})")
-                    recordTelemetryLoss()
-                }
+                    DonationEventResult.AmountUnrepresentable -> {
+                        // The scale, never the value: a log line is not a redacted
+                        // sink, and the amount is donor-adjacent data.
+                        Log.e("Telemetry", "donation not representable in cents (scale=${amount.scale()})")
+                        recordTelemetryLoss()
+                    }
 
-                is DonationEventResult.Report -> try {
-                    telemetryOutbox.append(
-                        result.event.id,
-                        result.event.table,
-                        result.event.payloadJson()
-                    )
-                } catch (t: Throwable) {
-                    // TelemetryOutbox.append documents that it throws on a full
-                    // disk or a failed mkdirs, that the caller owns that
-                    // decision, and that the caller sits on the donation path.
-                    // This is that caller, so the only correct decision is to
-                    // lose the row quietly and record that it happened.
-                    Log.e("Telemetry", "outbox append failed: ${t::class.java.name}")
-                    recordTelemetryLoss()
+                    is DonationEventResult.Report -> try {
+                        telemetryOutbox.append(
+                            result.event.id,
+                            result.event.table,
+                            result.event.payloadJson()
+                        )
+                    } catch (c: CancellationException) {
+                        throw c
+                    } catch (t: Throwable) {
+                        // TelemetryOutbox.append documents that it throws on a full
+                        // disk or a failed mkdirs, that the caller owns that
+                        // decision, and that the caller sits on the donation path.
+                        // This is that caller, so the only correct decision is to
+                        // lose the row quietly and record that it happened.
+                        Log.e("Telemetry", "outbox append failed: ${t::class.java.name}")
+                        recordTelemetryLoss()
+                    }
                 }
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                // Last resort, and not redundant with the inner catch: recording
+                // the loss is itself capable of throwing. telemetryStatusStore is
+                // `by lazy`, so on a kiosk whose Analytics screen was never opened
+                // the first touch constructs PrefsStatusStore, whose initialiser
+                // calls getSharedPreferences — which fails on exactly the full disk
+                // that sent us into the inner catch. Nothing here has a caller left
+                // to handle it: lifecycleScope installs no CoroutineExceptionHandler,
+                // so an escape reaches the default handler and kills the process on
+                // the thank-you screen. The donation flow is sacred; telemetry dies
+                // silently instead.
+                Log.e("Telemetry", "donation telemetry failed outright: ${t::class.java.name}")
             }
         }
     }
