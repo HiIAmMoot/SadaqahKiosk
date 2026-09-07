@@ -38,7 +38,8 @@ class TelemetryOutbox(
     private val maxEvents: Int = 5000,
     private val maxAgeMs: Long = 30L * 24 * 60 * 60 * 1000,
     private val compactSlack: Int = 100,
-    private val clock: () -> Long = System::currentTimeMillis
+    private val clock: () -> Long = System::currentTimeMillis,
+    private val onDropped: (Int) -> Unit = {}
 ) {
     /** Locking is keyed on the file, not the instance: phase 2's crash handler
      *  may construct its own TelemetryOutbox over the same path, and two
@@ -91,7 +92,11 @@ class TelemetryOutbox(
     private fun compactIfNeeded(now: Long) {
         val all = readAll()
         val kept = applyCaps(all, now)
-        if (all.size - kept.size >= compactSlack) writeAll(kept)
+        val discarded = all.size - kept.size
+        if (discarded >= compactSlack) {
+            writeAll(kept)
+            if (discarded > 0) onDropped(discarded)
+        }
     }
 
     /** Caps are enforced on append so an offline kiosk sheds its oldest

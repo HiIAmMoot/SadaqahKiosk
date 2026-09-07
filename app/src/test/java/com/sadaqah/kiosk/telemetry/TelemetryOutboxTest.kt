@@ -19,7 +19,7 @@ class TelemetryOutboxTest {
         maxEvents: Int = 5000,
         maxAgeMs: Long = 30L * 24 * 60 * 60 * 1000,
         compactSlack: Int = 1
-    ) = TelemetryOutbox(file, maxEvents, maxAgeMs, compactSlack) { now }
+    ) = TelemetryOutbox(file, maxEvents, maxAgeMs, compactSlack, clock = { now })
 
     @Before
     fun setUp() {
@@ -52,7 +52,7 @@ class TelemetryOutboxTest {
     @Test
     fun append_createsParentDirectories() {
         val nested = File(temp.newFolder("a"), "b/c/outbox.jsonl")
-        TelemetryOutbox(nested, 5000, 1000L) { now }.append("x", "t", "{}")
+        TelemetryOutbox(nested, 5000, 1000L, clock = { now }).append("x", "t", "{}")
         assertTrue(nested.exists())
     }
 
@@ -128,6 +128,20 @@ class TelemetryOutboxTest {
         box.remove(setOf("e1", "e2"))
         assertEquals(0, box.size())
         assertTrue(box.peek().isEmpty())
+    }
+
+    /** `remove()` also calls `writeAll`, exactly like cap-driven compaction does,
+     *  but rows it removes are ones the uploader named -- accounted for, not
+     *  lost. A callback that fired here too would tell an operator donations
+     *  were thrown away when they were in fact successfully uploaded. */
+    @Test
+    fun removeDoesNotReportAnythingDropped() {
+        val dropped = mutableListOf<Int>()
+        val box = TelemetryOutbox(file, maxEvents = 10, compactSlack = 0, clock = { now }) { dropped += it }
+        box.appendDonation("e1")
+        box.appendDonation("e2")
+        box.remove(setOf("e1"))
+        assertEquals("rows removed by the uploader are not losses", 0, dropped.sum())
     }
 
     // ── Caps ─────────────────────────────────────────────────────────────────
@@ -324,5 +338,44 @@ class TelemetryOutboxTest {
         outbox.clear()
         outbox.appendDonation("b")
         assertEquals(listOf("b"), outbox.peek().map { it.id })
+    }
+
+    // ── Dropped reporting ────────────────────────────────────────────────────
+
+    /** Exercises the count cap only — see the name. A fixed clock never ages
+     *  anything out, so this says nothing about the age-eviction path; that has
+     *  its own test below, [droppingEventsOverTheAgeCapReportsHowManyWereLost]. */
+    @Test
+    fun droppingEventsOverTheCountCapReportsHowManyWereLost() {
+        val dropped = mutableListOf<Int>()
+        val box = TelemetryOutbox(file, maxEvents = 2, compactSlack = 0, clock = { now }) { dropped += it }
+        box.appendDonation("a")
+        box.appendDonation("b")
+        box.appendDonation("c")
+        assertEquals("the caller must learn a donation was thrown away", 1, dropped.sum())
+    }
+
+    /** The operator-facing copy says "too old" first, and on a real kiosk the
+     *  age cap is the more likely eviction path — an offline kiosk past
+     *  maxAgeMs, not one that queued 5000 rows. That path had no drop-reporting
+     *  coverage at all until this test. */
+    @Test
+    fun droppingEventsOverTheAgeCapReportsHowManyWereLost() {
+        now = 1_600_000_000_000L // well above PLAUSIBLE_EPOCH_FLOOR_MS
+        val dropped = mutableListOf<Int>()
+        val box = TelemetryOutbox(file, maxAgeMs = 10_000L, compactSlack = 0, clock = { now }) { dropped += it }
+        box.appendDonation("old1")
+        box.appendDonation("old2")
+        now += 20_000L // past maxAgeMs: both earlier rows age out
+        box.appendDonation("fresh")
+        assertEquals("both aged-out rows must be reported, the same way the count cap is", 2, dropped.sum())
+    }
+
+    @Test
+    fun aQueueUnderItsCapReportsNothingDropped() {
+        val dropped = mutableListOf<Int>()
+        val box = TelemetryOutbox(file, maxEvents = 10, compactSlack = 0, clock = { now }) { dropped += it }
+        box.appendDonation("a")
+        assertEquals(0, dropped.sum())
     }
 }

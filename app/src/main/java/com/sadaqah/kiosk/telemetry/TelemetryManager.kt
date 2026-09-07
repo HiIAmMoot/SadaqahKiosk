@@ -92,6 +92,40 @@ class TelemetryManager(
      * is cleared first — see the comment above that line for why.
      */
     fun activate(): ActivationResult {
+        val current = runtime()
+
+        // Same failure mode as the append below (a full disk, a broken store):
+        // reading the queue depth for the pre-check can throw too, and this is
+        // already the caller that owns turning that into Failed rather than an
+        // uncaught exception — see the try/catch around outbox.append.
+        val queueDepthAfterAppend = try {
+            outbox.size() + 1
+        } catch (t: Throwable) {
+            return ActivationResult.Failed(t::class.java.name)
+        }
+
+        // Evaluate the gate against the inputs this press will actually leave
+        // behind — activated forced true (this call is what earns it), backoff
+        // forced to 0 (the reset a few lines down always clears it for real, so
+        // a stale deadline genuinely cannot block this press), and the queue
+        // depth counting the row about to be appended below. Doing this before
+        // any mutation means a blocked press changes nothing: no reset, no
+        // append, no destroyed diagnostic. Reusing TelemetryGate.evaluate rather
+        // than re-deriving the precedence here is deliberate — a second copy of
+        // that order would drift from the real one.
+        val precheck = TelemetryGate.evaluate(
+            GateInputs(
+                enabled = current.enabled,
+                configured = credentials.isConfigured(),
+                activated = true,
+                networkAvailable = networkAvailable(),
+                queueDepth = queueDepthAfterAppend,
+                backoffUntilMs = 0L
+            ),
+            clock()
+        )
+        if (precheck != FlushBlock.NONE) return ActivationResult.Blocked(precheck)
+
         // "Test connection" and activation are the same operator action (per the
         // spec), and pressing it is a deliberate, in-person override of an
         // automatic delay — most concretely: the destination was wrong, backoff
@@ -102,11 +136,8 @@ class TelemetryManager(
         // opposed to a separate method the settings screen would have to remember
         // to call — means a corrected destination is testable on the very next
         // press of the button rather than possibly up to an hour later.
-        statusStore.write(
-            statusStore.read().copy(consecutiveFailures = 0, backoffUntilMs = 0L, lastError = null)
-        )
+        statusStore.update { it.copy(consecutiveFailures = 0, backoffUntilMs = 0L, lastError = null) }
 
-        val current = runtime()
         val event = TelemetryEvent.Activation(
             identity = current.identity,
             activatedAtIso = Instant.ofEpochMilli(clock()).toString(),
@@ -183,17 +214,23 @@ class TelemetryManager(
             // flush would leave consecutiveFailures and backoffUntilMs untouched,
             // and a failing kiosk would retry in a tight loop forever.
             val finishedAt = clock()
-            val failures = before.consecutiveFailures + 1
-            statusStore.write(
-                before.copy(
+            // FIX (I4): transform against the value the store hands it, not
+            // `before` — anything written to the store during the upload above
+            // (an outbox eviction's droppedCount, chiefly) must survive this
+            // write rather than being overwritten by a copy of a snapshot taken
+            // before that write ever happened.
+            statusStore.update { fresh ->
+                val failures = fresh.consecutiveFailures + 1
+                fresh.copy(
                     // Never the exception's message: it could carry a row value
                     // (a donation amount, a stack trace fragment) that never went
                     // through the redactor.
                     lastError = t::class.java.name,
+                    lastErrorAtMs = finishedAt,
                     consecutiveFailures = failures,
                     backoffUntilMs = finishedAt + TelemetryGate.backoffDelayMs(failures)
                 )
-            )
+            }
             return FlushBlock.NONE
         }
 
@@ -210,18 +247,27 @@ class TelemetryManager(
         val finishedAt = clock()
         when {
             outcome.retryableFailure -> {
-                val failures = before.consecutiveFailures + 1
-                statusStore.write(
-                    before.copy(
+                // FIX (I4): as above — transform the fresh value the store hands
+                // back, not `before`. A `before.copy(...)` here would silently
+                // discard a droppedCount bump (or anything else) written during
+                // the network round trip above.
+                statusStore.update { fresh ->
+                    val failures = fresh.consecutiveFailures + 1
+                    fresh.copy(
                         lastError = outcome.lastError,
+                        // Only advanced when a non-null error is actually written —
+                        // outcome.lastError is nullable in principle even though
+                        // every reachable retryableFailure path in TelemetryUploader
+                        // sets it alongside retryable = true.
+                        lastErrorAtMs = if (outcome.lastError != null) finishedAt else fresh.lastErrorAtMs,
                         consecutiveFailures = failures,
                         backoffUntilMs = finishedAt + TelemetryGate.backoffDelayMs(failures),
                         // A partial success still moves the marker: rows did land, and
                         // an operator reading "last upload: never" while data arrives
                         // would chase a problem that is not there.
-                        lastSuccessMs = if (outcome.uploadedIds.isEmpty()) before.lastSuccessMs else finishedAt
+                        lastSuccessMs = if (outcome.uploadedIds.isEmpty()) fresh.lastSuccessMs else finishedAt
                     )
-                )
+                }
             }
             // Evidence of a real outcome, not just the absence of a retryable one:
             // an outcome that uploaded or rejected nothing is not proof of success,
@@ -230,14 +276,14 @@ class TelemetryManager(
             // note), but this class's whole charter is to never re-derive the
             // uploader's judgement, so it does not assume that shape either.
             outcome.uploadedIds.isNotEmpty() || outcome.rejectedIds.isNotEmpty() -> {
-                statusStore.write(
-                    before.copy(
+                statusStore.update { fresh ->
+                    fresh.copy(
                         lastError = null,
                         consecutiveFailures = 0,
                         backoffUntilMs = 0L,
                         lastSuccessMs = finishedAt
                     )
-                )
+                }
             }
             else -> Unit // Nothing happened. Status is left exactly as it was.
         }

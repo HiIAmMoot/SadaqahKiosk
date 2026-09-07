@@ -67,6 +67,7 @@ fun SettingsScreen(
     onPinApp: () -> Unit,
     onShowSetupStatus: () -> Unit,
     onShowDonationHistory: () -> Unit = {},
+    onShowAnalyticsSettings: () -> Unit = {},
     onActivateScreensaver: () -> Unit,
     onTestModeChange: (Boolean) -> Unit,
     onLogout: () -> Unit,
@@ -568,6 +569,14 @@ fun SettingsScreen(
                             color = Color(settings.buttonColor),
                             borderColor = Color(settings.buttonBorderColor),
                             onClick = onShowDonationHistory,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        ActionButton(
+                            text = strings.analyticsSettings,
+                            color = Color(settings.buttonColor),
+                            borderColor = Color(settings.buttonBorderColor),
+                            onClick = onShowAnalyticsSettings,
                             modifier = Modifier.fillMaxWidth()
                         )
 

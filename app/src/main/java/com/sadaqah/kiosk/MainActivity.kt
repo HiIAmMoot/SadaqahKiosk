@@ -47,6 +47,7 @@ import com.sadaqah.kiosk.recovery.*
 import com.sadaqah.kiosk.screens.*
 import com.sadaqah.kiosk.settingsio.ImportResult
 import com.sadaqah.kiosk.settingsio.SettingsExportFile
+import com.sadaqah.kiosk.telemetry.*
 import com.sadaqah.kiosk.update.ReleaseInfo
 import com.sadaqah.kiosk.update.SemVer
 import com.sadaqah.kiosk.update.UpdateManager
@@ -58,10 +59,13 @@ import com.sumup.merchant.reader.api.SumUpPayment
 import com.sumup.merchant.reader.ReaderModuleCoreState
 import com.sumup.merchant.reader.api.SumUpState
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
 import java.math.BigDecimal
 
 private const val INACTIVITY_BOUNCE_MS = 5L * 60 * 1000 // 5 min on settings / custom-amount → back to donation
@@ -70,6 +74,14 @@ private const val INACTIVITY_BOUNCE_MS = 5L * 60 * 1000 // 5 min on settings / c
  *  The kiosk cannot take donations without it, so recovery is worth more than patience.
  *  Comfortably clear of the ~5 s deliberate cycle in [MainActivity.cycleBluetoothAdapter]. */
 private const val BLUETOOTH_OFF_RECOVERY_MS = 60L * 1000
+
+/** The two reads [AnalyticsPresenter.view] needs beyond `settings`, cached
+ *  together so they land in Activity state as one atomic assignment rather
+ *  than two (which would let composition observe one refreshed and one
+ *  stale). Deliberately not a data class: [TelemetryConfig]'s own `toString`
+ *  redacts the key, and a generated holder `toString`/`equals` would print or
+ *  compare the config directly, defeating that. */
+private class AnalyticsSnapshot(val config: TelemetryConfig?, val status: TelemetryStatus)
 
 class MainActivity : FragmentActivity() {
     private lateinit var prefs: SharedPreferences
@@ -100,6 +112,54 @@ class MainActivity : FragmentActivity() {
     private lateinit var restartManager: RestartManager
     private lateinit var networkRecoveryManager: NetworkRecoveryManager
 
+    // Telemetry (phase 2c wiring — see TelemetryManager for the send sequence).
+    // Constructed lazily, off the same filesDir/{context} mechanisms the rest of
+    // the app already uses: a subdirectory beside DonationHistory's, the Keystore
+    // for credentials, plain prefs for status.
+    private val telemetryOutbox: TelemetryOutbox by lazy {
+        TelemetryOutbox(
+            File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"),
+            onDropped = { count ->
+                // Can fire from a background thread and from inside the outbox's
+                // own lock, so this stays a small, non-blocking update on the
+                // status store and never calls back into the outbox. Going
+                // through update() rather than a hand-written read-then-write
+                // also closes the race between two of these landing concurrently
+                // (Ruling BA) and the larger one against an in-flight flush
+                // (TelemetryManager.flush reads its own snapshot before a
+                // network call that can run for minutes) — both are now the
+                // same "someone else wrote first" case update() exists to handle.
+                telemetryStatusStore.update { it.copy(droppedCount = it.droppedCount + count) }
+            }
+        )
+    }
+    private val telemetryCredentials: TelemetryCredentials by lazy {
+        TelemetryCredentials(KeystoreSecretStore(this))
+    }
+    private val telemetryStatusStore: TelemetryStatusStore by lazy { PrefsStatusStore(this) }
+    private val telemetryManager: TelemetryManager by lazy {
+        TelemetryManager(
+            outbox = telemetryOutbox,
+            credentials = telemetryCredentials,
+            statusStore = telemetryStatusStore,
+            posterFor = { UrlConnectionPoster() },
+            runtime = {
+                TelemetryRuntime(
+                    enabled = settings.analyticsEnabled,
+                    activated = settings.analyticsActivatedAtMs != 0L,
+                    identity = EventIdentity(
+                        code = settings.kioskCode,
+                        installId = settings.installId,
+                        appVersion = BuildConfig.VERSION_NAME
+                    ),
+                    privacyPolicyUrl = settings.analyticsPrivacyPolicyUrl,
+                    termsUrl = settings.analyticsTermsUrl
+                )
+            },
+            networkAvailable = { isOnlineNow() }
+        )
+    }
+
     var settings: Settings by mutableStateOf(Settings())
     var isLoggedIn by mutableStateOf(false)
     var affiliateKey by mutableStateOf("")
@@ -123,6 +183,21 @@ class MainActivity : FragmentActivity() {
     var isConnectingCardReader by mutableStateOf(false)
     var showSetupStatus by mutableStateOf(false)
     var showDonationHistory by mutableStateOf(false)
+    var showAnalyticsSettings by mutableStateOf(false)
+    // The two expensive reads behind the analytics screen (Keystore decrypt,
+    // full outbox parse) cached in Activity state so composition only ever
+    // does the pure AnalyticsPresenter.view call. Null means "not loaded" —
+    // either the screen has never been opened, or closeAnalyticsSettings()
+    // just cleared it so the decrypted key isn't held for the process's life.
+    // Refreshed by refreshAnalyticsSnapshot(); never read from a Keystore or
+    // the outbox directly inside setContent.
+    private var analyticsSnapshot by mutableStateOf<AnalyticsSnapshot?>(null)
+    // "Now" as the presenter sees it — stamped alongside analyticsSnapshot, and
+    // ticked once a second by the backoff ticker (see startAnalyticsBackoffTicker)
+    // instead of being read fresh from System.currentTimeMillis() in composition.
+    private var analyticsNowMs by mutableLongStateOf(System.currentTimeMillis())
+    private var analyticsBackoffTickerJob: Job? = null
+    var analyticsTestState by mutableStateOf<TestConnectionState>(TestConnectionState.Idle)
     var setupStatusFromOffline by mutableStateOf(false)
     var showUpdateConfirm by mutableStateOf(false)
     var showUpdatingOverlay by mutableStateOf(false)
@@ -350,6 +425,7 @@ class MainActivity : FragmentActivity() {
                             showSetupStatus = false
                             setupStatusFromOffline = false
                             showDonationHistory = false
+                            closeAnalyticsSettings()
                             // Reset so the screensaver doesn't immediately fire on top of the bounce.
                             lastInteractionTime = System.currentTimeMillis()
                         }
@@ -411,6 +487,27 @@ class MainActivity : FragmentActivity() {
                     showDonationHistory = showDonationHistory,
                     onShowDonationHistory = { showDonationHistory = it },
                     donationHistory = donationHistory,
+                    showAnalyticsSettings = showAnalyticsSettings,
+                    onShowAnalyticsSettings = { if (it) openAnalyticsSettings() else closeAnalyticsSettings() },
+                    // Pure and cheap: both expensive inputs are already sitting in
+                    // analyticsSnapshot/analyticsNowMs, refreshed by the entry points
+                    // above rather than read here. See AnalyticsSnapshot's KDoc.
+                    analyticsView = AnalyticsPresenter.view(
+                        settings, analyticsSnapshot?.config, analyticsSnapshot?.status ?: TelemetryStatus(), analyticsNowMs
+                    ),
+                    analyticsTestState = analyticsTestState,
+                    onAnalyticsToggleEnabled = { enabled -> onSettingsChange(settings.copy(analyticsEnabled = enabled)) },
+                    onAnalyticsSaveDestination = { url, key ->
+                        val verdict = telemetryCredentials.save(url, key)
+                        refreshAnalyticsSnapshot()
+                        verdict
+                    },
+                    onAnalyticsTestConnection = ::onAnalyticsTestConnection,
+                    onAnalyticsKioskCodeChange = { code -> onSettingsChange(settings.copy(kioskCode = code)) },
+                    onAnalyticsPolicyUrlsChange = { privacy, terms ->
+                        onSettingsChange(settings.copy(analyticsPrivacyPolicyUrl = privacy, analyticsTermsUrl = terms))
+                    },
+                    onAnalyticsClearCredentials = ::onAnalyticsClearCredentials,
                     setupStatusFromOffline = setupStatusFromOffline,
                     onExitSetupStatus = ::exitSetupStatus,
                     onUnpinApp = ::unpinApp,
@@ -1392,6 +1489,7 @@ class MainActivity : FragmentActivity() {
             showSetupStatus = false
             setupStatusFromOffline = false
             showDonationHistory = false
+            closeAnalyticsSettings()
             prepareCardReader()
         }
     }
@@ -1520,6 +1618,145 @@ class MainActivity : FragmentActivity() {
         if (newSettings.logoUri != previousLogoUri) {
             LogoColorExtractor.refresh(this, newSettings.logoUri)
         }
+    }
+
+    // ── Analytics settings entry points (called from UI) ───────────────────────
+
+    /**
+     * Loads the two expensive analytics inputs (Keystore decrypt, full outbox
+     * parse) off the main thread and stamps `analyticsNowMs` alongside them as
+     * one atomic assignment, then runs [then]. Every action that used to bump
+     * `analyticsRefreshVersion` — save, test, clear — now goes through this
+     * instead, so those reads happen once per action rather than once per
+     * recomposition of the whole app.
+     */
+    private fun refreshAnalyticsSnapshot(then: (() -> Unit)? = null) {
+        lifecycleScope.launch {
+            val snapshot = withContext(Dispatchers.IO) {
+                AnalyticsSnapshot(telemetryCredentials.load(), telemetryManager.status())
+            }
+            // Guards the one case `then` doesn't cover: onAnalyticsTestConnection's
+            // network call can outlive the screen (operator backs out mid-test).
+            // Without this, its completion would land here and repopulate the
+            // holder with a freshly-decrypted key after closeAnalyticsSettings()
+            // nulled it — reviving exactly what that null was for. `then != null`
+            // is the open flow, where showAnalyticsSettings is still false at this
+            // point by design (see openAnalyticsSettings), so it must not be caught
+            // by this check.
+            if (then == null && !showAnalyticsSettings) return@launch
+            analyticsSnapshot = snapshot
+            analyticsNowMs = System.currentTimeMillis()
+            then?.invoke()
+            startAnalyticsBackoffTickerIfNeeded()
+        }
+    }
+
+    /** Refreshes *before* showing the screen, in the continuation, so it never
+     *  renders a frame from a null/stale holder — a configured kiosk flashing
+     *  "Not configured" for one frame would be worse than the few milliseconds
+     *  of delay this costs. */
+    fun openAnalyticsSettings() {
+        refreshAnalyticsSnapshot { showAnalyticsSettings = true }
+    }
+
+    /** Nulls the holder so the decrypted key is not held for the rest of the
+     *  process's life, clears a test-connection result that may describe a
+     *  press from long before this visit, and stops the backoff ticker rather
+     *  than leaving it running against a screen nobody can see. */
+    fun closeAnalyticsSettings() {
+        showAnalyticsSettings = false
+        analyticsSnapshot = null
+        analyticsTestState = TestConnectionState.Idle
+        analyticsBackoffTickerJob?.cancel()
+        analyticsBackoffTickerJob = null
+    }
+
+    /**
+     * Ticks `analyticsNowMs` once a second while the screen is open and the
+     * kiosk is actually backing off, so "Retrying in 45s" counts down instead
+     * of freezing at whatever it read on entry. The presenter call in
+     * composition is pure, so this is nearly free — but it is not free enough
+     * to run unconditionally: that would re-execute the whole `setContent`
+     * scope every second for a countdown nobody is looking at. So this only
+     * starts when there is something to count down, and stops itself the
+     * moment the backoff elapses.
+     */
+    private fun startAnalyticsBackoffTickerIfNeeded() {
+        val backoffUntilMs = analyticsSnapshot?.status?.backoffUntilMs ?: 0L
+        if (!showAnalyticsSettings || backoffUntilMs <= analyticsNowMs) return
+        if (analyticsBackoffTickerJob?.isActive == true) return
+        analyticsBackoffTickerJob = lifecycleScope.launch {
+            while (true) {
+                delay(1000L)
+                analyticsNowMs = System.currentTimeMillis()
+                val stillBackingOff = (analyticsSnapshot?.status?.backoffUntilMs ?: 0L) > analyticsNowMs
+                if (!stillBackingOff) break
+            }
+        }
+    }
+
+    /**
+     * "Test connection" and activation are the same operator action. activate()
+     * does network I/O (see UrlConnectionPoster's KDoc), so it must not run on
+     * the main thread — done here via lifecycleScope + Dispatchers.IO, the same
+     * mechanism the rest of MainActivity uses for background work.
+     */
+    fun onAnalyticsTestConnection() {
+        analyticsTestState = TestConnectionState.Running
+        lifecycleScope.launch {
+            val result = withContext(Dispatchers.IO) { telemetryManager.activate() }
+            val strings = TranslationManager.currentStrings()
+            analyticsTestState = when (result) {
+                is ActivationResult.Succeeded -> {
+                    // The screen would otherwise keep reporting "not yet
+                    // reporting" after a proven-good test.
+                    // Stamped once. The field names when this kiosk began reporting, and
+                    // overwriting it on every later test press would make that drift
+                    // forward forever, so it would never answer the question it exists for.
+                    if (settings.analyticsActivatedAtMs == 0L) {
+                        onSettingsChange(settings.copy(analyticsActivatedAtMs = System.currentTimeMillis()))
+                    }
+                    TestConnectionState.Succeeded(strings.analyticsTestSucceeded)
+                }
+                is ActivationResult.Queued -> TestConnectionState.Queued(strings.analyticsTestQueued)
+                is ActivationResult.Blocked -> TestConnectionState.Blocked(analyticsBlockedMessage(result.reason, strings))
+                // result.error is already redacted by the uploader, but the screen
+                // renders view.error (from status) for that — never the raw string here.
+                is ActivationResult.Failed -> TestConnectionState.Failed(strings.analyticsTestFailed)
+            }
+            refreshAnalyticsSnapshot()
+        }
+    }
+
+    /** Copy for a [FlushBlock] reason that only becomes true at the moment of the
+     *  press — [AnalyticsPresenter] already covers NOT_CONFIGURED/DISABLED before
+     *  the press via [AnalyticsView.testUnavailable].
+     *
+     *  FIX (I2): `TelemetryManager.activate()` now evaluates the gate *before*
+     *  mutating anything, against inputs that force `activated = true`,
+     *  `backoffUntilMs = 0` and a queue depth that already counts the row about
+     *  to be appended. That pre-check is the only source of a `Blocked` result
+     *  today, and it can only ever produce `DISABLED`, `NOT_CONFIGURED` or
+     *  `NO_NETWORK` — the other three inputs can't fail. So `BACKING_OFF`,
+     *  `NOT_ACTIVATED`, `EMPTY_QUEUE` and `NONE` are all unreachable out of
+     *  `activate()`: the internal `flush()` call that follows a passing
+     *  pre-check sees the same forced-true/zeroed inputs (`TelemetryManager` is
+     *  documented as not meant for concurrent callers, so nothing else can
+     *  change them in between) and cannot itself return a non-`NONE` block for
+     *  this call to wrap. They still get one honest, destination-agnostic
+     *  message rather than being treated as unreachable `when` branches that
+     *  might one day silently start firing. */
+    private fun analyticsBlockedMessage(reason: FlushBlock, strings: Strings): String = when (reason) {
+        FlushBlock.NO_NETWORK -> strings.noInternetConnection
+        FlushBlock.NOT_CONFIGURED -> strings.analyticsTestUnavailableNotConfigured
+        FlushBlock.DISABLED -> strings.analyticsTestUnavailableDisabled
+        FlushBlock.BACKING_OFF, FlushBlock.NOT_ACTIVATED, FlushBlock.EMPTY_QUEUE, FlushBlock.NONE ->
+            strings.analyticsBackingOff
+    }
+
+    fun onAnalyticsClearCredentials() {
+        TelemetryTeardown.clearEverything(telemetryCredentials, telemetryOutbox, telemetryStatusStore)
+        refreshAnalyticsSnapshot()
     }
 
     // ── Update flow entry points (called from UI) ──────────────────────────────
@@ -1730,6 +1967,16 @@ fun AppUI(
     showDonationHistory: Boolean,
     onShowDonationHistory: (Boolean) -> Unit,
     donationHistory: DonationHistory,
+    showAnalyticsSettings: Boolean,
+    onShowAnalyticsSettings: (Boolean) -> Unit,
+    analyticsView: AnalyticsView,
+    analyticsTestState: TestConnectionState,
+    onAnalyticsToggleEnabled: (Boolean) -> Unit,
+    onAnalyticsSaveDestination: (String, String) -> UrlVerdict,
+    onAnalyticsTestConnection: () -> Unit,
+    onAnalyticsKioskCodeChange: (String) -> Unit,
+    onAnalyticsPolicyUrlsChange: (String, String) -> Unit,
+    onAnalyticsClearCredentials: () -> Unit,
     onShowSetupStatus: (Boolean) -> Unit,
     setupStatusFromOffline: Boolean,
     onExitSetupStatus: () -> Unit,
@@ -1800,6 +2047,19 @@ fun AppUI(
                 onClearHistory = { donationHistory.clearAll() },
                 onBack = { onShowDonationHistory(false) }
             )
+            showAnalyticsSettings -> AnalyticsSettingsScreen(
+                view = analyticsView,
+                settings = settings,
+                strings = rememberStrings(),
+                testState = analyticsTestState,
+                onBack = { onShowAnalyticsSettings(false) },
+                onToggleEnabled = onAnalyticsToggleEnabled,
+                onSaveDestination = onAnalyticsSaveDestination,
+                onTestConnection = onAnalyticsTestConnection,
+                onKioskCodeChange = onAnalyticsKioskCodeChange,
+                onPolicyUrlsChange = onAnalyticsPolicyUrlsChange,
+                onClearCredentials = onAnalyticsClearCredentials
+            )
             showSetupStatus -> SetupStatusScreen(
                 isNetworkAvailable = isNetworkAvailable,
                 isBluetoothEnabled = isBluetoothEnabled,
@@ -1841,6 +2101,7 @@ fun AppUI(
                 onPinApp = onPinApp,
                 onShowSetupStatus = { onShowSetupStatus(true) },
                 onShowDonationHistory = { onShowDonationHistory(true) },
+                onShowAnalyticsSettings = { onShowAnalyticsSettings(true) },
                 onActivateScreensaver = onActivateScreensaver,
                 onTestModeChange = onTestModeChange,
                 onLogout = onLogout,

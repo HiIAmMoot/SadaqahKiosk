@@ -146,6 +146,16 @@ class TelemetryManagerTest {
         assertTrue("a failure must push the next attempt out", status.backoffUntilMs > now)
     }
 
+    /** FIX 1: a stale queue depth is not evidence an error is history — the
+     *  presenter instead trusts lastErrorAtMs against lastSuccessMs, so every
+     *  site that writes a non-null lastError must also stamp when. */
+    @Test
+    fun aRetryableFailureRecordsWhenTheErrorWasWritten() {
+        val store = InMemoryStatusStore()
+        manager(outboxWith("a"), ConstantPoster(HttpResponse(503, "down")), statusStore = store).flush()
+        assertEquals(now, store.read().lastErrorAtMs)
+    }
+
     @Test
     fun aSuccessResetsTheFailureCount() {
         val store = InMemoryStatusStore()
@@ -256,7 +266,12 @@ class TelemetryManagerTest {
     }
 
     /** Even bypassing NOT_ACTIVATED, every other gate check still blocks
-     *  activation — a disabled kiosk must not smoke-test anything. */
+     *  activation — a disabled kiosk must not smoke-test anything.
+     *
+     *  FIX (I2): the gate is now evaluated before any mutation, so a blocked
+     *  press changes nothing at all — this used to assert the opposite
+     *  (the row survived because it was appended before the gate ran), which
+     *  was precisely the cost I2 closes: an unsendable row queued forever. */
     @Test
     fun activateIsStillBlockedByEveryOtherGateCheck() {
         val outbox = TelemetryOutbox(temp.newFile())
@@ -264,8 +279,7 @@ class TelemetryManagerTest {
         val result = manager(outbox, poster, enabled = false, activated = false).activate()
         assertEquals(ActivationResult.Blocked(FlushBlock.DISABLED), result)
         assertEquals(0, poster.callCount)
-        // The row is appended before the gate is asked, so it must survive.
-        assertEquals(1, outbox.size())
+        assertEquals("a blocked press must not queue anything", 0, outbox.size())
     }
 
     @Test
@@ -332,6 +346,7 @@ class TelemetryManagerTest {
             "java.lang.IllegalStateException",
             store.read().lastError
         )
+        assertEquals("FIX 1: the throw path must also stamp when it happened", now, store.read().lastErrorAtMs)
     }
 
     @Test
@@ -480,6 +495,45 @@ class TelemetryManagerTest {
         )
     }
 
+    // ── FIX (I4): a status write concurrent with an in-flight flush must survive ─
+
+    /**
+     * Simulates TelemetryOutbox's onDropped callback landing on another thread
+     * while this flush's network call is still in progress — exactly the
+     * window flush() leaves open between reading `before` and writing the
+     * outcome. The increment happens inside the `upload` seam because that is
+     * the one point in this test that runs "during" the network call. Before
+     * this fix, flush()'s outcome write copied from the stale `before` it read
+     * at the top of the method, silently discarding whatever landed during the
+     * upload; a `before.copy(...)` inside the new update{} transform would
+     * reintroduce exactly that bug.
+     */
+    @Test
+    fun aDropRecordedWhileAFlushIsInFlightSurvivesTheFlushsOwnStatusWrite() {
+        val store = InMemoryStatusStore()
+        val outbox = outboxWith("a")
+        val result = manager(
+            outbox,
+            ConstantPoster(HttpResponse(201, null)),
+            statusStore = store,
+            upload = { _, batch ->
+                store.update { it.copy(droppedCount = it.droppedCount + 3) }
+                UploadOutcome(
+                    uploadedIds = batch.map { it.id }.toSet(),
+                    rejectedIds = emptySet(),
+                    retryableFailure = false,
+                    lastError = null
+                )
+            }
+        ).flush()
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals(
+            "a drop recorded mid-flush must not be clobbered by flush's own outcome write",
+            3,
+            store.read().droppedCount
+        )
+    }
+
     // ── FIX 4: a fresh destination must be testable immediately ────────────
 
     /**
@@ -505,6 +559,57 @@ class TelemetryManagerTest {
             "a freshly-saved destination must not be refused by a stale backoff",
             ActivationResult.Succeeded,
             result
+        )
+    }
+
+    /**
+     * FIX 1: activate()'s pre-flush reset clears lastError to null, and a clean
+     * success afterwards also clears it to null — neither writes a non-null
+     * lastError, so neither may touch lastErrorAtMs. If either did, a stale
+     * timestamp would masquerade as fresh, or a genuinely fresh one could be
+     * wiped out from under an error still worth showing.
+     */
+    // ── FIX (I2): a blocked press must change nothing ───────────────────────
+
+    /**
+     * Before this fix, activate() reset lastError/consecutiveFailures/
+     * backoffUntilMs and appended the activation row *before* the gate was
+     * ever consulted, so an offline press destroyed the diagnostic the
+     * operator opened the screen to read and left a row queued forever that
+     * nothing would send until the next press. The gate must now be evaluated
+     * first, so a press that cannot proceed leaves the outbox and the status
+     * store untouched.
+     */
+    @Test
+    fun aTestConnectionPressWithNoNetworkLeavesTheQueueAndTheDiagnosticUntouched() {
+        online = false
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(lastError = "HTTP 000 old destination unreachable", consecutiveFailures = 3))
+        val outbox = TelemetryOutbox(temp.newFile())
+        val poster = ConstantPoster(HttpResponse(201, null))
+        val result = manager(outbox, poster, statusStore = store).activate()
+        assertEquals(ActivationResult.Blocked(FlushBlock.NO_NETWORK), result)
+        assertEquals("no network must not queue an unsendable row", 0, outbox.size())
+        assertEquals(
+            "the diagnostic the operator came to read must survive a blocked press",
+            "HTTP 000 old destination unreachable",
+            store.read().lastError
+        )
+        assertEquals(3, store.read().consecutiveFailures)
+        assertEquals(0, poster.callCount)
+    }
+
+    @Test
+    fun activateDoesNotDisturbTheStoredErrorTimestampSinceItOnlyClearsTheErrorItself() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(lastError = "HTTP 000 old destination unreachable", lastErrorAtMs = 555L))
+        val outbox = TelemetryOutbox(temp.newFile())
+        val poster = ConstantPoster(HttpResponse(201, null))
+        manager(outbox, poster, statusStore = store).activate()
+        assertEquals(
+            "neither the pre-flush reset nor a clean success may touch lastErrorAtMs",
+            555L,
+            store.read().lastErrorAtMs
         )
     }
 }
