@@ -21,9 +21,15 @@ data class TelemetryStatus(
     val lastErrorAtMs: Long = 0L,
     val consecutiveFailures: Int = 0,
     val backoffUntilMs: Long = 0L,
-    /** Rows the outbox's count/age caps discarded outright — never sent, never
-     *  recoverable. Distinct from a retryable failure: this is loss, not a
-     *  pending retry.
+    /** Rows lost locally and unrecoverable — never sent, never recoverable.
+     *  Two sources, deliberately one number: the outbox's count/age caps
+     *  discarding rows outright, and a donation that could not be appended at
+     *  all (a full disk, a failed mkdirs, an amount beyond Int cents). For
+     *  anyone who eventually reads the screen these are the same fact — N
+     *  events never made it — and splitting them would buy a second field and
+     *  a second string in eight languages to say it twice.
+     *
+     *  Distinct from a retryable failure: this is loss, not a pending retry.
      *
      *  Displayed but never acknowledged: a kiosk can run unattended for weeks,
      *  so nothing here waits on a human. It is reset only by

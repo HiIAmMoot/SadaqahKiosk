@@ -147,11 +147,7 @@ class MainActivity : FragmentActivity() {
                 TelemetryRuntime(
                     enabled = settings.analyticsEnabled,
                     activated = settings.analyticsActivatedAtMs != 0L,
-                    identity = EventIdentity(
-                        code = settings.kioskCode,
-                        installId = settings.installId,
-                        appVersion = BuildConfig.VERSION_NAME
-                    ),
+                    identity = EventIdentity.from(settings, BuildConfig.VERSION_NAME),
                     privacyPolicyUrl = settings.analyticsPrivacyPolicyUrl,
                     termsUrl = settings.analyticsTermsUrl
                 )
@@ -622,6 +618,13 @@ class MainActivity : FragmentActivity() {
                     if (settings.donationTrackingEnabled) {
                         lastPaymentAmount?.let { donationHistory.append(it) }
                     }
+                    // A sibling of the line above, never nested inside it:
+                    // donationTrackingEnabled governs the on-panel history
+                    // screen and nothing else. Tying telemetry to it would mean
+                    // an operator who hides the local history for privacy at the
+                    // panel silently stops all remote reporting too. Telemetry
+                    // has its own master switch, checked inside eventFor.
+                    lastPaymentAmount?.let { appendDonationTelemetry(it) }
                     lastPaymentAmount = null
                     showThankYouScreen()
                 } else {
@@ -1757,6 +1760,77 @@ class MainActivity : FragmentActivity() {
     fun onAnalyticsClearCredentials() {
         TelemetryTeardown.clearEverything(telemetryCredentials, telemetryOutbox, telemetryStatusStore)
         refreshAnalyticsSnapshot()
+    }
+
+    /**
+     * Queues one completed donation for telemetry, off the main thread, and
+     * never fails the donation flow.
+     *
+     * Every decision lives in [DonationEvents.eventFor] — including whether to
+     * report at all — because this method cannot be unit-tested and a decision
+     * here is a decision nothing checks.
+     *
+     * `settings` is read on the main thread and captured before the launch:
+     * it is Compose state, and reading it from a background dispatcher would be
+     * a cross-thread read of a `mutableStateOf`.
+     *
+     * Deliberately NOT on `telemetryFlushDispatcher`: [TelemetryOutbox] is
+     * synchronized per file path so a concurrent append is already safe, and a
+     * flush holds that lock only across `peek` and `remove`, never across the
+     * upload. Sharing the flush thread would park this row behind an upload
+     * that can run for minutes in the per-row fallback, for no benefit. A row
+     * appended between a flush's `peek` and `remove` is harmless — `remove`
+     * deletes only the ids the uploader named.
+     */
+    private fun appendDonationTelemetry(amount: BigDecimal) {
+        val settingsNow = settings
+        val occurredAtMs = System.currentTimeMillis()
+        lifecycleScope.launch(Dispatchers.IO) {
+            when (val result = DonationEvents.eventFor(
+                settingsNow, BuildConfig.VERSION_NAME, amount, occurredAtMs
+            )) {
+                // The normal state of most kiosks. Nothing is written to disk.
+                DonationEventResult.NotEnabled -> Unit
+
+                DonationEventResult.AmountUnrepresentable -> {
+                    // The scale, never the value: a log line is not a redacted
+                    // sink, and the amount is donor-adjacent data.
+                    Log.e("Telemetry", "donation not representable in cents (scale=${amount.scale()})")
+                    recordTelemetryLoss()
+                }
+
+                is DonationEventResult.Report -> try {
+                    telemetryOutbox.append(
+                        result.event.id,
+                        result.event.table,
+                        result.event.payloadJson()
+                    )
+                } catch (t: Throwable) {
+                    // TelemetryOutbox.append documents that it throws on a full
+                    // disk or a failed mkdirs, that the caller owns that
+                    // decision, and that the caller sits on the donation path.
+                    // This is that caller, so the only correct decision is to
+                    // lose the row quietly and record that it happened.
+                    Log.e("Telemetry", "outbox append failed: ${t::class.java.name}")
+                    recordTelemetryLoss()
+                }
+            }
+        }
+    }
+
+    /**
+     * One event lost locally and unrecoverably. Folded into
+     * [TelemetryStatus.droppedCount] rather than a field of its own: for anyone
+     * who eventually reads the screen it is the same fact as an eviction, and
+     * this kiosk can run unattended for weeks, so nothing here waits on a human
+     * to see or clear it.
+     *
+     * Through `update {}` rather than a read-then-write, because this runs on a
+     * background thread and races the flush's own status writes, which straddle
+     * a network call that can run for minutes (finding I4, Ruling BA).
+     */
+    private fun recordTelemetryLoss() {
+        telemetryStatusStore.update { it.copy(droppedCount = it.droppedCount + 1) }
     }
 
     // ── Update flow entry points (called from UI) ──────────────────────────────
