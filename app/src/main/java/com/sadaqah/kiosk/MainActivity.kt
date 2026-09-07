@@ -62,14 +62,22 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.math.BigDecimal
+import java.util.concurrent.Executors
 
 private const val INACTIVITY_BOUNCE_MS = 5L * 60 * 1000 // 5 min on settings / custom-amount → back to donation
+
+/** How often a flush is retried while the screensaver stays up. The screensaver
+ *  coming up already flushes once; this exists because that attempt can be
+ *  refused by a backoff of up to 60 minutes and would then never be retried
+ *  until 02:00. */
+private const val TELEMETRY_FLUSH_TICK_MS = 30L * 60 * 1000 // 30 min
 
 /** How long the Bluetooth radio may stay off before the watchdog switches it back on.
  *  The kiosk cannot take donations without it, so recovery is worth more than patience.
@@ -156,6 +164,28 @@ class MainActivity : FragmentActivity() {
             networkAvailable = { isOnlineNow() }
         )
     }
+
+    /**
+     * Serialises every flush against every other flush and against `activate()`.
+     *
+     * [TelemetryManager] documents itself as unsafe for concurrent callers: it
+     * keeps its last upload outcome and last attempted ids in plain fields, and
+     * `activate()` reads them to tell a row it never sent apart from one it sent
+     * and could not confirm. Before this phase only the Test button called into
+     * it; now a timer does too, and two callers on `Dispatchers.IO` could
+     * interleave and let one read the other's outcome. One thread makes that
+     * impossible by construction rather than by a lock no test can reach.
+     *
+     * Held through a `lazy` rather than `by lazy` so [onDestroy] can close it
+     * only if something actually used it — a kiosk that never configures
+     * analytics never spawns the thread.
+     */
+    private val telemetryFlushDispatcherLazy = lazy {
+        Executors.newSingleThreadExecutor { r -> Thread(r, "telemetry-flush") }
+            .asCoroutineDispatcher()
+    }
+    private val telemetryFlushDispatcher get() = telemetryFlushDispatcherLazy.value
+    private var telemetryFlushTickerJob: Job? = null
 
     var settings: Settings by mutableStateOf(Settings())
     var isLoggedIn by mutableStateOf(false)
@@ -358,6 +388,7 @@ class MainActivity : FragmentActivity() {
         hideSystemBars()
 
         startConnectivityPolling()
+        startTelemetryFlushTicker()
         if (!isNetworkAvailable) {
             startWifiCyclingWhileOffline()
             startSavedNetworkFallback()
@@ -405,6 +436,11 @@ class MainActivity : FragmentActivity() {
                             isScreensaverActive = true
                             Log.d("Screensaver", "Activated after idle")
                             disconnectCardReader()
+                            // The app's own definition of "nobody is using this",
+                            // and it has already released the card reader on the
+                            // line above — so a flush here cannot contend for the
+                            // network with a live transaction.
+                            flushTelemetry("screensaver")
                         }
 
                         // Inactivity bounce: after 5 min of no interaction on either
@@ -830,6 +866,12 @@ class MainActivity : FragmentActivity() {
         isScreensaverActive = true
         finishActivity(2)
         disconnectCardReader()
+        // Same reasoning as the idle path: the reader is released, so this is a
+        // safe moment. Not funnelled through a shared helper with that site —
+        // one lives inside a composition-scoped LaunchedEffect and this is an
+        // activity method, and a wrapper across that boundary costs more than
+        // the duplicated call.
+        flushTelemetry("screensaver")
     }
 
     fun disconnectCardReader() {
@@ -973,6 +1015,11 @@ class MainActivity : FragmentActivity() {
             } catch (e: Exception) {
                 Log.e("UpdateManager", "Daily maintenance threw: ${e.message}")
             }
+            // The floor. A kiosk busy enough never to idle for
+            // screensaverIdleTimeoutSec during opening hours reports here and
+            // nowhere else, so this must sit outside the try above — an update
+            // maintenance failure must not also cost the nightly flush.
+            flushTelemetry("nightly")
         }
     }
 
@@ -1408,6 +1455,12 @@ class MainActivity : FragmentActivity() {
                 }
             }
         }
+        // Outside the `when`, so every restore path flushes: exactly when a
+        // backlog can finally move. Edge-triggered — the connectivity poll calls
+        // this only on a genuine online/offline transition (`online !=
+        // isNetworkAvailable`), so it does not fire every second while online.
+        // The kiosk was offline a moment ago, so it was not mid-transaction.
+        flushTelemetry("network-restored")
     }
 
     // ── Auto-restart on unrecoverable conditions ─────────────────────────────
@@ -1461,6 +1514,10 @@ class MainActivity : FragmentActivity() {
         savedNetworkFallbackJob?.cancel()
         cardReaderPageTimeoutJob?.cancel()
         bluetoothWatchdogJob?.cancel()
+        telemetryFlushTickerJob?.cancel()
+        // Only if something actually flushed — otherwise this would spawn the
+        // thread purely in order to shut it down.
+        if (telemetryFlushDispatcherLazy.isInitialized()) telemetryFlushDispatcher.close()
         if (::updateManager.isInitialized) updateManager.dispose()
     }
 
@@ -1708,7 +1765,11 @@ class MainActivity : FragmentActivity() {
     fun onAnalyticsTestConnection() {
         analyticsTestState = TestConnectionState.Running
         lifecycleScope.launch {
-            val result = withContext(Dispatchers.IO) { telemetryManager.activate() }
+            // The flush dispatcher, not Dispatchers.IO: activate() reads the
+            // manager's last-outcome fields, and a scheduled flush running
+            // concurrently on a shared pool could overwrite them between this
+            // call's own flush and its read.
+            val result = withContext(telemetryFlushDispatcher) { telemetryManager.activate() }
             val strings = TranslationManager.currentStrings()
             analyticsTestState = when (result) {
                 is ActivationResult.Succeeded -> {
@@ -1850,6 +1911,57 @@ class MainActivity : FragmentActivity() {
      */
     private fun recordTelemetryLoss() {
         telemetryStatusStore.update { it.copy(droppedCount = it.droppedCount + 1) }
+    }
+
+    /**
+     * Asks the manager to flush, off the main thread and serialised.
+     *
+     * Decides nothing. [TelemetryGate] owns whether a flush may happen — it
+     * refuses a disabled, unconfigured, unactivated, offline, empty-queued or
+     * backing-off kiosk — so the call sites only pick moments worth asking at.
+     * [reason] exists so the log says which moment.
+     */
+    private fun flushTelemetry(reason: String) {
+        lifecycleScope.launch {
+            try {
+                val block = withContext(telemetryFlushDispatcher) { telemetryManager.flush() }
+                // A FlushBlock, never an error string: lastError may carry a server
+                // response body, and it is redacted for the screen, not for logcat.
+                Log.d("Telemetry", "flush($reason) -> $block")
+                // Keeps an open analytics screen current after a flush the operator
+                // did not trigger. Safe when the screen is closed: this function's
+                // own guard returns early rather than decrypting the Keystore for a
+                // screen nobody is looking at.
+                refreshAnalyticsSnapshot()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                // flush() reads the outbox file (IOException) and first-touches the
+                // lazily-built telemetry stack, whose stores call getSharedPreferences.
+                // Nothing above has a caller left to handle that: an escape reaches
+                // the default handler and kills a kiosk that is, at 02:00, unattended.
+                // Only the class name — never lastError, never a response body.
+                Log.e("Telemetry", "flush($reason) threw: ${t::class.java.name}")
+            }
+        }
+    }
+
+    /**
+     * Retries a flush every 30 minutes for as long as the screensaver is up.
+     *
+     * One always-running loop that reads the flag, rather than a job started and
+     * stopped alongside the screensaver: entering the screensaver already
+     * produces its own flush, so this loop's only job is the later retry, and a
+     * loop with no lifecycle coupling has no start/stop ordering to get wrong.
+     */
+    private fun startTelemetryFlushTicker() {
+        telemetryFlushTickerJob?.cancel()
+        telemetryFlushTickerJob = lifecycleScope.launch {
+            while (true) {
+                delay(TELEMETRY_FLUSH_TICK_MS)
+                if (isScreensaverActive) flushTelemetry("idle-tick")
+            }
+        }
     }
 
     // ── Update flow entry points (called from UI) ──────────────────────────────
