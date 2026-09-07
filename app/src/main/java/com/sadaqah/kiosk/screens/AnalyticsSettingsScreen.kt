@@ -91,8 +91,7 @@ fun AnalyticsSettingsScreen(
     onTestConnection: () -> Unit,
     onKioskCodeChange: (String) -> Unit,
     onPolicyUrlsChange: (privacy: String, terms: String) -> Unit,
-    onClearCredentials: () -> Unit,
-    onAcknowledgeDropped: () -> Unit
+    onClearCredentials: () -> Unit
 ) {
     val border = Color(settings.buttonBorderColor)
     val button = Color(settings.buttonColor)
@@ -297,21 +296,6 @@ fun AnalyticsSettingsScreen(
                         AnalyticsStatusLine(strings.analyticsFailedAttempts, view.consecutiveFailures.toString(), border)
                         if (view.dropped > 0) {
                             AnalyticsStatusLine(strings.analyticsDropped, view.dropped.toString(), errorColor)
-                            // Lets an operator who has read and understood the loss
-                            // clear the count, so the next real drop is visible as
-                            // new rather than folded into an already-stale number.
-                            // Only zeroes droppedCount (onAnalyticsAcknowledgeDropped) —
-                            // never the outbox or the destination.
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                Button(
-                                    onClick = onAcknowledgeDropped,
-                                    colors = ButtonDefaults.buttonColors(containerColor = button),
-                                    shape = RoundedCornerShape(responsiveDp(8.dp)),
-                                    border = BorderStroke(responsiveDp(1.dp), border)
-                                ) {
-                                    Text(strings.analyticsAcknowledgeDropped, color = border, fontSize = responsiveSp(11.0))
-                                }
-                            }
                         }
                         if (view.backingOff) {
                             AnalyticsStatusLine(

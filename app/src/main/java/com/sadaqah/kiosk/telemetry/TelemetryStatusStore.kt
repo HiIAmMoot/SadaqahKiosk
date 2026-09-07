@@ -23,7 +23,12 @@ data class TelemetryStatus(
     val backoffUntilMs: Long = 0L,
     /** Rows the outbox's count/age caps discarded outright — never sent, never
      *  recoverable. Distinct from a retryable failure: this is loss, not a
-     *  pending retry. */
+     *  pending retry.
+     *
+     *  Displayed but never acknowledged: a kiosk can run unattended for weeks,
+     *  so nothing here waits on a human. It is reset only by
+     *  [com.sadaqah.kiosk.telemetry.TelemetryTeardown] when credentials are
+     *  cleared, which is the one moment the whole history stops applying. */
     val droppedCount: Int = 0
 )
 

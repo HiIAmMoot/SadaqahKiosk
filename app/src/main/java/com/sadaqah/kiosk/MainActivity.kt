@@ -508,7 +508,6 @@ class MainActivity : FragmentActivity() {
                         onSettingsChange(settings.copy(analyticsPrivacyPolicyUrl = privacy, analyticsTermsUrl = terms))
                     },
                     onAnalyticsClearCredentials = ::onAnalyticsClearCredentials,
-                    onAnalyticsAcknowledgeDropped = ::onAnalyticsAcknowledgeDropped,
                     setupStatusFromOffline = setupStatusFromOffline,
                     onExitSetupStatus = ::exitSetupStatus,
                     onUnpinApp = ::unpinApp,
@@ -1760,18 +1759,6 @@ class MainActivity : FragmentActivity() {
         refreshAnalyticsSnapshot()
     }
 
-    /** FIX (I5): the operator's acknowledgement of a shown drop count. Zeroes
-     *  [TelemetryStatus.droppedCount] and nothing else — not the outbox, not the
-     *  destination, not any other status field — via the `update` seam so it
-     *  can never clobber a droppedCount bump (or anything else) written
-     *  concurrently. A counter nobody can clear stops being read; this is what
-     *  lets the next real drop be seen as new rather than folded into an old,
-     *  already-understood number. */
-    fun onAnalyticsAcknowledgeDropped() {
-        telemetryStatusStore.update { it.copy(droppedCount = 0) }
-        refreshAnalyticsSnapshot()
-    }
-
     // ── Update flow entry points (called from UI) ──────────────────────────────
 
     fun onUpdateBadgeTapped() {
@@ -1990,7 +1977,6 @@ fun AppUI(
     onAnalyticsKioskCodeChange: (String) -> Unit,
     onAnalyticsPolicyUrlsChange: (String, String) -> Unit,
     onAnalyticsClearCredentials: () -> Unit,
-    onAnalyticsAcknowledgeDropped: () -> Unit,
     onShowSetupStatus: (Boolean) -> Unit,
     setupStatusFromOffline: Boolean,
     onExitSetupStatus: () -> Unit,
@@ -2072,8 +2058,7 @@ fun AppUI(
                 onTestConnection = onAnalyticsTestConnection,
                 onKioskCodeChange = onAnalyticsKioskCodeChange,
                 onPolicyUrlsChange = onAnalyticsPolicyUrlsChange,
-                onClearCredentials = onAnalyticsClearCredentials,
-                onAcknowledgeDropped = onAnalyticsAcknowledgeDropped
+                onClearCredentials = onAnalyticsClearCredentials
             )
             showSetupStatus -> SetupStatusScreen(
                 isNetworkAvailable = isNetworkAvailable,
