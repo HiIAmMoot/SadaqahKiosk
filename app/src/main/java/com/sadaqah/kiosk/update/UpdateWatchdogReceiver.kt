@@ -94,6 +94,10 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
         const val KEY_ROLLBACK_AT = "update_rollback_at_ms"
         const val KEY_ROLLBACK_FROM_VERSION = "update_rollback_from_version"
 
+        /** The versionName this kiosk last started under. Always advanced, even
+         *  when analytics is off — see DiagnosticEvents.updateInstalled. */
+        const val KEY_REPORTED_VERSION = "update_reported_version"
+
         fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
         /** Called by MainActivity.onCreate on every startup. */
