@@ -153,6 +153,10 @@ class KioskCrashHandlerTest {
         )
         handler.uncaughtException(Thread.currentThread(), IllegalStateException("boom"))
         assertEquals("the re-entrant call must not record a second row", 1, outbox(file).size())
-        assertTrue("chaining is never suppressed", previous.calls >= 1)
+        assertEquals(
+            "chaining is never suppressed: the re-entrant call's finally chains, and so does the outer one",
+            2,
+            previous.calls
+        )
     }
 }
