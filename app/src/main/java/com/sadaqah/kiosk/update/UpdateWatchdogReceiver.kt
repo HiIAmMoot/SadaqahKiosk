@@ -8,6 +8,7 @@ import android.content.Intent
 import android.os.Build
 import android.util.Log
 import androidx.core.content.edit
+import com.sadaqah.kiosk.BuildConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -49,6 +50,23 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
         }
         Log.w("UpdateWatchdog", "Rolling back to ${backupApk.absolutePath}")
 
+        // Before the install, so a process that dies mid-install still leaves
+        // the fact behind — and commit() rather than apply(), because the very
+        // next thing that happens is an installer replacing this process, which
+        // an asynchronous write has no guarantee of beating.
+        //
+        // Wrapped because nothing else in onReceive is: a throw here would
+        // abort the receiver before goAsync() and the bad build would never be
+        // rolled back. Telemetry must never be the reason a rollback is lost.
+        try {
+            prefs(context).edit()
+                .putLong(KEY_ROLLBACK_AT, System.currentTimeMillis())
+                .putString(KEY_ROLLBACK_FROM_VERSION, BuildConfig.VERSION_NAME)
+                .commit()
+        } catch (t: Throwable) {
+            Log.e("UpdateWatchdog", "Could not record rollback marker: ${t::class.java.name}")
+        }
+
         // Receivers must return quickly. goAsync() lets us run the install
         // async, calling finish() once we're done so the system can release us.
         val pending = goAsync()
@@ -70,6 +88,11 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
         const val PREFS = "update_state"
         const val KEY_LAST_STARTUP_MS = "update_last_startup_ms"
         const val KEY_INSTALL_ATTEMPTED_AT = "update_install_attempted_at"
+
+        /** Set when a rollback is about to be attempted, and read once at the
+         *  next startup. Not a queue: these do not survive being read. */
+        const val KEY_ROLLBACK_AT = "update_rollback_at_ms"
+        const val KEY_ROLLBACK_FROM_VERSION = "update_rollback_from_version"
 
         fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
