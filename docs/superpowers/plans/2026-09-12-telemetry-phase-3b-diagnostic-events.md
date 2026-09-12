@@ -988,7 +988,7 @@ rg -n '\.flush\(\)|\.activate\(\)' app/src/main
 rg -n 'RESTART_TRIGGERED|SUMUP_REINIT_FAILED|CARD_READER_CONNECT_FAILED|CARD_READER_PAGE_TIMEOUT|CHECKOUT_NO_READER|BLUETOOTH_WATCHDOG_FIRED|NETWORK_OUTAGE|UPDATE_INSTALL_FAILED' app/src/main
 ```
 
-Expected: **4** append hits (TelemetryManager's activation row, the donation path, this drain, the crash handler); **1** `flush()` caller and **1** `activate()` caller; and **zero** hits for the eight kinds deferred to 3c. Paste all three outputs in the task report.
+Expected: **4** append hits (TelemetryManager's activation row, the donation path, this drain, the crash handler); **1** real `flush()` caller and **1** real `activate()` caller (the flush/activate grep also matches a KDoc reference — discount comment lines); and **zero** constructions of the eight kinds deferred to 3c. Note the third grep must be `DiagnosticKind\.<NAME>`: the enum has declared all eleven kinds since phase 1, so grepping bare names always hits the enum body and can never read zero. Paste all three outputs in the task report.
 
 - [ ] **Step 6: Full suite, build, and commit**
 
