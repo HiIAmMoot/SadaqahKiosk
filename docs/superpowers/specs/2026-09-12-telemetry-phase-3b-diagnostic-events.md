@@ -227,7 +227,7 @@ Expected: **4** hits.
 | `MainActivity` startup drain (one site, looping) | `update_rollback`, `update_installed` |
 | `KioskCrashHandler` | `crash` |
 
-`flush()` callers stay at **1** (3a's dispatcher). `activate()` callers stay at **1** (the Test button). Nothing here flushes. A grep must still show **zero** callers for the eight kinds deferred to 3c.
+`flush()` callers stay at **1** (3a's dispatcher). `activate()` callers stay at **1** (the Test button). Nothing here flushes. A grep must still show **zero** *constructions* of the eight kinds deferred to 3c. Grep for `DiagnosticKind\.<NAME>`, not the bare name: `DiagnosticKind` has declared all eleven kinds since phase 1, so a bare-name grep always hits the enum body and can never read zero.
 
 ---
 
