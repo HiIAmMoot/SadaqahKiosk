@@ -273,6 +273,7 @@ class MainActivity : FragmentActivity() {
             val storedKey = prefs.getString("affiliate_key", null)
             if (!storedKey.isNullOrEmpty()) {
                 affiliateKey = storedKey
+                CrashContext.affiliateKey = affiliateKey
                 authenticate(affiliateKey)
             }
         }
@@ -311,6 +312,38 @@ class MainActivity : FragmentActivity() {
         if (bootstrap.changed) {
             settings = bootstrap.settings
             saveSettings(settings)
+        }
+
+        // The crash handler is process-global and outlives this Activity, which
+        // is recreated on any configuration change. It reads this holder rather
+        // than the Activity so it can never report against a dead instance.
+        // Kept as an explicit seed rather than relying on saveSettings alone: on
+        // a plain restart with no migration due, settings is loaded but never
+        // saved this onCreate, and the handler installed below must still have
+        // a holder to read.
+        CrashContext.settings = settings
+
+        // Install once: onCreate runs again on every Activity recreation, and a
+        // handler whose `previous` is the last one would build a chain that
+        // grows with each. Freshness comes from CrashContext, refreshed above.
+        val existingHandler = Thread.getDefaultUncaughtExceptionHandler()
+        if (existingHandler !is KioskCrashHandler) {
+            Thread.setDefaultUncaughtExceptionHandler(
+                KioskCrashHandler(
+                    previous = existingHandler,
+                    // Its own instance, constructed eagerly: sharing the lazy
+                    // telemetryOutbox would let a crash be what triggers its
+                    // initialisation, and lazy's SYNCHRONIZED mode can block if
+                    // another thread is mid-init. The outbox's lock is keyed on
+                    // the file, so two instances over one path are safe.
+                    outbox = TelemetryOutbox(
+                        File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl")
+                    ),
+                    settings = { CrashContext.settings },
+                    affiliateKey = { CrashContext.affiliateKey },
+                    appVersion = BuildConfig.VERSION_NAME
+                )
+            )
         }
 
         // Migration: GSON ignores Kotlin data-class defaults when deserialising, so
@@ -364,6 +397,8 @@ class MainActivity : FragmentActivity() {
         // (or any startup, really) reached running state. The watchdog rolls back
         // if this isn't bumped within 60s of an install attempt.
         UpdateWatchdogReceiver.recordHeartbeat(this)
+
+        drainUpdateDiagnostics()
 
         updateManager = UpdateManager(
             context = this,
@@ -482,7 +517,7 @@ class MainActivity : FragmentActivity() {
                     isPickingColor = isPickingColor,
                     onToggleSettings = { onToggleSettings() },
                     affiliateKey = affiliateKey,
-                    onAffiliateKeyChange = { affiliateKey = it },
+                    onAffiliateKeyChange = { affiliateKey = it; CrashContext.affiliateKey = affiliateKey },
                     onLogin = { },
                     authenticate = { authenticate(affiliateKey) },
                     connectCardReader = { connectCardReader() },
@@ -1591,6 +1626,9 @@ class MainActivity : FragmentActivity() {
         result.secrets[SettingsExportFile.KEY_AFFILIATE]?.takeIf { it.isNotBlank() }?.let { key ->
             affiliateKey = key
             prefs.edit { putString("affiliate_key", key) }
+            // A stale key here disarms the crash handler's exact-match scrub
+            // for exactly the key that was just imported.
+            CrashContext.affiliateKey = key
         }
         return result
     }
@@ -1674,7 +1712,7 @@ class MainActivity : FragmentActivity() {
     fun onSettingsChange(newSettings: Settings) {
         val previousLogoUri = settings.logoUri
         settings = newSettings
-        saveSettings(settings)
+        saveSettings(settings) // also refreshes CrashContext.settings
         if (::updateManager.isInitialized) updateManager.refreshSettings(settings)
         if (newSettings.logoUri != previousLogoUri) {
             LogoColorExtractor.refresh(this, newSettings.logoUri)
@@ -1964,6 +2002,63 @@ class MainActivity : FragmentActivity() {
     }
 
     /**
+     * Turns the two update markers into events, once, at startup.
+     *
+     * Wrapped for the same reason appendDonationTelemetry and flushTelemetry
+     * are: lifecycleScope installs no CoroutineExceptionHandler, so an escaping
+     * throwable reaches the default handler and kills the process. Here that is
+     * worse than a crash — if the death lands inside the 60s watchdog window
+     * and ahead of recordHeartbeat's asynchronous apply(), the watchdog reads a
+     * stale heartbeat from disk and rolls back a build that was fine.
+     */
+    private fun drainUpdateDiagnostics() {
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                try {
+                    val prefs = UpdateWatchdogReceiver.prefs(this@MainActivity)
+                    val rollbackAt = prefs.getLong(UpdateWatchdogReceiver.KEY_ROLLBACK_AT, 0L)
+                    val rollbackFrom =
+                        prefs.getString(UpdateWatchdogReceiver.KEY_ROLLBACK_FROM_VERSION, null)
+                    val storedVersion =
+                        prefs.getString(UpdateWatchdogReceiver.KEY_REPORTED_VERSION, "") ?: ""
+                    val now = System.currentTimeMillis()
+
+                    val events = mutableListOf<TelemetryEvent.Diagnostic>()
+                    // Rollback first, so a reader scanning by insertion order
+                    // sees cause before effect: a rollback is also a version
+                    // change, so both fire at the same startup.
+                    val rollback = DiagnosticEvents.updateRollback(
+                        CrashContext.settings, BuildConfig.VERSION_NAME, rollbackAt, rollbackFrom
+                    )
+                    (rollback as? DiagnosticEventResult.Report)?.let { events += it.event }
+                    val installed = DiagnosticEvents.updateInstalled(
+                        CrashContext.settings, BuildConfig.VERSION_NAME, storedVersion, now
+                    )
+                    (installed.result as? DiagnosticEventResult.Report)?.let { events += it.event }
+
+                    events.forEach { telemetryOutbox.append(it.id, it.table, it.payloadJson()) }
+
+                    // Cleared only once every append has returned. An append
+                    // that throws leaves the markers and the event is reported
+                    // next startup instead — duplicating a diagnostic is cheap,
+                    // losing the only record that a kiosk reverted is not.
+                    prefs.edit()
+                        .remove(UpdateWatchdogReceiver.KEY_ROLLBACK_AT)
+                        .remove(UpdateWatchdogReceiver.KEY_ROLLBACK_FROM_VERSION)
+                        .putString(
+                            UpdateWatchdogReceiver.KEY_REPORTED_VERSION, installed.versionToStore
+                        )
+                        .apply()
+                } catch (c: CancellationException) {
+                    throw c
+                } catch (t: Throwable) {
+                    Log.e("Telemetry", "update diagnostics drain failed: ${t::class.java.name}")
+                }
+            }
+        }
+    }
+
+    /**
      * Retries a flush every 30 minutes for as long as the screensaver is up.
      *
      * One always-running loop that reads the flag, rather than a job started and
@@ -2076,6 +2171,11 @@ class MainActivity : FragmentActivity() {
     fun saveSettings(settings: Settings) {
         val json = Gson().toJson(settings)
         prefs.edit() { putString("settings", json) }
+        // Seeded here rather than at each writer: the crash handler is
+        // process-global and reads this holder, and a writer that forgot to
+        // refresh it would let a kiosk with analytics off still report a crash.
+        // Every settings writer already calls this one function.
+        CrashContext.settings = settings
     }
 
     fun openColorPicker(label: String) {
