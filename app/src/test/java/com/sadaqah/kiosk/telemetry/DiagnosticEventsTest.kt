@@ -160,6 +160,34 @@ class DiagnosticEventsTest {
         assertFalse(detail.has("from_version"))
     }
 
+    /** No marker means no rollback happened — the caller must be able to tell
+     *  that apart from "analytics is off". */
+    @Test
+    fun aZeroRollbackMarkerReportsNothing() {
+        assertEquals(
+            DiagnosticEventResult.NothingToReport,
+            DiagnosticEvents.updateRollback(enabled, "1.3.6", 0L, "1.4.0")
+        )
+    }
+
+    @Test
+    fun aNegativeRollbackMarkerReportsNothing() {
+        assertEquals(
+            DiagnosticEventResult.NothingToReport,
+            DiagnosticEvents.updateRollback(enabled, "1.3.6", -1L, "1.4.0")
+        )
+    }
+
+    /** The analytics gate runs first: an off kiosk reports NotEnabled even with
+     *  a valid marker, never NothingToReport — those are different facts. */
+    @Test
+    fun analyticsOffWithAValidMarkerStillReportsNotEnabled() {
+        assertEquals(
+            DiagnosticEventResult.NotEnabled,
+            DiagnosticEvents.updateRollback(disabled, "1.3.6", atMs, "1.4.0")
+        )
+    }
+
     // ── update_installed ─────────────────────────────────────────────────────
 
     @Test

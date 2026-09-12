@@ -6,6 +6,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.io.IOException
 
 class KioskCrashHandlerTest {
 
@@ -79,8 +80,14 @@ class KioskCrashHandlerTest {
      */
     @Test
     fun chainsEvenWhenRecordingThrows() {
+        val box = unwritableOutbox()
+        // Proves the injection is actually live: if this stops throwing, the
+        // assertion below would pass identically whether recording failed or
+        // succeeded, and the test would silently stop guarding anything.
+        assertThrows(IOException::class.java) { box.append("id", "t", "{}") }
+
         val previous = RecordingHandler()
-        handler(previous, box = unwritableOutbox())
+        handler(previous, box = box)
             .uncaughtException(Thread.currentThread(), IllegalStateException("boom"))
         assertEquals("a failed append must not swallow the crash", 1, previous.calls)
     }

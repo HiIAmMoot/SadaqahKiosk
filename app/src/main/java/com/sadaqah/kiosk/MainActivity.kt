@@ -317,6 +317,10 @@ class MainActivity : FragmentActivity() {
         // The crash handler is process-global and outlives this Activity, which
         // is recreated on any configuration change. It reads this holder rather
         // than the Activity so it can never report against a dead instance.
+        // Kept as an explicit seed rather than relying on saveSettings alone: on
+        // a plain restart with no migration due, settings is loaded but never
+        // saved this onCreate, and the handler installed below must still have
+        // a holder to read.
         CrashContext.settings = settings
 
         // Install once: onCreate runs again on every Activity recreation, and a
@@ -1622,6 +1626,9 @@ class MainActivity : FragmentActivity() {
         result.secrets[SettingsExportFile.KEY_AFFILIATE]?.takeIf { it.isNotBlank() }?.let { key ->
             affiliateKey = key
             prefs.edit { putString("affiliate_key", key) }
+            // A stale key here disarms the crash handler's exact-match scrub
+            // for exactly the key that was just imported.
+            CrashContext.affiliateKey = key
         }
         return result
     }
@@ -1705,12 +1712,11 @@ class MainActivity : FragmentActivity() {
     fun onSettingsChange(newSettings: Settings) {
         val previousLogoUri = settings.logoUri
         settings = newSettings
-        saveSettings(settings)
+        saveSettings(settings) // also refreshes CrashContext.settings
         if (::updateManager.isInitialized) updateManager.refreshSettings(settings)
         if (newSettings.logoUri != previousLogoUri) {
             LogoColorExtractor.refresh(this, newSettings.logoUri)
         }
-        CrashContext.settings = newSettings
     }
 
     // ── Analytics settings entry points (called from UI) ───────────────────────
@@ -2021,12 +2027,10 @@ class MainActivity : FragmentActivity() {
                     // Rollback first, so a reader scanning by insertion order
                     // sees cause before effect: a rollback is also a version
                     // change, so both fire at the same startup.
-                    if (rollbackAt > 0L) {
-                        val result = DiagnosticEvents.updateRollback(
-                            CrashContext.settings, BuildConfig.VERSION_NAME, rollbackAt, rollbackFrom
-                        )
-                        if (result is DiagnosticEventResult.Report) events += result.event
-                    }
+                    val rollback = DiagnosticEvents.updateRollback(
+                        CrashContext.settings, BuildConfig.VERSION_NAME, rollbackAt, rollbackFrom
+                    )
+                    (rollback as? DiagnosticEventResult.Report)?.let { events += it.event }
                     val installed = DiagnosticEvents.updateInstalled(
                         CrashContext.settings, BuildConfig.VERSION_NAME, storedVersion, now
                     )
@@ -2045,6 +2049,8 @@ class MainActivity : FragmentActivity() {
                             UpdateWatchdogReceiver.KEY_REPORTED_VERSION, installed.versionToStore
                         )
                         .apply()
+                } catch (c: CancellationException) {
+                    throw c
                 } catch (t: Throwable) {
                     Log.e("Telemetry", "update diagnostics drain failed: ${t::class.java.name}")
                 }
@@ -2165,6 +2171,11 @@ class MainActivity : FragmentActivity() {
     fun saveSettings(settings: Settings) {
         val json = Gson().toJson(settings)
         prefs.edit() { putString("settings", json) }
+        // Seeded here rather than at each writer: the crash handler is
+        // process-global and reads this holder, and a writer that forgot to
+        // refresh it would let a kiosk with analytics off still report a crash.
+        // Every settings writer already calls this one function.
+        CrashContext.settings = settings
     }
 
     fun openColorPicker(label: String) {

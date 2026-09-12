@@ -68,6 +68,9 @@ object DiagnosticEvents {
         fromVersion: String?
     ): DiagnosticEventResult {
         val identity = identityOf(settings, appVersion) ?: return DiagnosticEventResult.NotEnabled
+        // No marker means no rollback happened, which is a fact distinct from
+        // "analytics is off" — the caller must be able to tell them apart.
+        if (rollbackAtMs <= 0L) return DiagnosticEventResult.NothingToReport
         val detail = JsonObject().apply {
             // "attempted" is the honest word: the install being waited on
             // replaces the process waiting for it, so no outcome is knowable
