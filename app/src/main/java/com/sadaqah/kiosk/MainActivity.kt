@@ -1073,10 +1073,14 @@ class MainActivity : FragmentActivity() {
             silentLoginWatchdogJob = lifecycleScope.launch {
                 delay(10_000L)
                 Log.w("SumUpLogin", "Silent login watchdog — forcing finish on stuck login")
-                // No isOutstanding check needed: cancelSilentLoginWatchdog() is the
-                // only canceller and it runs synchronously at the top of the code-1
-                // arm, so reaching here uncancelled already means that arm hasn't
-                // fired for this login yet — the login is outstanding by construction.
+                // No isOutstanding check needed: none of this job's three cancel
+                // sites can leave this line reachable with no login outstanding.
+                // cancelSilentLoginWatchdog() (code-1 arm, :674) only runs once the
+                // result has arrived, so the login is already settled by then; the
+                // re-arm just above (:1072) replaces this job with one that arms in
+                // its own right; onDestroy's cancel (:1717) stops the job before it
+                // ever reaches here. Reaching this line uncancelled therefore still
+                // means the login is outstanding.
                 syntheticCloseLogin = "login_watchdog"
                 finishActivity(1)
             }
