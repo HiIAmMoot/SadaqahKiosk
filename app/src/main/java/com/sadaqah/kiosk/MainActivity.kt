@@ -682,7 +682,9 @@ class MainActivity : FragmentActivity() {
                         result,
                         DiagnosticKind.SUMUP_REINIT_FAILED,
                         DiagnosticEvents.sumUpFailureDetail(
-                            errorCode, TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey), closedBy = null
+                            errorCode,
+                            TelemetryRedactor.truncate(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey)),
+                            closedBy = null
                         ),
                         restartManager.reinitFailures,
                         "reinit_failures"
@@ -723,7 +725,9 @@ class MainActivity : FragmentActivity() {
                         result,
                         DiagnosticKind.CARD_READER_CONNECT_FAILED,
                         DiagnosticEvents.sumUpFailureDetail(
-                            errorCode, TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey), closedBy = null
+                            errorCode,
+                            TelemetryRedactor.truncate(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey)),
+                            closedBy = null
                         ),
                         restartManager.cardReaderFailures,
                         "card_reader_failures"
@@ -1576,10 +1580,10 @@ class MainActivity : FragmentActivity() {
      * produced [result], so it reflects the failure just recorded rather than
      * the one before it.
      *
-     * The marker write is wrapped here, not inside [PendingDiagnosticStore],
-     * because this call sits immediately before [handleRestartResult] may
-     * trigger [hardRestart] — a thrown exception here must not be what stops
-     * the kiosk from restarting.
+     * The whole body is wrapped, not just the marker write: this call sits
+     * immediately before [handleRestartResult] may trigger [hardRestart], and
+     * a throw anywhere in here — the decision, the write, or the dispatch —
+     * must not be what stops the kiosk from restarting.
      */
     private fun reportRestart(
         result: RestartResult,
@@ -1588,28 +1592,34 @@ class MainActivity : FragmentActivity() {
         failureCount: Int,
         reason: String
     ) {
-        val now = System.currentTimeMillis()
-        val report = RestartReporting.restartReport(
-            result = result,
-            causing = PendingDiagnostic(java.util.UUID.randomUUID().toString(), kind, now, detail),
-            reason = reason,
-            failureCount = failureCount,
-            alreadyGaveUp = restartManager.gaveUpReported,
-            nowMs = now,
-            idFor = { java.util.UUID.randomUUID().toString() }
-        )
         try {
-            // Same prefs file drainUpdateDiagnostics() reads at startup — see
-            // PendingDiagnosticStore's own comment on why that file, not
-            // `prefs`.
-            PendingDiagnosticStore(UpdateWatchdogReceiver.prefs(this)).add(report.toMarker)
+            val now = System.currentTimeMillis()
+            val report = RestartReporting.restartReport(
+                result = result,
+                causing = PendingDiagnostic(java.util.UUID.randomUUID().toString(), kind, now, detail),
+                reason = reason,
+                failureCount = failureCount,
+                alreadyGaveUp = restartManager.gaveUpReported,
+                nowMs = now,
+                idFor = { java.util.UUID.randomUUID().toString() }
+            )
+            // Skipped, not just a no-op write: a commit() to disk on every
+            // failure — this runs every five minutes on a broken reader — is
+            // cost with nothing behind it once the throttle leaves toMarker
+            // empty.
+            if (report.toMarker.isNotEmpty()) {
+                // Same prefs file drainUpdateDiagnostics() reads at startup —
+                // see PendingDiagnosticStore's own comment on why that file,
+                // not `prefs`.
+                PendingDiagnosticStore(UpdateWatchdogReceiver.prefs(this)).add(report.toMarker)
+            }
+            report.toReportNow.forEach { entry ->
+                reportDiagnostic(entry.kind, { entry.detailJson }, entry.occurredAtMs)
+            }
+            if (report.gaveUpReported) restartManager.markGaveUpReported()
         } catch (t: Throwable) {
-            Log.e("AutoRestart", "pending diagnostic marker write failed: ${t::class.java.name}")
+            Log.e("AutoRestart", "reportRestart failed: ${t::class.java.name}")
         }
-        report.toReportNow.forEach { entry ->
-            reportDiagnostic(entry.kind, { entry.detailJson }, entry.occurredAtMs)
-        }
-        if (report.gaveUpReported) restartManager.markGaveUpReported()
     }
 
     fun handleRestartResult(result: RestartResult, reason: String) {
