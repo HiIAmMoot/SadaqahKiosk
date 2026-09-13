@@ -413,13 +413,32 @@ class DiagnosticEventsTest {
         val d = JsonParser.parseString(
             DiagnosticEvents.sumUpFailureDetail(code = -1, message = null, closedBy = "pairing_timeout")
         ).asJsonObject
+        // Asserted explicitly rather than left to the deref below: a missing
+        // key must fail this test on its own terms, not via a stray NPE.
+        assertTrue(d.has("closed_by"))
         assertEquals("pairing_timeout", d["closed_by"].asString)
         assertFalse(d.has("message"))
+    }
+
+    /** Blank collapses to absent exactly like null does — the field's presence,
+     *  not its nullness, is the discriminator a dashboard reads. */
+    @Test
+    fun aBlankOrWhitespaceClosedByIsAbsentJustLikeNull() {
+        val blank = JsonParser.parseString(
+            DiagnosticEvents.sumUpFailureDetail(code = 1, message = null, closedBy = "")
+        ).asJsonObject
+        assertFalse(blank.has("closed_by"))
+
+        val whitespace = JsonParser.parseString(
+            DiagnosticEvents.sumUpFailureDetail(code = 1, message = null, closedBy = "   ")
+        ).asJsonObject
+        assertFalse(whitespace.has("closed_by"))
     }
 
     @Test
     fun aPageTimeoutSaysWhatClosedIt() {
         val d = JsonParser.parseString(DiagnosticEvents.pageTimeoutDetail()).asJsonObject
+        assertTrue(d.has("closed_by"))
         assertEquals("timeout", d["closed_by"].asString)
     }
 
@@ -430,5 +449,15 @@ class DiagnosticEventsTest {
         ).asJsonObject
         assertEquals(3, d["code"].asInt)
         assertEquals("declined", d["message"].asString)
+        assertFalse(d.has("closed_by"))
+    }
+
+    @Test
+    fun checkoutNoReaderDetailOmitsTheMessageWhenThereIsNone() {
+        val d = JsonParser.parseString(
+            DiagnosticEvents.checkoutNoReaderDetail(code = 3, message = null)
+        ).asJsonObject
+        assertEquals(3, d["code"].asInt)
+        assertFalse(d.has("message"))
     }
 }
