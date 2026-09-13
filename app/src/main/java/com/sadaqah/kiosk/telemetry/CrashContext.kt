@@ -17,4 +17,10 @@ import com.sadaqah.kiosk.model.Settings
 object CrashContext {
     @Volatile var settings: Settings? = null
     @Volatile var affiliateKey: String? = null
+
+    // Same reasoning as settings/affiliateKey above: crashOutbox's onDropped
+    // must reach the live Activity's status store without the crash handler
+    // itself ever holding an Activity reference. onCreate repoints this on
+    // every recreation; a lambda that reads this field is non-capturing.
+    @Volatile var onOutboxDropped: ((Int) -> Unit)? = null
 }
