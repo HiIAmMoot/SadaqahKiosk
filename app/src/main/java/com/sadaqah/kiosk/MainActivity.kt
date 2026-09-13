@@ -701,11 +701,13 @@ class MainActivity : FragmentActivity() {
                     reportRestart(
                         result,
                         DiagnosticKind.SUMUP_REINIT_FAILED,
-                        DiagnosticEvents.sumUpFailureDetail(
-                            errorCode,
-                            TelemetryRedactor.truncate(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey)),
-                            closedBy = closedBy
-                        ),
+                        {
+                            DiagnosticEvents.sumUpFailureDetail(
+                                errorCode,
+                                DiagnosticEvents.truncateWrappedMessage(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey)),
+                                closedBy = closedBy
+                            )
+                        },
                         restartManager.reinitFailures,
                         "reinit_failures"
                     )
@@ -744,11 +746,13 @@ class MainActivity : FragmentActivity() {
                     reportRestart(
                         result,
                         DiagnosticKind.CARD_READER_CONNECT_FAILED,
-                        DiagnosticEvents.sumUpFailureDetail(
-                            errorCode,
-                            TelemetryRedactor.truncate(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey)),
-                            closedBy = closedBy
-                        ),
+                        {
+                            DiagnosticEvents.sumUpFailureDetail(
+                                errorCode,
+                                DiagnosticEvents.truncateWrappedMessage(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey)),
+                                closedBy = closedBy
+                            )
+                        },
                         restartManager.cardReaderFailures,
                         "card_reader_failures"
                     )
@@ -792,12 +796,12 @@ class MainActivity : FragmentActivity() {
                     // SDK directly, same call as the poll and the code-2 arm above.
                     val readerPresent = try {
                         ReaderModuleCoreState.Instance()?.mReaderCoreManager?.isCardReaderConnected() == true
-                    } catch (e: Exception) { false }
+                    } catch (t: Throwable) { false }
                     if (!readerPresent) {
                         reportDiagnostic(DiagnosticKind.CHECKOUT_NO_READER, detail = {
                             DiagnosticEvents.checkoutNoReaderDetail(
                                 errorCode,
-                                TelemetryRedactor.truncate(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey))
+                                DiagnosticEvents.truncateWrappedMessage(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey))
                             )
                         })
                     }
@@ -1064,32 +1068,37 @@ class MainActivity : FragmentActivity() {
             }
             return
         }
+        // The watchdog's own arming is deferred past the launch below (silent
+        // branch only cancels here) — arming before openLoginActivity could
+        // never return would leave a stale job if init or the launch threw.
         if (silent) {
-            // Reinit / scheduled refresh: keep pinning, rely on cached SumUp credentials
-            // for a transparent re-auth behind the maintenance screen. Whitelisted SumUp
-            // package can launch under lock task. Watchdog dismisses the activity if it
-            // stalls (e.g. cached creds expired and SumUp shows the real login form).
             silentLoginWatchdogJob?.cancel()
-            silentLoginWatchdogJob = lifecycleScope.launch {
-                delay(10_000L)
-                Log.w("SumUpLogin", "Silent login watchdog — forcing finish on stuck login")
-                // No isOutstanding check needed: none of this job's three cancel
-                // sites can leave this line reachable with no login outstanding.
-                // cancelSilentLoginWatchdog() (code-1 arm, :674) only runs once the
-                // result has arrived, so the login is already settled by then; the
-                // re-arm just above (:1072) replaces this job with one that arms in
-                // its own right; onDestroy's cancel (:1717) stops the job before it
-                // ever reaches here. Reaching this line uncancelled therefore still
-                // means the login is outstanding.
-                syntheticCloseLogin = "login_watchdog"
-                finishActivity(1)
-            }
         } else {
             startPairingUnpin()
         }
         SumUpState.init(this)
         val sumupLogin = SumUpLogin.builder(affiliateKey).build()
         SumUpAPI.openLoginActivity(this@MainActivity, sumupLogin, 1)
+        if (silent) {
+            // Reinit / scheduled refresh: keep pinning, rely on cached SumUp credentials
+            // for a transparent re-auth behind the maintenance screen. Whitelisted SumUp
+            // package can launch under lock task. Watchdog dismisses the activity if it
+            // stalls (e.g. cached creds expired and SumUp shows the real login form).
+            silentLoginWatchdogJob = lifecycleScope.launch {
+                delay(10_000L)
+                Log.w("SumUpLogin", "Silent login watchdog — forcing finish on stuck login")
+                // No isOutstanding check needed: none of this job's three cancel
+                // sites can leave this line reachable with no login outstanding.
+                // cancelSilentLoginWatchdog() (code-1 arm) only runs once the
+                // result has arrived, so the login is already settled by then; the
+                // re-arm above (this function, silent branch) replaces this job
+                // with one that arms in its own right; onDestroy's cancel stops
+                // the job before it ever reaches here. Reaching this line
+                // uncancelled therefore still means the login is outstanding.
+                syntheticCloseLogin = "login_watchdog"
+                finishActivity(1)
+            }
+        }
         Log.d("SumUpTest", "Login started (silent=$silent)...")
         scheduleDailyLoginReset(affiliateKey)
     }
@@ -1121,9 +1130,13 @@ class MainActivity : FragmentActivity() {
                 ?.map { it.address }?.toSet() ?: emptySet()
             devices
         } else emptySet()
-        isConnectingCardReader = true
         startPairingUnpin()
         SumUpAPI.openCardReaderPage(this@MainActivity, 2)
+        // Set after the launch, not before: arming first would latch this
+        // true for the life of the process if openCardReaderPage returned
+        // without starting an activity, mislabelling every later screensaver
+        // arm that reads it (:1005, :1772).
+        isConnectingCardReader = true
         scheduleCardReaderPoll(btManager, gattBefore)
         // 10-minute timeout: if the operator walks away from the SumUp pairing
         // dialog, force-close it. prepareCardReader() runs every 5 min and
@@ -1637,12 +1650,14 @@ class MainActivity : FragmentActivity() {
      * The whole body is wrapped, not just the marker write: this call sits
      * immediately before [handleRestartResult] may trigger [hardRestart], and
      * a throw anywhere in here — the decision, the write, or the dispatch —
-     * must not be what stops the kiosk from restarting.
+     * must not be what stops the kiosk from restarting. [detail] is a lambda
+     * for the same reason [reportDiagnostic]'s is: built eagerly, it would run
+     * in the caller's frame, before this guard exists.
      */
     private fun reportRestart(
         result: RestartResult,
         kind: DiagnosticKind,
-        detail: String,
+        detail: () -> String,
         failureCount: Int,
         reason: String
     ) {
@@ -1650,7 +1665,7 @@ class MainActivity : FragmentActivity() {
             val now = System.currentTimeMillis()
             val report = RestartReporting.restartReport(
                 result = result,
-                causing = PendingDiagnostic(java.util.UUID.randomUUID().toString(), kind, now, detail),
+                causing = PendingDiagnostic(java.util.UUID.randomUUID().toString(), kind, now, detail()),
                 reason = reason,
                 failureCount = failureCount,
                 alreadyGaveUp = restartManager.gaveUpReported,
@@ -2208,7 +2223,7 @@ class MainActivity : FragmentActivity() {
                     pending.forEach { entry ->
                         val result = DiagnosticEvents.forKind(
                             CrashContext.settings, BuildConfig.VERSION_NAME, entry.kind,
-                            entry.occurredAtMs, entry.detailJson, affiliateKey = null
+                            entry.occurredAtMs, entry.detailJson, affiliateKey = null, id = entry.id
                         )
                         (result as? DiagnosticEventResult.Report)?.let {
                             telemetryOutbox.append(it.event.id, it.event.table, it.event.payloadJson())

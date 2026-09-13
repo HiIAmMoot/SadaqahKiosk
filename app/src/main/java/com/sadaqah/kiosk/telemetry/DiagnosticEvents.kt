@@ -136,7 +136,11 @@ object DiagnosticEvents {
         kind: DiagnosticKind,
         occurredAtMs: Long,
         detailJson: String? = null,
-        affiliateKey: String? = null
+        affiliateKey: String? = null,
+        // Defaults to a fresh id for every other caller; a drained
+        // PendingDiagnostic passes its own id so a re-drain after a failed
+        // removeDrained() reports the same event id instead of a new one.
+        id: String = java.util.UUID.randomUUID().toString()
     ): DiagnosticEventResult {
         val identity = identityOf(settings, appVersion) ?: return DiagnosticEventResult.NotEnabled
         return DiagnosticEventResult.Report(
@@ -145,7 +149,8 @@ object DiagnosticEvents {
                 kind = kind,
                 occurredAtIso = Instant.ofEpochMilli(occurredAtMs).toString(),
                 detailJson = detailJson,
-                affiliateKey = affiliateKey
+                affiliateKey = affiliateKey,
+                id = id
             )
         )
     }
@@ -191,6 +196,20 @@ object DiagnosticEvents {
             addProperty("code", code)
             if (!message.isNullOrBlank()) addProperty("message", message)
         }.toString()
+
+    /** Reserved below [TelemetryRedactor.MAX_TEXT_BYTES] for the JSON wrapper
+     *  [sumUpFailureDetail] and [checkoutNoReaderDetail] add around a message —
+     *  braces, field names, quoting, and escaping — so a message truncated to
+     *  this budget can never push the assembled detail over the cap and lose
+     *  the whole row to [TelemetryEvent.Diagnostic]'s oversize drop. */
+    private const val WRAPPED_MESSAGE_RESERVE_BYTES = 512
+
+    /** Truncates a message that is about to be wrapped in [sumUpFailureDetail]
+     *  or [checkoutNoReaderDetail], not the assembled JSON — truncating after
+     *  wrapping can cut mid-document and lose the whole detail the same way
+     *  an oversized one already does. */
+    fun truncateWrappedMessage(message: String?): String? =
+        TelemetryRedactor.truncate(message, TelemetryRedactor.MAX_TEXT_BYTES - WRAPPED_MESSAGE_RESERVE_BYTES)
 
     private fun identityOf(settings: Settings?, appVersion: String): EventIdentity? {
         if (settings == null || !settings.analyticsEnabled) return null

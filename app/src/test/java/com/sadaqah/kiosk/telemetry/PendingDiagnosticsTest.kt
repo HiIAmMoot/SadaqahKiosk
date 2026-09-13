@@ -130,6 +130,12 @@ class PendingDiagnosticsTest {
      * a non-object element builds its exception message by serialising the
      * whole element, which recurses once per nesting level and overflows the
      * stack — an `Error` that a `catch (_: Exception)` does not stop.
+     *
+     * Pinned to Gson 2.11.0 (`gradle/libs.versions.toml`), which has no
+     * nesting limit. A later Gson with `setNestingLimit` (default 255) would
+     * reject this input during parsing, before either guard runs, and this
+     * test would pass vacuously — re-check this comment against that version's
+     * behaviour before trusting a green run to mean the guard still fires.
      */
     @Test
     fun decodeSurvivesADeeplyNestedElementWithoutOverflowingTheStack() {
@@ -147,6 +153,10 @@ class PendingDiagnosticsTest {
      * stack via plain method recursion — no exception-message serialisation
      * involved. This is the one path the widened catch alone accounts for,
      * once the element-level `as?` cast has ruled out the other.
+     *
+     * Pinned to Gson 2.11.0 (`gradle/libs.versions.toml`), which has no
+     * nesting limit — see the sibling test above for what a version with
+     * `setNestingLimit` would do to this one.
      */
     @Test
     fun decodeSurvivesADeeplyNestedKindValueWithoutOverflowingTheStack() {

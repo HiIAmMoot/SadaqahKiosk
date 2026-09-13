@@ -30,12 +30,12 @@ object TelemetryRedactor {
         return TOKEN_SHAPED.replace(withoutKey, REDACTED)
     }
 
-    fun truncate(text: String?): String? {
+    fun truncate(text: String?, maxBytes: Int = MAX_TEXT_BYTES): String? {
         if (text == null) return null
         val bytes = text.toByteArray(Charsets.UTF_8)
-        if (bytes.size <= MAX_TEXT_BYTES) return text
+        if (bytes.size <= maxBytes) return text
         // A cut can land mid-codepoint; the resulting replacement char is
         // harmless in a diagnostic and cheaper than scanning for a boundary.
-        return String(bytes, 0, MAX_TEXT_BYTES, Charsets.UTF_8) + "\n… truncated"
+        return String(bytes, 0, maxBytes, Charsets.UTF_8) + "\n… truncated"
     }
 }

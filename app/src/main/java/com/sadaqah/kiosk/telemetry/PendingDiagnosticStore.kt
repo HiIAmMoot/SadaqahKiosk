@@ -40,9 +40,13 @@ class PendingDiagnosticStore(private val prefs: SharedPreferences) {
         // and Task 5's restart write each construct their own instance over
         // the same prefs file, and `this` would give each its own monitor —
         // no mutual exclusion at all. One lock shared by every instance is
-        // what makes read-modify-write atomic across them. There is exactly
-        // one prefs file in play here, so one lock is enough — no need for
-        // TelemetryOutbox's path-keyed map.
+        // what makes read-modify-write atomic across them. The race this
+        // closes is in-process, not cross-process: reportRestart runs on the
+        // main thread while drainUpdateDiagnostics runs on Dispatchers.IO,
+        // and they overlap whenever a code-1 or code-2 failure lands during
+        // the first moments of startup. There is exactly one prefs file in
+        // play here, so one lock is enough — no need for TelemetryOutbox's
+        // path-keyed map.
         private val LOCK = Any()
     }
 }

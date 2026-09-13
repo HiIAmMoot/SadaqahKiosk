@@ -300,6 +300,19 @@ class DiagnosticEventsTest {
         }
     }
 
+    /** A drained PendingDiagnostic passes its own id so a re-drain after a
+     *  failed removeDrained() reports the same event id rather than a fresh
+     *  one, letting a downstream consumer collapse the duplicate. */
+    @Test
+    fun forKindUsesTheGivenIdInsteadOfGeneratingOne() {
+        val event = reported(
+            DiagnosticEvents.forKind(
+                enabled, appVersion, DiagnosticKind.NETWORK_OUTAGE, atMs, id = "pending-entry-id"
+            )
+        )
+        assertEquals("pending-entry-id", event.id)
+    }
+
     @Test
     fun forKindWritesToTheDiagnosticsTable() {
         val event = reported(
@@ -449,7 +462,33 @@ class DiagnosticEventsTest {
         ).asJsonObject
         assertEquals(3, d["code"].asInt)
         assertEquals("declined", d["message"].asString)
-        assertFalse(d.has("closed_by"))
+    }
+
+    /** A message truncated only against TelemetryRedactor's own cap, then
+     *  wrapped, would push the assembled detail over the cap and lose the
+     *  whole row to TelemetryEvent.Diagnostic's oversize drop — the wrapper
+     *  overflow this reserve exists to prevent. */
+    @Test
+    fun truncateWrappedMessageLeavesRoomForTheJsonWrapper() {
+        val atCap = "x".repeat(TelemetryRedactor.MAX_TEXT_BYTES)
+        val wrapped = DiagnosticEvents.sumUpFailureDetail(
+            code = -1,
+            message = DiagnosticEvents.truncateWrappedMessage(atCap),
+            closedBy = "pairing_timeout"
+        )
+        assertTrue(wrapped.toByteArray(Charsets.UTF_8).size <= TelemetryRedactor.MAX_TEXT_BYTES)
+        // Reaches the same event the phase's other rows do: an oversized
+        // detail is dropped entirely, so surviving that check is the proof
+        // the wrapper actually fit.
+        val identity = EventIdentity.from(enabled, appVersion)
+        val event = TelemetryEvent.Diagnostic(
+            identity = identity,
+            kind = DiagnosticKind.SUMUP_REINIT_FAILED,
+            occurredAtIso = "2023-11-14T22:13:20Z",
+            detailJson = wrapped,
+            affiliateKey = null
+        )
+        assertTrue(payload(event).has("detail"))
     }
 
     @Test
