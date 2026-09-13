@@ -12,6 +12,10 @@ class NetworkRecoveryManagerTest {
 
     private fun createManager() = NetworkRecoveryManager(settings, clock = { now })
 
+    // Alias matching the task-2 brief's helper name, kept distinct from
+    // createManager() so no existing (passing) test needed to change.
+    private fun manager() = createManager()
+
     @Before
     fun setUp() {
         now = 1_000_000L
@@ -141,5 +145,57 @@ class NetworkRecoveryManagerTest {
         val mgr = createManager()
         mgr.onNetworkLost(isLoggedIn = false, testMode = false)
         assertFalse(mgr.isTrackingOutage)
+    }
+
+    // ── lastOutageMs ─────────────────────────────────────────────────────────
+
+    @Test
+    fun theOutageDurationIsZeroBeforeAnyOutage() {
+        assertEquals(0L, manager().lastOutageMs)
+    }
+
+    @Test
+    fun theOutageDurationMatchesTheDowntimeThatTriggeredAutoReinit() {
+        val m = manager()
+        m.onNetworkLost(isLoggedIn = true, testMode = false)
+        now += 900_000L
+        assertEquals(NetworkRestoredAction.AutoReinit, m.onNetworkRestored(isLoggedIn = true))
+        assertEquals(
+            "the call site cannot re-derive this: the timestamp is cleared before the return",
+            900_000L, m.lastOutageMs
+        )
+    }
+
+    @Test
+    fun aShortOutageStillRecordsItsOwnDuration() {
+        val m = manager()
+        m.onNetworkLost(isLoggedIn = true, testMode = false)
+        now += 1_000L
+        assertEquals(NetworkRestoredAction.ResumeNormally, m.onNetworkRestored(isLoggedIn = true))
+        assertEquals(1_000L, m.lastOutageMs)
+    }
+
+    /** A short outage must not leave a long one's number standing, or a
+     *  diagnostic would report a downtime that never happened. */
+    @Test
+    fun aShortOutageDoesNotLeaveThePreviousLongOneStale() {
+        val m = manager()
+        m.onNetworkLost(isLoggedIn = true, testMode = false)
+        now += 900_000L
+        m.onNetworkRestored(isLoggedIn = true)
+        m.onNetworkLost(isLoggedIn = true, testMode = false)
+        now += 1_000L
+        m.onNetworkRestored(isLoggedIn = true)
+        assertEquals(1_000L, m.lastOutageMs)
+    }
+
+    @Test
+    fun anIgnoredRestorationLeavesTheDurationUntouched() {
+        val m = manager()
+        m.onNetworkLost(isLoggedIn = true, testMode = false)
+        now += 900_000L
+        m.onNetworkRestored(isLoggedIn = true)
+        m.onNetworkRestored(isLoggedIn = true) // nothing tracked — Ignore
+        assertEquals(900_000L, m.lastOutageMs)
     }
 }

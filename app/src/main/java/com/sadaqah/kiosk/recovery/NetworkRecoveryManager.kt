@@ -22,6 +22,13 @@ class NetworkRecoveryManager(
     /** Whether an outage is currently being tracked. */
     val isTrackingOutage: Boolean get() = networkLostTimestamp > 0L
 
+    /** Duration of the most recent outage this manager reported on, kept
+     *  because [onNetworkRestored] clears its own timestamp before returning
+     *  and the caller has no other way to recover the number. 0 until the first
+     *  restoration; an ignored restoration leaves it untouched. */
+    var lastOutageMs: Long = 0L
+        private set
+
     /** Called when the device truly loses internet. Returns the action the caller should take. */
     fun onNetworkLost(isLoggedIn: Boolean, testMode: Boolean): NetworkLostAction {
         if (!isLoggedIn || testMode) return NetworkLostAction.Ignore
@@ -39,6 +46,7 @@ class NetworkRecoveryManager(
         }
 
         val downtime = clock() - networkLostTimestamp
+        lastOutageMs = downtime
         networkLostTimestamp = 0L
 
         return if (downtime > settings.longDowntimeThresholdSec * 1000L) {
