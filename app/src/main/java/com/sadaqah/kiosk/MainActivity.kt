@@ -1515,7 +1515,10 @@ class MainActivity : FragmentActivity() {
                 reportDiagnostic(DiagnosticKind.NETWORK_OUTAGE, detail = {
                     DiagnosticEvents.networkOutageDetail(
                         downtimeMs = networkRecoveryManager.lastOutageMs,
-                        thresholdMs = settings.longDowntimeThresholdSec * 1000L
+                        // The manager's own threshold, not the Activity's live
+                        // Settings field: a provisioning import can change the
+                        // latter mid-session, after the comparison already ran.
+                        thresholdMs = networkRecoveryManager.longDowntimeThresholdMs
                     )
                 })
                 lifecycleScope.launch {
