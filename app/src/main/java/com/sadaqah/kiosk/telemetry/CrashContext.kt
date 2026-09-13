@@ -17,4 +17,13 @@ import com.sadaqah.kiosk.model.Settings
 object CrashContext {
     @Volatile var settings: Settings? = null
     @Volatile var affiliateKey: String? = null
+
+    // Holds a bound reference to MainActivity.onOutboxDropped, repointed on
+    // every onCreate. The handler retains one live Activity instance by design;
+    // the indirection exists so the reference cannot go stale across a
+    // configuration change. A lambda that reads this slot is non-capturing.
+    // Do not clear this in onDestroy: during overlapping recreation the new
+    // instance sets the slot before the old instance is destroyed, so a null
+    // would eliminate the live handler mid-chain.
+    @Volatile var onOutboxDropped: ((Int) -> Unit)? = null
 }

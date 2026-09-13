@@ -128,20 +128,31 @@ class MainActivity : FragmentActivity() {
     private val telemetryOutbox: TelemetryOutbox by lazy {
         TelemetryOutbox(
             File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"),
-            onDropped = { count ->
-                // Can fire from a background thread and from inside the outbox's
-                // own lock, so this stays a small, non-blocking update on the
-                // status store and never calls back into the outbox. Going
-                // through update() rather than a hand-written read-then-write
-                // also closes the race between two of these landing concurrently
-                // (Ruling BA) and the larger one against an in-flight flush
-                // (TelemetryManager.flush reads its own snapshot before a
-                // network call that can run for minutes) — both are now the
-                // same "someone else wrote first" case update() exists to handle.
-                telemetryStatusStore.update { it.copy(droppedCount = it.droppedCount + count) }
-            }
+            onDropped = ::onOutboxDropped
         )
     }
+    // Backs both the crash handler and the diagnostic helper below. A field
+    // assigned in onCreate, not a property initializer: filesDir is unusable
+    // before attachBaseContext runs, which is before field initializers do.
+    // Shares onOutboxDropped with telemetryOutbox above: 3c-i turned this
+    // instance from a dying-thread-only crash sink into a routine append path
+    // for every recovery diagnostic, so a compaction it triggers can now shed
+    // donation rows exactly as easily as the other instance can, and
+    // droppedCount is the operator's only visibility into that loss.
+    private lateinit var crashOutbox: TelemetryOutbox
+
+    /** Can fire from a background thread and from inside the outbox's own
+     *  lock, so this stays a small, non-blocking update on the status store
+     *  and never calls back into the outbox. Going through update() rather
+     *  than a hand-written read-then-write also closes the race between two
+     *  of these landing concurrently (Ruling BA) and the larger one against an
+     *  in-flight flush (TelemetryManager.flush reads its own snapshot before a
+     *  network call that can run for minutes) — both are now the same
+     *  "someone else wrote first" case update() exists to handle. */
+    private fun onOutboxDropped(count: Int) {
+        telemetryStatusStore.update { it.copy(droppedCount = it.droppedCount + count) }
+    }
+
     private val telemetryCredentials: TelemetryCredentials by lazy {
         TelemetryCredentials(KeystoreSecretStore(this))
     }
@@ -326,19 +337,40 @@ class MainActivity : FragmentActivity() {
         // Install once: onCreate runs again on every Activity recreation, and a
         // handler whose `previous` is the last one would build a chain that
         // grows with each. Freshness comes from CrashContext, refreshed above.
+        // Assigned unconditionally, ahead of the handler-install check below:
+        // this Activity instance is recreated on every configuration change,
+        // and a diagnostic reported from the new instance needs an outbox even
+        // on a recreation that finds a handler already installed and skips
+        // that block.
+        // Its own instance, constructed eagerly: sharing the lazy telemetryOutbox
+        // would let a crash — or a diagnostic — be what triggers its
+        // initialisation, and lazy's SYNCHRONIZED mode can block if another
+        // thread is mid-init. The outbox's lock is keyed on the file, so two
+        // instances over one path are safe.
+        //
+        // The onDropped lambda below reads only CrashContext, making it
+        // non-capturing. But the slot assigned here holds a bound reference to
+        // this Activity's method, retaining one instance by design. Repointing
+        // on every recreation prevents the reference from going stale across
+        // configuration changes — a problem CrashContext.kt documents in detail.
+        // The touch this closure makes when it fires — telemetryStatusStore's
+        // `by lazy` and a possible first-load getSharedPreferences — runs from
+        // inside the outbox's own monitor, on whatever thread dropped the
+        // event, including a dying one; bounded by compactSlack (only past 100
+        // discards) and by KioskCrashHandler's own catch(Throwable), so it can
+        // delay the chain but never break it.
+        CrashContext.onOutboxDropped = ::onOutboxDropped
+        crashOutbox = TelemetryOutbox(
+            File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"),
+            onDropped = { CrashContext.onOutboxDropped?.invoke(it) }
+        )
+
         val existingHandler = Thread.getDefaultUncaughtExceptionHandler()
         if (existingHandler !is KioskCrashHandler) {
             Thread.setDefaultUncaughtExceptionHandler(
                 KioskCrashHandler(
                     previous = existingHandler,
-                    // Its own instance, constructed eagerly: sharing the lazy
-                    // telemetryOutbox would let a crash be what triggers its
-                    // initialisation, and lazy's SYNCHRONIZED mode can block if
-                    // another thread is mid-init. The outbox's lock is keyed on
-                    // the file, so two instances over one path are safe.
-                    outbox = TelemetryOutbox(
-                        File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl")
-                    ),
+                    outbox = crashOutbox,
                     settings = { CrashContext.settings },
                     affiliateKey = { CrashContext.affiliateKey },
                     appVersion = BuildConfig.VERSION_NAME
@@ -886,6 +918,15 @@ class MainActivity : FragmentActivity() {
                 if (action == BluetoothRecoveryAction.ReEnable) {
                     Log.w("BluetoothWatchdog", "Bluetooth off too long — re-enabling")
                     setBluetoothEnabledHeadless(true)
+                    // Only the first re-enable of an outage. The manager counts
+                    // them; a radio that stays dead must not fill the queue.
+                    if (bluetoothRecoveryManager.reEnablesThisOutage == 1) {
+                        reportDiagnostic(DiagnosticKind.BLUETOOTH_WATCHDOG_FIRED, detail = {
+                            DiagnosticEvents.bluetoothWatchdogDetail(
+                                bluetoothRecoveryManager.lastOffMs
+                            )
+                        })
+                    }
                 }
             }
         }
@@ -1484,6 +1525,15 @@ class MainActivity : FragmentActivity() {
             }
             NetworkRestoredAction.AutoReinit -> {
                 Log.d("NetworkRecovery", "Long downtime — auto-reinitializing")
+                reportDiagnostic(DiagnosticKind.NETWORK_OUTAGE, detail = {
+                    DiagnosticEvents.networkOutageDetail(
+                        downtimeMs = networkRecoveryManager.lastOutageMs,
+                        // The manager's own threshold, not the Activity's live
+                        // Settings field: a provisioning import can change the
+                        // latter mid-session, after the comparison already ran.
+                        thresholdMs = networkRecoveryManager.longDowntimeThresholdMs
+                    )
+                })
                 lifecycleScope.launch {
                     delay(2000L) // Brief pause for network to stabilise
                     performReinit()
@@ -2059,6 +2109,45 @@ class MainActivity : FragmentActivity() {
     }
 
     /**
+     * Records a diagnostic and returns. Never throws, whatever happens inside —
+     * every caller is a recovery path, and a diagnostic that breaks the recovery
+     * it reports is worse than no diagnostic.
+     *
+     * [detail] is a lambda rather than a value on purpose: an eager argument
+     * would be built *before* this guard is entered, and two callers sit inside
+     * while(true) loops on lifecycleScope, which installs no
+     * CoroutineExceptionHandler — an escape there kills the loop and the process.
+     */
+    private fun reportDiagnostic(
+        kind: DiagnosticKind,
+        detail: (() -> String?)? = null,
+        occurredAtMs: Long = System.currentTimeMillis()
+    ) {
+        lifecycleScope.launch {
+            withContext(Dispatchers.IO) {
+                DiagnosticReporter.record(
+                    settings = { CrashContext.settings },
+                    appVersion = BuildConfig.VERSION_NAME,
+                    kind = kind,
+                    occurredAtMs = occurredAtMs,
+                    detail = detail,
+                    affiliateKey = { CrashContext.affiliateKey },
+                    append = { event ->
+                        // 3b's eagerly-constructed instance, not the `by lazy`
+                        // field: lazy's SYNCHRONIZED mode can block if another
+                        // thread is mid-init, and a diagnostic is not worth a
+                        // stall on a recovery path.
+                        crashOutbox.append(event.id, event.table, event.payloadJson())
+                    },
+                    onError = { t ->
+                        Log.e("Telemetry", "diagnostic ${kind.wire} not recorded: ${t::class.java.name}")
+                    }
+                )
+            }
+        }
+    }
+
+    /**
      * Retries a flush every 30 minutes for as long as the screensaver is up.
      *
      * One always-running loop that reads the flag, rather than a job started and
@@ -2146,6 +2235,13 @@ class MainActivity : FragmentActivity() {
 
     /** Translates [UpdateNotification] into a localised Toast on the main thread. */
     fun showUpdateNotification(n: com.sadaqah.kiosk.update.UpdateNotification) {
+        // Ahead of the toast, and outside runOnUiThread: this is a record, not
+        // something the operator is waiting on.
+        if (n is com.sadaqah.kiosk.update.UpdateNotification.InstallFailed) {
+            reportDiagnostic(DiagnosticKind.UPDATE_INSTALL_FAILED, detail = {
+                DiagnosticEvents.installFailedDetail(n.reason)
+            })
+        }
         runOnUiThread {
             val s = TranslationManager.currentStrings()
             val msg = when (n) {
