@@ -8,6 +8,9 @@ import org.junit.Test
 class RestartReportingTest {
 
     private val atMs = 1_700_000_000_000L
+    // Distinct from atMs so a generated row that carried causing's stamp, or
+    // 0L, would fail the occurredAtMs assertions below instead of slipping by.
+    private val nowMs = 1_700_000_500_000L
     private val causing = PendingDiagnostic(
         "causing", DiagnosticKind.CARD_READER_CONNECT_FAILED, atMs, """{"code":-1}"""
     )
@@ -18,7 +21,7 @@ class RestartReportingTest {
             causing = causing,
             reason = "card_reader_failures",
             alreadyGaveUp = alreadyGaveUp,
-            nowMs = atMs,
+            nowMs = nowMs,
             idFor = { "generated" }
         )
 
@@ -33,7 +36,23 @@ class RestartReportingTest {
     fun aRestartMarksBothTheCausingFailureAndTheRestart() {
         val r = report(RestartResult.RESTART)
         assertEquals(listOf("causing", "generated"), r.toMarker.map { it.id })
+        assertEquals(DiagnosticKind.RESTART_TRIGGERED, r.toMarker[1].kind)
+        assertEquals(nowMs, r.toMarker[1].occurredAtMs)
         assertTrue(r.toReportNow.isEmpty())
+        assertFalse(r.gaveUpReported)
+    }
+
+    /**
+     * A give-up latch that is still set does not mean the kiosk is stuck —
+     * cooldown/threshold guards can still allow a genuine restart. That restart
+     * must still be marked, and the latch must come back down, or a raised
+     * maxRestartsBeforeGiveUp would let it give up a second time in silence.
+     */
+    @Test
+    fun aRestartWhileAlreadyGivenUpStillMarksBothAndClearsTheFlag() {
+        val r = report(RestartResult.RESTART, alreadyGaveUp = true)
+        assertEquals(listOf("causing", "generated"), r.toMarker.map { it.id })
+        assertEquals(DiagnosticKind.RESTART_TRIGGERED, r.toMarker[1].kind)
         assertFalse(r.gaveUpReported)
     }
 
@@ -62,6 +81,7 @@ class RestartReportingTest {
         val r = report(RestartResult.COOLDOWN_ACTIVE)
         assertTrue(r.toMarker.isEmpty())
         assertEquals(listOf("causing"), r.toReportNow.map { it.id })
+        assertFalse(r.gaveUpReported)
     }
 
     @Test
@@ -69,6 +89,8 @@ class RestartReportingTest {
         val r = report(RestartResult.MAX_RESTARTS, alreadyGaveUp = false)
         assertTrue("nothing is restarting, so nothing needs a marker", r.toMarker.isEmpty())
         assertEquals(listOf("causing", "generated"), r.toReportNow.map { it.id })
+        assertEquals(DiagnosticKind.RESTART_TRIGGERED, r.toReportNow[1].kind)
+        assertEquals(nowMs, r.toReportNow[1].occurredAtMs)
         assertEquals("gave_up", detailOf(r.toReportNow[1])["outcome"].asString)
         assertTrue(r.gaveUpReported)
     }
@@ -81,6 +103,7 @@ class RestartReportingTest {
     @Test
     fun aSecondGiveUpReportsOnlyTheCausingFailure() {
         val r = report(RestartResult.MAX_RESTARTS, alreadyGaveUp = true)
+        assertTrue(r.toMarker.isEmpty())
         assertEquals(listOf("causing"), r.toReportNow.map { it.id })
         assertFalse(r.gaveUpReported)
     }

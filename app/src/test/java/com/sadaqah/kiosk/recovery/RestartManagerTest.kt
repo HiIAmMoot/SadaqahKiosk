@@ -241,7 +241,8 @@ class RestartManagerTest {
         m.markGaveUpReported()
         // maxConsecutiveFailures is 3 and restartCount starts at 0, so this
         // reaches tryRestart's RESTART branch, not MAX_RESTARTS.
-        repeat(3) { m.recordCardReaderFailure() }
+        val results = (1..3).map { m.recordCardReaderFailure() }
+        assertEquals(RestartResult.RESTART, results.last())
         assertFalse(m.gaveUpReported)
     }
 }
