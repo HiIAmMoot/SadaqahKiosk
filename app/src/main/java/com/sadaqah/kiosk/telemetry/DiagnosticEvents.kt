@@ -180,8 +180,11 @@ object DiagnosticEvents {
             if (!closedBy.isNullOrBlank()) addProperty("closed_by", closedBy)
         }.toString()
 
+    /** "pairing_timeout", not "timeout" — matches the label the finishActivity(2)
+     *  site itself arms with, so the two rows this cause produces (this one and the
+     *  card_reader_connect_failed it triggers) correlate on the same string. */
     fun pageTimeoutDetail(): String =
-        JsonObject().apply { addProperty("closed_by", "timeout") }.toString()
+        JsonObject().apply { addProperty("closed_by", "pairing_timeout") }.toString()
 
     fun checkoutNoReaderDetail(code: Int, message: String?): String =
         JsonObject().apply {

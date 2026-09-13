@@ -439,7 +439,7 @@ class DiagnosticEventsTest {
     fun aPageTimeoutSaysWhatClosedIt() {
         val d = JsonParser.parseString(DiagnosticEvents.pageTimeoutDetail()).asJsonObject
         assertTrue(d.has("closed_by"))
-        assertEquals("timeout", d["closed_by"].asString)
+        assertEquals("pairing_timeout", d["closed_by"].asString)
     }
 
     @Test

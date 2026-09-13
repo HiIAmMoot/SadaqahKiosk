@@ -112,6 +112,18 @@ class MainActivity : FragmentActivity() {
     private var cardReaderPageTimeoutJob: Job? = null
     private var bluetoothWatchdogJob: Job? = null
 
+    /** Labels for a finishActivity() the app issues itself, so the result can be
+     *  told from one the operator caused. One slot per request code: a reinit can
+     *  have a login and a reader close in flight at once, and a single slot would
+     *  let the later arm evict the earlier and then be discarded as a mismatch.
+     *
+     *  Armed ONLY when that activity is actually outstanding. finishActivity is a
+     *  no-op otherwise, and an arm with no callback coming would survive to
+     *  mislabel the next genuine failure — which is exactly what resetScreensaver
+     *  would do on every screensaver dismissal. */
+    private var syntheticCloseReader: String? = null   // request code 2
+    private var syntheticCloseLogin: String? = null    // request code 1
+
     private val bluetoothRecoveryManager = BluetoothRecoveryManager(BLUETOOTH_OFF_RECOVERY_MS)
 
     /** Amount of the most recently initiated payment, stashed at makePayment() time. */
@@ -647,7 +659,15 @@ class MainActivity : FragmentActivity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         val strings = TranslationManager.currentStrings()
 
-        Log.d("ActivityResult", "requestCode=$requestCode resultCode=$resultCode extras=${data?.extras}")
+        Log.d("ActivityResult", "requestCode=$requestCode resultCode=$resultCode")
+
+        // Consumed before any branching, for the code being delivered only — the
+        // other slot belongs to an activity that has not returned yet.
+        val closedBy = when (requestCode) {
+            1 -> syntheticCloseLogin.also { syntheticCloseLogin = null }
+            2 -> syntheticCloseReader.also { syntheticCloseReader = null }
+            else -> null
+        }
 
         when (requestCode) {
             1 -> {
@@ -675,7 +695,7 @@ class MainActivity : FragmentActivity() {
                     scheduleAutoPinIfReady()
                     val errorMessage = data?.getStringExtra(SumUpAPI.Response.MESSAGE) ?: "Unknown error"
                     val errorCode = data?.getIntExtra(SumUpAPI.Response.RESULT_CODE, -1) ?: -1
-                    Log.e("SumUpLogin", "Login failed - Code: $errorCode, Message: $errorMessage")
+                    Log.e("SumUpLogin", "Login failed - Code: $errorCode")
                     Toast.makeText(this, "${strings.logInFailed}: $errorMessage", Toast.LENGTH_LONG).show()
                     val result = restartManager.recordReinitFailure()
                     reportRestart(
@@ -684,7 +704,7 @@ class MainActivity : FragmentActivity() {
                         DiagnosticEvents.sumUpFailureDetail(
                             errorCode,
                             TelemetryRedactor.truncate(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey)),
-                            closedBy = null
+                            closedBy = closedBy
                         ),
                         restartManager.reinitFailures,
                         "reinit_failures"
@@ -727,7 +747,7 @@ class MainActivity : FragmentActivity() {
                         DiagnosticEvents.sumUpFailureDetail(
                             errorCode,
                             TelemetryRedactor.truncate(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey)),
-                            closedBy = null
+                            closedBy = closedBy
                         ),
                         restartManager.cardReaderFailures,
                         "card_reader_failures"
@@ -737,8 +757,6 @@ class MainActivity : FragmentActivity() {
             }
             3 -> {
                 if (resultCode == 1 && data != null) {
-                    val txCode = data.getStringExtra(SumUpAPI.Response.TX_CODE)
-                    Log.d("SumUpPayment", "Payment successful - TX Code: $txCode")
                     Toast.makeText(this, strings.paymentSuccessful, Toast.LENGTH_SHORT).show()
                     restartManager.clearCounters()
                     scheduleRestartCounterReset()
@@ -758,7 +776,7 @@ class MainActivity : FragmentActivity() {
                 } else {
                     val errorMessage = data?.getStringExtra(SumUpAPI.Response.MESSAGE) ?: "Unknown error"
                     val errorCode = data?.getIntExtra(SumUpAPI.Response.RESULT_CODE, -1) ?: -1
-                    Log.e("SumUpPayment", "Payment failed - Code: $errorCode, Message: $errorMessage")
+                    Log.e("SumUpPayment", "Payment failed - Code: $errorCode")
 
                     val userMessage = when (errorCode) {
                         SumUpAPI.Response.ResultCode.ERROR_TRANSACTION_FAILED -> strings.transactionDeclined
@@ -768,6 +786,21 @@ class MainActivity : FragmentActivity() {
                         else -> "${strings.paymentFailed}: $errorMessage"
                     }
                     Toast.makeText(this, userMessage, Toast.LENGTH_LONG).show()
+                    // isCardReaderConnected (the field) is unusable here: disconnectCardReader()
+                    // sets it false from the idle screensaver path and never restores it, so it
+                    // reads false in steady state and would fire on every declined card. Ask the
+                    // SDK directly, same call as the poll and the code-2 arm above.
+                    val readerPresent = try {
+                        ReaderModuleCoreState.Instance()?.mReaderCoreManager?.isCardReaderConnected() == true
+                    } catch (e: Exception) { false }
+                    if (!readerPresent) {
+                        reportDiagnostic(DiagnosticKind.CHECKOUT_NO_READER, detail = {
+                            DiagnosticEvents.checkoutNoReaderDetail(
+                                errorCode,
+                                TelemetryRedactor.truncate(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey))
+                            )
+                        })
+                    }
                 }
             }
         }
@@ -861,6 +894,7 @@ class MainActivity : FragmentActivity() {
             val newGattDevice = (gattNow - gattBefore).isNotEmpty()
             if (sdkConnected || newGattDevice) {
                 delay(3000)
+                if (isConnectingCardReader) syntheticCloseReader = "reader_poll"
                 finishActivity(2)
             } else {
                 scheduleCardReaderPoll(btManager, gattBefore)
@@ -964,6 +998,7 @@ class MainActivity : FragmentActivity() {
     fun activateScreensaver() {
         isEditingSettings = false
         isScreensaverActive = true
+        if (isConnectingCardReader) syntheticCloseReader = "screensaver"
         finishActivity(2)
         disconnectCardReader()
         // Same reasoning as the idle path: the reader is released, so this is a
@@ -1038,6 +1073,11 @@ class MainActivity : FragmentActivity() {
             silentLoginWatchdogJob = lifecycleScope.launch {
                 delay(10_000L)
                 Log.w("SumUpLogin", "Silent login watchdog — forcing finish on stuck login")
+                // No isOutstanding check needed: cancelSilentLoginWatchdog() is the
+                // only canceller and it runs synchronously at the top of the code-1
+                // arm, so reaching here uncancelled already means that arm hasn't
+                // fired for this login yet — the login is outstanding by construction.
+                syntheticCloseLogin = "login_watchdog"
                 finishActivity(1)
             }
         } else {
@@ -1089,6 +1129,10 @@ class MainActivity : FragmentActivity() {
             delay(10 * 60 * 1000L)
             if (isConnectingCardReader) {
                 Log.d("SumUpReader", "Card reader page timed out after 10 min — closing")
+                reportDiagnostic(DiagnosticKind.CARD_READER_PAGE_TIMEOUT, detail = {
+                    DiagnosticEvents.pageTimeoutDetail()
+                })
+                syntheticCloseReader = "pairing_timeout"
                 finishActivity(2)
             }
         }
@@ -1524,6 +1568,12 @@ class MainActivity : FragmentActivity() {
                 networkDismissJob?.cancel()
                 networkDismissJob = lifecycleScope.launch {
                     repeat(6) { // Try for ~30 seconds
+                        // isLoggedIn is already true here (onNetworkLost's own gate), so the
+                        // only login that can still be outstanding is a silent reinit — the
+                        // interactive flow only runs pre-login. The watchdog job is that
+                        // reinit's own outstanding-marker; re-checked each pass since the
+                        // first finishActivity may need a few passes to land.
+                        if (silentLoginWatchdogJob?.isActive == true) syntheticCloseLogin = "teardown"
                         finishActivity(1)
                         delay(5000L)
                     }
@@ -1696,6 +1746,11 @@ class MainActivity : FragmentActivity() {
         if (isScreensaverActive) {
             isScreensaverActive = false
             Log.d("Screensaver", "Deactivated by user interaction")
+            // This runs on every dismissal, almost always with no pairing page open —
+            // finishActivity is then a no-op and no callback ever arrives, so the arm
+            // must be conditional or a stale "screensaver" label would sit here forever
+            // and get approved by the next genuine code-2 failure.
+            if (isConnectingCardReader) syntheticCloseReader = "screensaver"
             finishActivity(2)
             // Always land on the donation grid when dismissing the screensaver,
             // regardless of where the operator had navigated to before walking
