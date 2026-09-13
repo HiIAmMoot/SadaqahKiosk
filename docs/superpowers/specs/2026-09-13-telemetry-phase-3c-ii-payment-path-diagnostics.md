@@ -37,9 +37,9 @@ That design is abandoned. A controlled restart does not need to write from a dyi
 
 ---
 
-## Synthetic activity results: four paths, not one
+## Synthetic activity results: six paths, not one
 
-`onActivityResult` cannot tell a user-driven failure from one the app caused itself, and the app causes four:
+`onActivityResult` cannot tell a user-driven failure from one the app caused itself, and the app causes it six ways:
 
 | Caller | Call | Lands in | Would report |
 |---|---|---|---|
@@ -50,16 +50,37 @@ That design is abandoned. A controlled restart does not need to write from a dyi
 
 So without a discriminator, closing the screensaver reports a reader failure, and a stalled *silent* re-auth reports a `sumup_reinit_failed` carrying `code: -1, message: "Unknown error"` — indistinguishable from a real interactive login failure, and both tick the restart counter.
 
-**The fix is one nullable field**, set immediately before each synthetic `finishActivity`, read and cleared in the arm that receives it:
+### The consumption protocol, which is where the obvious design breaks
+
+The obvious version — set a field before the synthetic call, read it in the arm that receives the result — is wrong, because **`finishActivity` is a no-op when nothing is outstanding**. `activateScreensaver` (`:943`) runs from a UI tap (`:618`), at which point the pairing page is generally not in the foreground, so the field is set and **no callback ever arrives to clear it**. The next genuine failure then picks up a stale `"screensaver"` label — inverting the very invariant the field exists to establish. Three arms also receive results without touching it: the offline branch (`:656-659`), case-1 success (`:660-672`) and case-2 success (`:691-699`).
+
+So the field is **consumed once at the top of `onActivityResult`**, before any branching, and carries the request code it was armed for:
 
 ```kotlin
-    /** Set immediately before a finishActivity() the app issues itself, so the
-     *  onActivityResult arm that receives it can tell a failure the app caused
-     *  from one the operator hit. Read once and cleared. */
-    private var syntheticClose: String? = null
+    /** Armed immediately before a finishActivity() the app issues itself, so the
+     *  result can be told from one the operator caused. Consumed unconditionally
+     *  at the top of onActivityResult — finishActivity is a no-op when nothing
+     *  is outstanding, so an armed label that never produces a callback must not
+     *  survive to mislabel the next genuine failure. */
+    private var syntheticClose: Pair<Int, String>? = null
 ```
 
-Values: `"pairing_timeout"`, `"screensaver"`, `"login_watchdog"`. The receiving arm puts it in the diagnostic's detail as `closed_by` and clears the field. Absent `closed_by` therefore means a genuine failure — the discriminator is a *present* field on the synthetic row, never an absent one.
+At the top of the handler: take it, clear it, and keep its label **only if its request code matches** the result being delivered; otherwise discard. That closes both the stale-label case and the wrong-arm case, where a reinit overlapping a reader connection (`:1222`, `:1228`) could otherwise let a `"login_watchdog"` label be read by case 2.
+
+### All six `finishActivity` call sites
+
+The spec must say which arm, because naming three of six is how the stale-label bug got in:
+
+| Site | Code | Label |
+|---|---|---|
+| `:1068` pairing timeout job | 2 | `"pairing_timeout"` |
+| `:943` `activateScreensaver` | 2 | `"screensaver"` |
+| `:1017` silent-login watchdog | 1 | `"login_watchdog"` |
+| `:840` card-reader poll | 2 | `"reader_poll"` — it closes the page when the SDK or a new GATT device says the reader arrived, and a GATT-only hit can still land in the failure arm |
+| `:1503` `repeat(6) { finishActivity(1) }` | 1 | `"teardown"` |
+| `:1627` `resetScreensaver` | 2 | `"screensaver"` — same cause as `:943`, same label |
+
+Absent `closed_by` therefore means a genuine failure: the discriminator is a *present* field on the synthetic row, never an absent one, so an older build that never wrote it cannot be mistaken for a user-driven failure.
 
 The restart counter still ticks on these paths, and that is correct: a kiosk whose pairing dialog timed out really does have no reader. What changes is that the dashboard can tell why.
 
@@ -81,6 +102,7 @@ data class PendingDiagnostic(
     val detailJson: String?
 )
 
+/** Pure: string in, string out. No Android, no prefs, no lock. */
 object PendingDiagnostics {
     const val MAX_ENTRIES = 8
     fun encode(pending: List<PendingDiagnostic>): String
@@ -93,10 +115,34 @@ object PendingDiagnostics {
 - `add` takes a **list**, so a restart writes both markers in **one** `commit()` rather than two synchronous disk writes on the main thread immediately before a restart.
 - `add` keeps the newest `MAX_ENTRIES`. Eight is generous: a restart writes two and the store drains on the very next start.
 - **`remove(raw, drainedIds)`, not a blanket clear.** The drain reads, appends, then removes *only the ids it drained*. A blanket `remove` would discard an entry written between the drain's read and its clear — a real window, since a restart can occur while startup is still draining.
-- Both the marker write and the drain's clear go through a single `@Synchronized` accessor so the read-modify-write is atomic within the process. Across processes it cannot race: the writer is about to exit and the reader is a fresh start.
+
+**The persistence and the locking live in a separate owner**, because a pure string-to-string object cannot also hold a `@Synchronized` read-modify-write:
+
+```kotlin
+/** Owns the prefs key and serialises the read-modify-write. The writer is the
+ *  main thread immediately before a restart; the drain is Dispatchers.IO at
+ *  startup, so the two genuinely overlap and @Synchronized is doing real work. */
+class PendingDiagnosticStore(private val prefs: SharedPreferences) {
+    @Synchronized fun add(entries: List<PendingDiagnostic>)
+    @Synchronized fun read(): List<PendingDiagnostic>
+    @Synchronized fun removeDrained(ids: Set<String>)
+}
+```
+
+`removeDrained` **re-reads inside the lock** and applies `PendingDiagnostics.remove` to the current value — never to the snapshot the drain opened with. Re-reading is the whole point; reusing the opening snapshot loses exactly the entry the `remove`-by-id design exists to preserve.
+
+The key lives on `PendingDiagnosticStore`, in the same prefs file `UpdateWatchdogReceiver` owns.
 - `decode` is **total**: malformed JSON, an unknown `kind` wire string, a missing field, a truncated write — each yields the entries that parse and drops the rest, without throwing. It runs during `onCreate`; a corrupt marker must not stop a kiosk starting.
 - The kind is stored by its `wire` string, never its ordinal: an ordinal silently re-maps every stored entry the day a kind is inserted into the enum.
-- **`detailJson` is stored already scrubbed** — see non-negotiable #5. The drained event is constructed with `affiliateKey = null`, matching the precedent in `DiagnosticEvents.updateRollback` and `updateInstalled`.
+- **`detailJson` is stored already scrubbed**, with `CrashContext.affiliateKey` as the key — see non-negotiable #5. The drained event is then constructed with `affiliateKey = null`, matching the precedent in `DiagnosticEvents.updateRollback` and `updateInstalled`. Scrubbing at store time is what keeps an unredacted vendor message out of the prefs file; scrubbing again at drain would be too late.
+
+### Draining them
+
+`drainUpdateDiagnostics` gains the pending list alongside the two update markers it already handles — same method, same off-main dispatch, same catch-all, same rule that a marker is cleared only after its append returns.
+
+Order: pending diagnostics first, then the update markers, so a reader scanning by insertion order sees the restart before whatever the restarted build reports. Within the pending list, entries drain in the order they were added.
+
+**An entry is drained whether or not it produced an event.** `forKind` returns `NotEnabled` when analytics is off, and an entry skipped rather than drained would sit in the store forever — pinning it at `MAX_ENTRIES` and being re-read on every boot. Its id goes into `drainedIds` either way; only an append that actually *threw* leaves its entry behind for the next start.
 
 ### The decision is a pure unit; `MainActivity` only executes it
 
@@ -137,13 +183,31 @@ Both `restart_triggered` rows carry an explicit `outcome`, so they differ by a *
                     handleRestartResult(result, "card_reader_failures")
 ```
 
+`reportRestart` is the thin `MainActivity` method; it calls the pure `restartReport(...)` for the decision, writes `toMarker` through `PendingDiagnosticStore.add` in one `commit()`, dispatches `toReportNow` through the existing `reportDiagnostic`, and calls `restartManager.markGaveUpReported()` when the decision says a give-up was reported. It makes no decision of its own.
+
 `recordCardReaderFailure()` / `recordReinitFailure()` are called **exactly once**, in the same order, with the same arguments. Hoisting to a local is behaviourally inert — verified, nothing runs between the call and its use — but a double call advances the counter twice and restarts a kiosk early, which is why device check 2 exists.
 
 ### `MAX_RESTARTS` must fire on an edge
 
 `tryRestart` returns `MAX_RESTARTS` whenever `restartCount >= maxRestartsBeforeGiveUp`, and the failure counters clear only on success — so **every subsequent failure returns it**, and a naive report emits a row per failure forever. This is exactly the level-versus-edge problem 3c-i's Bluetooth counter solved, and it gets the same treatment.
 
-`RestartManager` gains one key in its existing `KeyValueStore`, `KEY_GAVE_UP_REPORTED`, and one read-only accessor. It is set when a give-up is first reported and cleared by `clearCounters()`, which already runs on a successful payment or connection. The helper receives it as `alreadyGaveUp`; the decision stays in the pure unit.
+`RestartManager` gains one key in its existing `KeyValueStore`, plus a reader and a setter:
+
+```kotlin
+        const val KEY_GAVE_UP_REPORTED = "gave_up_reported"
+
+    /** Int 0/1, not a boolean: KeyValueStore exposes only getInt/putInt and
+     *  getLong/putLong, and widening the interface would drag both the
+     *  SharedPreferences implementation and the in-memory test fake with it for
+     *  one flag. */
+    val gaveUpReported: Boolean get() = store.getInt(KEY_GAVE_UP_REPORTED) == 1
+
+    fun markGaveUpReported() { store.putInt(KEY_GAVE_UP_REPORTED, 1) }
+```
+
+Nothing else sets it: the decision unit reports *whether* a give-up should be recorded, and `reportRestart` calls `markGaveUpReported()` — so the latch is never re-derived on an untestable path.
+
+`clearCounters()` clears it alongside the counters it already clears, and **`tryRestart` clears it when it returns `RESTART`**. Without that second clear, raising `maxRestartsBeforeGiveUp` on a kiosk that had already given up would let it restart again and then give up a second time in silence.
 
 `COOLDOWN_ACTIVE` stays silent: it is the policy working, and the failure that put the kiosk there is reported through the causing diagnostic.
 
@@ -216,12 +280,12 @@ The call sites, `syntheticClose`, the marker write, and the drain's new branch. 
 1. Three consecutive card-reader failures → after the restart, **both** a `card_reader_connect_failed` and a `restart_triggered` with `outcome: restarted` have arrived. The markers survived the process exit.
 2. **Two** consecutive failures must **not** restart the kiosk. The double-count check; "three → restart" cannot detect one.
 3. Pairing page, walk away ten minutes: a `card_reader_page_timeout`, and a `card_reader_connect_failed` carrying `closed_by: pairing_timeout`.
-4. Let the screensaver activate while the pairing page is open: `card_reader_connect_failed` with `closed_by: screensaver`, and **no** `card_reader_page_timeout`.
+4. Tap through to the screensaver (`activateScreensaver`, `:618`) while the pairing page is open: `card_reader_connect_failed` with `closed_by: screensaver`. **Not** the idle path — idle (`:497-508`) sets `isScreensaverActive` inline and calls `disconnectCardReader()` without ever calling `activateScreensaver` or `finishActivity`, so it produces no synthetic close at all. Both timers default to 600s, so an idle wait would race the pairing timeout and assert the opposite of what it looks like it asserts.
 5. Stall a silent re-auth past the watchdog: `sumup_reinit_failed` with `closed_by: login_watchdog`. A real interactive login failure produces one **without** `closed_by`.
 6. Exhaust `maxRestartsBeforeGiveUp`: one `restart_triggered` with `outcome: gave_up`. Keep failing: **no further rows** until a success clears the counters.
 7. Fail a checkout with the reader physically off: one `checkout_no_reader`. Decline a card with the reader connected: **none**.
 8. Take a normal donation with diagnostics queued: it completes normally.
-9. With `analyticsEnabled` off, repeat any two: queue depth unchanged.
+9. With `analyticsEnabled` off, force a restart. Queue depth is unchanged **and the marker store is empty afterwards** — the store is what this check measures, since with analytics off the queue never moves and proves nothing.
 10. Carried and still unverified: status survives a restart with `droppedCount` intact (2c); a donation appends exactly one row (3a); the disk-full rollback check (3b); the Bluetooth once-per-outage check (3c-i, **without rotating the device**).
 
 ---
@@ -248,7 +312,7 @@ The call sites, `syntheticClose`, the marker write, and the drain's new branch. 
 
 **Detail scrubbed before storage.** The redactor's contract is about what reaches a file, and a marker is a file.
 
-**`MAX_RESTARTS` edge-triggered in `RestartManager`.** It is a level test over a counter that only success clears; the same shape as 3c-i's Bluetooth fix, which is precedent worth following rather than re-deriving.
+**The give-up latch is set by `reportRestart`, never re-derived.** A decision unit that says "report a give-up" and a caller that sets the latch keeps the edge in one testable place. **`MAX_RESTARTS` edge-triggered in `RestartManager`.** It is a level test over a counter that only success clears; the same shape as 3c-i's Bluetooth fix, which is precedent worth following rather than re-deriving.
 
 **`checkout_no_reader` reinstated on the SDK query.** Dropping it was right for the predicate it had; the app already had a better one in two other places.
 
