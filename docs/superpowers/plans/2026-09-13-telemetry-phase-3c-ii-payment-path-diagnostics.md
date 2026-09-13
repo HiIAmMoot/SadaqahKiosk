@@ -633,7 +633,7 @@ grep -rn 'DiagnosticKind\.' app/src/main | grep -v 'DiagnosticEvents.kt' | grep 
 grep -rn 'data?.extras\|TX Code' app/src/main
 ```
 
-Expected: **5** appends, unchanged — every kind reaches the outbox through `reportDiagnostic` or the drain. Constructions for all eleven kinds across the call sites. **Zero** hits for the third.
+Expected: **6** appends — five before this phase plus the pending-diagnostics drain added in Task 4 — every kind reaches the outbox through `reportDiagnostic` or the drain. Constructions for all eleven kinds across the call sites. **Zero** hits for the third.
 
 - [ ] **Step 6: Full suite and commit**
 

@@ -24,6 +24,8 @@ That design is abandoned. A controlled restart does not need to write from a dyi
 6. **A kiosk with `analyticsEnabled` off writes nothing identified to disk.** The marker itself carries no identity; the gate applies at drain.
 7. **A kind that repeats on a level, rather than firing on an edge, must be edge-triggered somewhere testable.** This is the rule 3c-i's Bluetooth counter established, and it applies again here.
 
+   **One deliberate exception: `checkout_no_reader`.** It keeps firing while the reader is absent, and it is not throttled. Every other repeating kind reports a condition; this one reports a *donor who tried to give and could not*, so throttling would trade the count of lost donations for the bare fact of a missing reader. The accepted cost is that on a kiosk with a dead reader these rows accumulate in a queue shared with earlier undelivered donations, where eviction keeps the newest — so old successful donations can be displaced. That trade was made deliberately; do not "fix" it.
+
 ---
 
 ## What already exists and is NOT rebuilt
