@@ -30,7 +30,10 @@ sealed class UpdateNotification {
     data object BatteryTooLow : UpdateNotification()
     data object NoNetwork : UpdateNotification()
     data object NotDeviceOwner : UpdateNotification()
-    data object InstallFailed : UpdateNotification()
+    /** [reason] is a short fixed constant chosen at the fire site, never the
+     *  installer's own status text — that is vendor-supplied and makes a poor
+     *  grouping key. Defaulted so existing `is InstallFailed` arms still compile. */
+    data class InstallFailed(val reason: String? = null) : UpdateNotification()
 }
 
 data class RepoCoords(val owner: String, val name: String) {
@@ -331,7 +334,7 @@ class UpdateManager(
         }
         if (apk == null) {
             Log.e("UpdateManager", "Download failed for v${target.version}")
-            onNotification(UpdateNotification.InstallFailed)
+            onNotification(UpdateNotification.InstallFailed("download_failed"))
             state = UpdateState.Idle
             withContext(Dispatchers.Main) { onFinishInstall() }
             return@launch
@@ -344,7 +347,7 @@ class UpdateManager(
         // would slip past the dropdown filter.
         if (!isInstallable(target.version)) {
             Log.w("UpdateManager", "Cross-track downgrade refused — target=${target.version} current=$currentVersion")
-            onNotification(UpdateNotification.InstallFailed)
+            onNotification(UpdateNotification.InstallFailed("downgrade_blocked"))
             state = UpdateState.Idle
             withContext(Dispatchers.Main) { onFinishInstall() }
             return
@@ -361,7 +364,7 @@ class UpdateManager(
         )
         if (validation is ApkValidator.Result.Reject) {
             Log.e("UpdateManager", "Validation rejected: ${validation.reason}")
-            onNotification(UpdateNotification.InstallFailed)
+            onNotification(UpdateNotification.InstallFailed("validation_rejected"))
             state = UpdateState.Idle
             withContext(Dispatchers.Main) { onFinishInstall() }
             return
@@ -400,7 +403,7 @@ class UpdateManager(
             is ApkInstaller.Result.Failed -> {
                 Log.e("UpdateManager", "Install failed status=${result.status} msg=${result.message}")
                 UpdateWatchdogReceiver.disarm(context)
-                onNotification(UpdateNotification.InstallFailed)
+                onNotification(UpdateNotification.InstallFailed("commit_failed"))
                 state = UpdateState.Idle
                 withContext(Dispatchers.Main) { onFinishInstall() }
             }
