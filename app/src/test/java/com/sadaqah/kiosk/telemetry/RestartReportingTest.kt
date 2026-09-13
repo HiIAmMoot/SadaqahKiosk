@@ -43,10 +43,11 @@ class RestartReportingTest {
     }
 
     /**
-     * A give-up latch that is still set does not mean the kiosk is stuck —
-     * cooldown/threshold guards can still allow a genuine restart. That restart
-     * must still be marked, and the latch must come back down, or a raised
-     * maxRestartsBeforeGiveUp would let it give up a second time in silence.
+     * The latch does not gate restarts, only the give-up row — clearCounters
+     * clears it too, so the only way to reach RESTART with it still set is an
+     * operator raising maxRestartsBeforeGiveUp on a kiosk that had already
+     * given up. That restart must still be marked, and the latch must come
+     * back down, or it would give up a second time in silence.
      */
     @Test
     fun aRestartWhileAlreadyGivenUpStillMarksBothAndClearsTheFlag() {
@@ -91,7 +92,9 @@ class RestartReportingTest {
         assertEquals(listOf("causing", "generated"), r.toReportNow.map { it.id })
         assertEquals(DiagnosticKind.RESTART_TRIGGERED, r.toReportNow[1].kind)
         assertEquals(nowMs, r.toReportNow[1].occurredAtMs)
-        assertEquals("gave_up", detailOf(r.toReportNow[1])["outcome"].asString)
+        val detail = detailOf(r.toReportNow[1])
+        assertEquals("card_reader_failures", detail["reason"].asString)
+        assertEquals("gave_up", detail["outcome"].asString)
         assertTrue(r.gaveUpReported)
     }
 
