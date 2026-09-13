@@ -125,6 +125,50 @@ object DiagnosticEvents {
         )
     }
 
+    /**
+     * The generic entry point, for kinds whose detail is assembled by a builder
+     * rather than derived from a decision. The gate is the same one every other
+     * function here uses — there is no kind that bypasses the master switch.
+     */
+    fun forKind(
+        settings: Settings?,
+        appVersion: String,
+        kind: DiagnosticKind,
+        occurredAtMs: Long,
+        detailJson: String? = null,
+        affiliateKey: String? = null
+    ): DiagnosticEventResult {
+        val identity = identityOf(settings, appVersion) ?: return DiagnosticEventResult.NotEnabled
+        return DiagnosticEventResult.Report(
+            TelemetryEvent.Diagnostic(
+                identity = identity,
+                kind = kind,
+                occurredAtIso = Instant.ofEpochMilli(occurredAtMs).toString(),
+                detailJson = detailJson,
+                affiliateKey = affiliateKey
+            )
+        )
+    }
+
+    /** Both numbers, because an operator who later changes the threshold would
+     *  otherwise make every stored row uninterpretable. */
+    fun networkOutageDetail(downtimeMs: Long, thresholdMs: Long): String =
+        JsonObject().apply {
+            addProperty("downtime_ms", downtimeMs)
+            addProperty("threshold_ms", thresholdMs)
+        }.toString()
+
+    fun bluetoothWatchdogDetail(offMs: Long): String =
+        JsonObject().apply { addProperty("off_ms", offMs) }.toString()
+
+    /** A short fixed constant chosen at the fire site, never PackageInstaller's
+     *  own status text: that is vendor-supplied and would make a poor grouping
+     *  key on a dashboard. */
+    fun installFailedDetail(reason: String?): String =
+        JsonObject().apply {
+            if (!reason.isNullOrBlank()) addProperty("reason", reason)
+        }.toString()
+
     private fun identityOf(settings: Settings?, appVersion: String): EventIdentity? {
         if (settings == null || !settings.analyticsEnabled) return null
         return EventIdentity.from(settings, appVersion)
