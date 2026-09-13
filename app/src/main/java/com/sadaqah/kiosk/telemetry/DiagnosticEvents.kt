@@ -169,6 +169,26 @@ object DiagnosticEvents {
             if (!reason.isNullOrBlank()) addProperty("reason", reason)
         }.toString()
 
+    /** Shared by `sumup_reinit_failed` and `card_reader_connect_failed`. `closedBy`
+     *  is present only for a close the app itself performed — a screensaver or a
+     *  watchdog dismissing a stuck page — never for an operator-hit failure. Its
+     *  absence, not a null or false value, is what a dashboard reads as genuine. */
+    fun sumUpFailureDetail(code: Int, message: String?, closedBy: String?): String =
+        JsonObject().apply {
+            addProperty("code", code)
+            if (!message.isNullOrBlank()) addProperty("message", message)
+            if (!closedBy.isNullOrBlank()) addProperty("closed_by", closedBy)
+        }.toString()
+
+    fun pageTimeoutDetail(): String =
+        JsonObject().apply { addProperty("closed_by", "timeout") }.toString()
+
+    fun checkoutNoReaderDetail(code: Int, message: String?): String =
+        JsonObject().apply {
+            addProperty("code", code)
+            if (!message.isNullOrBlank()) addProperty("message", message)
+        }.toString()
+
     private fun identityOf(settings: Settings?, appVersion: String): EventIdentity? {
         if (settings == null || !settings.analyticsEnabled) return null
         return EventIdentity.from(settings, appVersion)

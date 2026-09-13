@@ -397,4 +397,38 @@ class DiagnosticEventsTest {
         val detail = JsonParser.parseString(DiagnosticEvents.installFailedDetail(null)).asJsonObject
         assertFalse(detail.has("reason"))
     }
+
+    @Test
+    fun aSumUpFailureDetailCarriesTheCodeAndMessage() {
+        val d = JsonParser.parseString(
+            DiagnosticEvents.sumUpFailureDetail(code = 7, message = "reader not found", closedBy = null)
+        ).asJsonObject
+        assertEquals(7, d["code"].asInt)
+        assertEquals("reader not found", d["message"].asString)
+        assertFalse("absent closed_by is what marks a genuine failure", d.has("closed_by"))
+    }
+
+    @Test
+    fun aSyntheticCloseIsNamedOnTheRow() {
+        val d = JsonParser.parseString(
+            DiagnosticEvents.sumUpFailureDetail(code = -1, message = null, closedBy = "pairing_timeout")
+        ).asJsonObject
+        assertEquals("pairing_timeout", d["closed_by"].asString)
+        assertFalse(d.has("message"))
+    }
+
+    @Test
+    fun aPageTimeoutSaysWhatClosedIt() {
+        val d = JsonParser.parseString(DiagnosticEvents.pageTimeoutDetail()).asJsonObject
+        assertEquals("timeout", d["closed_by"].asString)
+    }
+
+    @Test
+    fun aCheckoutWithNoReaderCarriesTheFailureItObserved() {
+        val d = JsonParser.parseString(
+            DiagnosticEvents.checkoutNoReaderDetail(code = 3, message = "declined")
+        ).asJsonObject
+        assertEquals(3, d["code"].asInt)
+        assertEquals("declined", d["message"].asString)
+    }
 }
