@@ -2066,6 +2066,32 @@ class MainActivity : FragmentActivity() {
             withContext(Dispatchers.IO) {
                 try {
                     val prefs = UpdateWatchdogReceiver.prefs(this@MainActivity)
+
+                    // A restart's own diagnostics, ahead of the update markers below:
+                    // both drains report against "this startup", but a pending entry
+                    // was written by the process this one replaced, so it is the
+                    // older fact of the two.
+                    val pendingStore = PendingDiagnosticStore(prefs)
+                    val pending = pendingStore.read()
+                    val drainedIds = mutableSetOf<String>()
+                    pending.forEach { entry ->
+                        val result = DiagnosticEvents.forKind(
+                            CrashContext.settings, BuildConfig.VERSION_NAME, entry.kind,
+                            entry.occurredAtMs, entry.detailJson, affiliateKey = null
+                        )
+                        (result as? DiagnosticEventResult.Report)?.let {
+                            telemetryOutbox.append(it.event.id, it.event.table, it.event.payloadJson())
+                        }
+                        // Drained whether or not it produced an event: a gate-declined
+                        // entry (NotEnabled) left in the store would sit there forever,
+                        // pinning it at MAX_ENTRIES and being re-read on every boot.
+                        drainedIds += entry.id
+                    }
+                    // Unreached if the loop above throws — an append that fails
+                    // leaves its entry (and every later one) behind, to be retried
+                    // next startup, exactly like the update markers below.
+                    pendingStore.removeDrained(drainedIds)
+
                     val rollbackAt = prefs.getLong(UpdateWatchdogReceiver.KEY_ROLLBACK_AT, 0L)
                     val rollbackFrom =
                         prefs.getString(UpdateWatchdogReceiver.KEY_ROLLBACK_FROM_VERSION, null)
