@@ -6,56 +6,76 @@ This completes `diagnostic_events`. After it, the remaining telemetry work is ph
 
 ## What this phase is not
 
-An earlier draft of 3c-ii proposed a new outbox mechanism for writing from a dying process: a `ReentrantLock` with timed acquisition, an `appendUrgent` that skipped compaction, a byte cap, and compaction on construction. **Three consecutive spec reviews found Criticals in it**, the last two in the mechanism itself — a slack-gated heal that could never run, and an 8 MB read landing on the main thread in `onCreate`.
+An earlier draft proposed a new outbox mechanism for writing from a dying process — a `ReentrantLock` with timed acquisition, an `appendUrgent` that skipped compaction, a byte cap, compaction on construction. **Three consecutive spec reviews found Criticals in it**, the last two in the mechanism rather than the drafting.
 
-That design is abandoned. A controlled restart does not need to write from a dying process at all: `hardRestart` calls `startActivity` and *then* `Runtime.exit(0)`, so the app comes back. Phase 3b already established the pattern for a fact that must outlive a process — record a cheap bounded marker, convert it to an event at the next startup — and `update_rollback` has shipped on it.
+That design is abandoned. A controlled restart does not need to write from a dying process: `hardRestart` calls `startActivity` and *then* `Runtime.exit(0)` (`MainActivity.kt:1578-1585`), so the app comes back. Phase 3b already ships the pattern for a fact that must outlive a process — a bounded marker, converted to an event at the next startup.
 
-**The crash handler's unbounded append is not fixed here.** It has had that cost since 3b, it is real, and the marker pattern cannot serve it because a crash is not a controlled restart. It is recorded at the end as its own future work rather than bolted onto a phase that touches the payment path.
+**The crash handler's unbounded append is not fixed here.** Real since 3b, and the marker pattern cannot serve it because a crash is not a controlled restart. Recorded at the end as its own work.
 
 ---
 
 ## Non-negotiables
 
-1. **The donation flow is not altered.** No new abort condition, no new pre-check, no reordering. Every kind here observes something that already happened. A kiosk with this installed takes payments identically to one without it.
-
-2. **Recording never makes the thing it records worse.** Same rule as 3b and 3c-i, now on paths where being wrong costs a donation.
-
-3. **Nothing is written to the outbox from a thread that is about to end the process.** That is what the markers are for.
-
-4. **The marker store is bounded.** A restart loop must not grow it.
-
-5. **No *known* secret reaches disk**, and **no transaction identifier reaches logcat** — see the cleanup section.
-
-6. **A kiosk with `analyticsEnabled` off writes nothing identified to disk.**
+1. **The donation flow is not altered.** No new abort condition, no new pre-check, no reordering. Every kind observes something that already happened.
+2. **Recording never makes the thing it records worse.**
+3. **Nothing is written to the outbox from a thread about to end the process.** That is what markers are for.
+4. **The marker store is bounded**, and a restart loop cannot grow it.
+5. **Nothing unredacted is written to a file.** `TelemetryRedactor`'s own contract is that an unredacted value must never reach a file *in the first place* — and a marker is a file. Vendor text is scrubbed **before** it is stored, not when it is drained.
+6. **A kiosk with `analyticsEnabled` off writes nothing identified to disk.** The marker itself carries no identity; the gate applies at drain.
+7. **A kind that repeats on a level, rather than firing on an edge, must be edge-triggered somewhere testable.** This is the rule 3c-i's Bluetooth counter established, and it applies again here.
 
 ---
 
 ## What already exists and is NOT rebuilt
 
-- `DiagnosticEvents.forKind` + the `identityOf` gate + the three detail builders from 3c-i.
-- `DiagnosticReporter.record` — the guarded body; `detail` is a lambda invoked **inside** the guard.
-- `MainActivity.reportDiagnostic` — the asynchronous dispatcher over `record`.
-- **The 3b marker pattern**: `UpdateWatchdogReceiver` writes `KEY_ROLLBACK_AT` with `commit()` inside a `try`/`catch`, and `MainActivity.drainUpdateDiagnostics` converts it at startup, off the main thread, clearing the marker only after every append returns.
-- `DiagnosticKind` — all eleven kinds with severities. **No enum change.**
-- `RestartManager` — `recordCardReaderFailure()`, `recordReinitFailure()`, `RestartResult`. **Read, never changed.**
+- `DiagnosticEvents.forKind`, the `identityOf` gate, and 3c-i's three detail builders.
+- `DiagnosticReporter.record` — `detail` is a lambda invoked inside the guard.
+- `MainActivity.reportDiagnostic` — the asynchronous dispatcher.
+- **3b's marker pattern**: `commit()` inside a `try`/`catch`, drained off-main in `drainUpdateDiagnostics`, cleared only after every append returns.
+- `DiagnosticKind` — all eleven kinds. **No enum change.**
+- `RestartManager` — read, never changed. Note `tryRestart` returns `MAX_RESTARTS` on a **level** test (`RestartManager.kt:75`), and the failure counters clear only on success.
+
+---
+
+## Synthetic activity results: four paths, not one
+
+`onActivityResult` cannot tell a user-driven failure from one the app caused itself, and the app causes four:
+
+| Caller | Call | Lands in | Would report |
+|---|---|---|---|
+| pairing timeout job (`:1064`) | `finishActivity(2)` | case 2 failure arm | `card_reader_connect_failed` |
+| `activateScreensaver` (`:943`) | `finishActivity(2)` | case 2 failure arm | `card_reader_connect_failed` |
+| silent-login watchdog (`:1016`) | `finishActivity(1)` | case 1 failure arm | `sumup_reinit_failed` |
+| a real user-driven failure | — | either | the same kinds |
+
+So without a discriminator, closing the screensaver reports a reader failure, and a stalled *silent* re-auth reports a `sumup_reinit_failed` carrying `code: -1, message: "Unknown error"` — indistinguishable from a real interactive login failure, and both tick the restart counter.
+
+**The fix is one nullable field**, set immediately before each synthetic `finishActivity`, read and cleared in the arm that receives it:
+
+```kotlin
+    /** Set immediately before a finishActivity() the app issues itself, so the
+     *  onActivityResult arm that receives it can tell a failure the app caused
+     *  from one the operator hit. Read once and cleared. */
+    private var syntheticClose: String? = null
+```
+
+Values: `"pairing_timeout"`, `"screensaver"`, `"login_watchdog"`. The receiving arm puts it in the diagnostic's detail as `closed_by` and clears the field. Absent `closed_by` therefore means a genuine failure — the discriminator is a *present* field on the synthetic row, never an absent one.
+
+The restart counter still ticks on these paths, and that is correct: a kiosk whose pairing dialog timed out really does have no reader. What changes is that the dashboard can tell why.
+
+`card_reader_page_timeout` still fires as its own row from the timeout job, and the `card_reader_connect_failed` that follows carries `closed_by: pairing_timeout` — so the pair is correlated on the row that would otherwise be double-counted.
 
 ---
 
 ## The restart path, on markers
 
-`handleRestartResult`'s `RESTART` arm calls `hardRestart`, which calls `Runtime.exit(0)` immediately. Two diagnostics matter at that moment and both would be lost to an asynchronous write:
-
-- `restart_triggered` itself;
-- **the failure that crossed the threshold** — the `card_reader_connect_failed` or `sumup_reinit_failed` that caused it. That one is the more useful of the two, and the earlier draft would have dropped it.
-
-Both are written as markers before `hardRestart`, and drained at the next startup.
+Two diagnostics matter at the moment of a restart and both would die with an asynchronous write: `restart_triggered`, and **the failure that crossed the threshold**, which is the more useful of the two.
 
 ### `telemetry/PendingDiagnostics.kt` — new, pure
 
-A small list of diagnostics owed, encoded as one string in the prefs file `UpdateWatchdogReceiver` already owns.
-
 ```kotlin
 data class PendingDiagnostic(
+    val id: String,
     val kind: DiagnosticKind,
     val occurredAtMs: Long,
     val detailJson: String?
@@ -65,94 +85,101 @@ object PendingDiagnostics {
     const val MAX_ENTRIES = 8
     fun encode(pending: List<PendingDiagnostic>): String
     fun decode(raw: String?): List<PendingDiagnostic>
-    fun add(raw: String?, entry: PendingDiagnostic): String
+    fun add(raw: String?, entries: List<PendingDiagnostic>): String
+    fun remove(raw: String?, drainedIds: Set<String>): String
 }
 ```
 
-- `add` appends and **keeps the newest `MAX_ENTRIES`**, so a restart loop cannot grow the store. Eight is generous: a restart writes at most two, and the store is drained on the very next start.
-- `decode` is **total**: malformed JSON, an unknown `kind` string, a missing field, or a truncated write all yield the entries that do parse and silently drop the rest. A corrupt marker must never stop the app from starting, and must never throw on a path that runs during `onCreate`.
-- `encode`/`decode` round-trip. The kind is stored by its `wire` string, not its ordinal — an ordinal would silently re-map every stored entry the day a kind is inserted into the enum.
+- `add` takes a **list**, so a restart writes both markers in **one** `commit()` rather than two synchronous disk writes on the main thread immediately before a restart.
+- `add` keeps the newest `MAX_ENTRIES`. Eight is generous: a restart writes two and the store drains on the very next start.
+- **`remove(raw, drainedIds)`, not a blanket clear.** The drain reads, appends, then removes *only the ids it drained*. A blanket `remove` would discard an entry written between the drain's read and its clear — a real window, since a restart can occur while startup is still draining.
+- Both the marker write and the drain's clear go through a single `@Synchronized` accessor so the read-modify-write is atomic within the process. Across processes it cannot race: the writer is about to exit and the reader is a fresh start.
+- `decode` is **total**: malformed JSON, an unknown `kind` wire string, a missing field, a truncated write — each yields the entries that parse and drops the rest, without throwing. It runs during `onCreate`; a corrupt marker must not stop a kiosk starting.
+- The kind is stored by its `wire` string, never its ordinal: an ordinal silently re-maps every stored entry the day a kind is inserted into the enum.
+- **`detailJson` is stored already scrubbed** — see non-negotiable #5. The drained event is constructed with `affiliateKey = null`, matching the precedent in `DiagnosticEvents.updateRollback` and `updateInstalled`.
 
-This is pure and JVM-tested, which is the whole reason it is a separate unit rather than JSON assembled at the call site.
+### The decision is a pure unit; `MainActivity` only executes it
 
-### Writing the markers
-
-Both restart sites become:
+The helper must not both decide and write, or its testability — the only reason it exists — is gone. It returns a decision:
 
 ```kotlin
-val result = restartManager.recordCardReaderFailure()
-reportRestartDiagnostics(result, DiagnosticKind.CARD_READER_CONNECT_FAILED, detail, "card_reader_failures")
+data class RestartReport(
+    val toMarker: List<PendingDiagnostic>,
+    val toReportNow: List<PendingDiagnostic>
+)
+
+fun restartReport(
+    result: RestartResult,
+    causing: PendingDiagnostic,
+    reason: String,
+    alreadyGaveUp: Boolean,
+    nowMs: Long
+): RestartReport
 ```
 
-where the helper writes markers when `result == RestartResult.RESTART` and otherwise reports the causing diagnostic in the ordinary asynchronous way.
+| `result` | `toMarker` | `toReportNow` |
+|---|---|---|
+| `RESTART` | causing + `restart_triggered` `{"reason":…, "outcome":"restarted"}` | empty |
+| `BELOW_THRESHOLD` | empty | causing |
+| `COOLDOWN_ACTIVE` | empty | causing |
+| `MAX_RESTARTS`, `alreadyGaveUp = false` | empty | causing + `restart_triggered` `{"reason":…, "outcome":"gave_up"}` |
+| `MAX_RESTARTS`, `alreadyGaveUp = true` | empty | causing |
 
-**`recordCardReaderFailure()` and `recordReinitFailure()` must still be called exactly once per failure.** Hoisting the call into a local is behaviourally inert — verified, nothing runs between the call and its use — but a double call would advance the counter twice and restart a kiosk early. The hoist is therefore not a free refactor and needs a test, which is why the decision lives in a helper rather than inline: a pure unit can be handed a `RestartResult` and asked what to do with it.
+Both `restart_triggered` rows carry an explicit `outcome`, so they differ by a **present** field rather than by one row lacking a key.
 
-The marker write is `commit()` inside a `try`/`catch (Throwable)`, for the reason 3b's rollback marker is: this runs immediately before a restart, and a throw must not be what prevents it.
+### The call sites
 
-### Draining them
+**The sample must show the whole edit**, because both sites are the only callers of `handleRestartResult` (`:680`, `:711` → `:1553`) and dropping it deletes auto-restart:
 
-`drainUpdateDiagnostics` gains the pending list alongside the two update markers it already handles — same method, same off-main dispatch, same catch-all, same rule that the marker is cleared only after every append returns.
+```kotlin
+                    val result = restartManager.recordCardReaderFailure()
+                    reportRestart(result, DiagnosticKind.CARD_READER_CONNECT_FAILED, detail, "card_reader_failures")
+                    handleRestartResult(result, "card_reader_failures")
+```
 
-Order: pending diagnostics first, then the update markers, so a reader scanning by insertion order sees the restart before whatever the restarted build reports.
+`recordCardReaderFailure()` / `recordReinitFailure()` are called **exactly once**, in the same order, with the same arguments. Hoisting to a local is behaviourally inert — verified, nothing runs between the call and its use — but a double call advances the counter twice and restarts a kiosk early, which is why device check 2 exists.
+
+### `MAX_RESTARTS` must fire on an edge
+
+`tryRestart` returns `MAX_RESTARTS` whenever `restartCount >= maxRestartsBeforeGiveUp`, and the failure counters clear only on success — so **every subsequent failure returns it**, and a naive report emits a row per failure forever. This is exactly the level-versus-edge problem 3c-i's Bluetooth counter solved, and it gets the same treatment.
+
+`RestartManager` gains one key in its existing `KeyValueStore`, `KEY_GAVE_UP_REPORTED`, and one read-only accessor. It is set when a give-up is first reported and cleared by `clearCounters()`, which already runs on a successful payment or connection. The helper receives it as `alreadyGaveUp`; the decision stays in the pure unit.
+
+`COOLDOWN_ACTIVE` stays silent: it is the policy working, and the failure that put the kiosk there is reported through the causing diagnostic.
 
 ---
 
-## The other kinds
+## `checkout_no_reader` ships, on the reader's state rather than the app's belief
 
-| Kind | Severity | Site | Detail |
-|---|---|---|---|
-| `restart_triggered` | error | marker, written in `handleRestartResult`'s `RESTART` arm before `hardRestart` | `{"reason": <reason>}` |
-| `sumup_reinit_failed` | error | `onActivityResult` case 1 login-failed branch — marker when it triggers a restart, async otherwise | `{"code": <int>, "message": <vendor text>}` |
-| `card_reader_connect_failed` | warn | `onActivityResult` case 2 not-connected branch — same rule | `{"code": <int>, "message": <vendor text>}` |
-| `card_reader_page_timeout` | warn | the 10-minute pairing job — **see below** | `null` |
-| `restart_triggered` (gave up) | error | `MAX_RESTARTS` arm | `{"reason": <reason>, "outcome": "gave_up"}` |
+An earlier draft dropped this kind. That was right about the predicate it had and wrong about the alternatives.
 
-Each detail shape gets a builder in `DiagnosticEvents`, beside 3c-i's three. No `JsonObject` is assembled in `MainActivity` — that is the rule 3c-i established and the reason its builders exist.
+`isCardReaderConnected` is **inverted in practice**: `disconnectCardReader()` sets it false and runs from the idle screensaver path (`:505`), `activateScreensaver` (`:944`) and the 02:00 reinit (`:1228`), and `prepareCardReader` does not restore it. A kiosk at rest would emit a row on every declined card.
 
-### `card_reader_page_timeout` fires *through* another kind
+But the app already queries the SDK directly for the reader's real state, in two places (`:686`, `:826`):
 
-The timeout job calls `finishActivity(2)`, which lands in `onActivityResult` case 2's failure arm. So a timeout would emit `card_reader_page_timeout` **and** `card_reader_connect_failed`, and advance the restart counter — two rows and a counter tick where the earlier draft claimed one row.
+```kotlin
+ReaderModuleCoreState.Instance()?.mReaderCoreManager?.isCardReaderConnected() == true
+```
 
-That is not a bug to suppress. The reader genuinely did fail to connect, and the counter genuinely should advance: an operator who walks away from the pairing dialog has left a kiosk with no reader. But the two rows must be **correlated**, or a dashboard counts one incident twice. The timeout's detail carries nothing today; it gains `{"closed_by": "timeout"}`, and the `card_reader_connect_failed` that follows within the same interaction is expected. The spec says so rather than leaving a reader to guess.
+wrapped in `try`/`catch` returning false. That call is available inside case 3's **already-failed** branch, aborts nothing, and reports the reader rather than the app's belief about it. `checkout_no_reader` is reported when a checkout failed **and** that query says no reader is connected.
 
-### `MAX_RESTARTS` and `COOLDOWN_ACTIVE`
-
-`handleRestartResult` has four arms and the earlier draft reported from one. `MAX_RESTARTS` is the worst state a kiosk reaches — it has given up restarting itself and is sitting there broken — and it reported nothing at all. It now reports, as an ordinary asynchronous write since nothing is about to exit.
-
-`COOLDOWN_ACTIVE` stays silent: it is a normal, transient part of the restart policy, and a kiosk in cooldown reports the failure that put it there through the causing diagnostic.
-
-### `checkout_no_reader` is dropped
-
-The master spec lists it. It does not ship, and this is a deliberate reversal of an earlier decision.
-
-The predicate proposed for it — `isCardReaderConnected` false at checkout failure — is **inverted in practice**. `disconnectCardReader()` sets that flag false and runs from the idle screensaver path (`MainActivity.kt:505`), from `activateScreensaver` (`:944`) and from the 02:00 reinit (`:1228`), and `prepareCardReader` does not restore it. So a kiosk at rest has the flag false and would emit a warn row on **every declined card**, while a reader genuinely lost shortly after pairing would emit none. The device check written for it would have passed, because it ran straight after pairing.
-
-The alternatives are worse: keying off SumUp's error codes means none of them say "no reader", and adding a real reader check to `makePayment` puts a new abort condition on the donation path, which non-negotiable #1 forbids and which the repo owner already declined.
-
-A kind that fires on the wrong events is worse than a missing kind, because a dashboard cannot tell it is wrong. If a reliable signal appears later — a reader-state callback from the SDK, say — this is a one-line addition on the mechanism this phase leaves in place.
+It remains an observation, never a gate: `makePayment` gets no reader check, so a stale SDK answer can cost a diagnostic but can never block a donation.
 
 ---
 
 ## The logcat cleanup
 
-This phase is in these branches anyway, and there is a real exposure in them.
+- **`:650`** logs the entire SumUp result `Bundle` (`extras=${data?.extras}`) — every extra, unredacted. `requestCode` and `resultCode` stay.
+- **`:678` and `:737`** log the raw `errorMessage`. Two sites, not four; case 2 logs none. They keep `errorCode` and drop the message, which still reaches the operator through the existing Toast.
+- **`:717`** logs `Payment successful - TX Code: $txCode` — a SumUp **transaction identifier**. The telemetry design spec promises it is never collected; logcat is not the same as collected, but writing a transaction id to a device log is a gap the disclosure will be read as covering, and nothing needs it.
 
-- **`MainActivity.kt:650`** logs the entire SumUp result `Bundle`: `extras=${data?.extras}`. Every extra the SDK returned, unredacted. `requestCode` and `resultCode` stay — that is the part anyone debugging reads, and neither is sensitive.
-- **`:678` and `:737`** log the raw `errorMessage`. Two sites, not four: case 2 logs none. They keep `errorCode` and drop the raw message, which still reaches the operator through the existing Toast.
-- **`:716`** logs `Payment successful - TX Code: $txCode`. A SumUp **transaction identifier**, which the master spec and the customer disclosure both promise is never collected. It goes.
-
-This is a logcat change only. What telemetry stores is unchanged: vendor text still goes into `detail`, where `TelemetryEvent.Diagnostic`'s constructor scrubs it.
+Logcat only. What telemetry stores is unchanged: vendor text goes into `detail` scrubbed.
 
 ---
 
 ## What this phase does not change
 
-- No `DiagnosticKind` enum change, no new outbox mechanism, no `TelemetryOutbox` change at all.
-- No change to `RestartManager` or to any recovery decision.
-- No change to `makePayment` or any donation path.
-- No new flush trigger.
-- `DiagnosticReporter.record` keeps its current contract, including rethrowing `CancellationException`.
+No `DiagnosticKind` change, no `TelemetryOutbox` change, no `RestartManager` *decision* change (one additive key), no `makePayment` change, no new flush trigger, no change to `DiagnosticReporter.record`.
 
 ## The inertness grep after this phase
 
@@ -160,7 +187,7 @@ This is a logcat change only. What telemetry stores is unchanged: vendor text st
 grep -rnE '[Oo]utbox\.append\(' app/src/main   # expect 5, unchanged
 ```
 
-Every new kind reaches the outbox through `reportDiagnostic` or through the existing startup drain. `flush()` callers stay at **1**; `activate()` has **1** real caller plus a KDoc mention. After this phase a grep for `DiagnosticKind\.<NAME>` finds constructions for **ten** of eleven kinds — `CHECKOUT_NO_READER` is the deliberate absence above.
+Every kind reaches the outbox through `reportDiagnostic` or the existing drain. `flush()` stays at **1**; `activate()` has **1** real caller plus KDoc mentions at `:1878` and `:1906`. A grep for `DiagnosticKind\.<NAME>` then finds constructions for **all eleven** kinds.
 
 ---
 
@@ -169,76 +196,72 @@ Every new kind reaches the outbox through `reportDiagnostic` or through the exis
 ### JVM-tested
 
 **`PendingDiagnostics`:**
-- `encode`/`decode` round-trip, including a null detail.
-- `add` keeps the newest `MAX_ENTRIES` and drops the oldest — pin it by adding more than the cap.
-- `decode` is total: malformed JSON, an unknown `kind` wire string, a missing field, a truncated string, and an empty/null input each return what parses and drop the rest, **without throwing**.
-- The kind round-trips by `wire` string, not ordinal: a test asserts the encoded form contains the wire name, so an ordinal-based implementation fails it.
+- Round-trip including a null detail; the encoded form contains the kind's **wire** string, so an ordinal implementation fails.
+- `add` keeps the newest `MAX_ENTRIES`; `add` of a two-entry list is one operation.
+- `remove` drops only the named ids and **preserves an entry added since the read** — the test for the drain race.
+- `decode` is total across: malformed JSON, unknown kind, missing field, truncated string, empty, null. None throw.
 
-**The restart decision helper:**
-- `RESTART` yields markers for both the causing kind and `restart_triggered`.
-- `BELOW_THRESHOLD` and `COOLDOWN_ACTIVE` yield an ordinary report of the causing kind and no marker.
-- `MAX_RESTARTS` yields an ordinary report of the causing kind **and** of `restart_triggered` with `outcome: gave_up`.
-- The helper is handed a `RestartResult` and never calls `RestartManager` itself — so it cannot be the thing that double-counts.
+**`restartReport`:** every row of the table above, including both `MAX_RESTARTS` cases, and that `RESTART` markers carry `outcome: restarted` while the give-up row carries `outcome: gave_up`.
 
-**The detail builders**, beside 3c-i's: each carries its fields, and `card_reader_page_timeout` carries `closed_by: timeout`.
+**`RestartManager`:** `KEY_GAVE_UP_REPORTED` is set once, survives further failures, and is cleared by `clearCounters()`. Every existing test passes unmodified.
 
-**`DiagnosticEvents.forKind`** already covers every kind through its table-driven tests; no new gate test is needed.
+**The detail builders**, beside 3c-i's: each carries its fields, and `closed_by` appears only when a synthetic close set it.
 
 ### Not unit-testable, and labelled as such
 
-The call sites, the marker write, and the drain's new branch. `MainActivity` needs the Android lifecycle. What compensates: every decision is in `PendingDiagnostics` or the restart helper, and the sites are one line plus a hoisted local at two of them.
-
-**The hoist is the one risky edit**, because a double call to `recordCardReaderFailure()` restarts a kiosk early and no unit test can see `MainActivity`. Device check 2 exists for it.
+The call sites, `syntheticClose`, the marker write, and the drain's new branch. Every decision they rely on is pinned above.
 
 ### Device checks
 
-1. Force three consecutive card-reader failures to trigger an auto-restart. After the restart, **both** a `card_reader_connect_failed` and a `restart_triggered` must have arrived — the check that the markers survived the process exit.
-2. **Two** consecutive failures must **not** restart the kiosk. This is the double-count check; "three failures → restart" cannot detect one.
-3. Open the pairing page and walk away for ten minutes: a `card_reader_page_timeout` with `closed_by: timeout`, followed by a `card_reader_connect_failed` — two rows, expected, correlated.
-4. Fail a SumUp login after a reinit without reaching the threshold: one `sumup_reinit_failed`, no restart, no marker left behind.
-5. Exhaust `maxRestartsBeforeGiveUp`: a `restart_triggered` with `outcome: gave_up`.
-6. Take a normal donation with diagnostics queued: it completes normally. Regression check for non-negotiable #1.
-7. With `analyticsEnabled` off, repeat any two: queue depth unchanged.
-8. Carried and still unverified: status survives a restart with `droppedCount` intact (2c); a donation appends exactly one row (3a); the disk-full rollback check (3b); the Bluetooth once-per-outage check (3c-i, **without rotating the device**).
+1. Three consecutive card-reader failures → after the restart, **both** a `card_reader_connect_failed` and a `restart_triggered` with `outcome: restarted` have arrived. The markers survived the process exit.
+2. **Two** consecutive failures must **not** restart the kiosk. The double-count check; "three → restart" cannot detect one.
+3. Pairing page, walk away ten minutes: a `card_reader_page_timeout`, and a `card_reader_connect_failed` carrying `closed_by: pairing_timeout`.
+4. Let the screensaver activate while the pairing page is open: `card_reader_connect_failed` with `closed_by: screensaver`, and **no** `card_reader_page_timeout`.
+5. Stall a silent re-auth past the watchdog: `sumup_reinit_failed` with `closed_by: login_watchdog`. A real interactive login failure produces one **without** `closed_by`.
+6. Exhaust `maxRestartsBeforeGiveUp`: one `restart_triggered` with `outcome: gave_up`. Keep failing: **no further rows** until a success clears the counters.
+7. Fail a checkout with the reader physically off: one `checkout_no_reader`. Decline a card with the reader connected: **none**.
+8. Take a normal donation with diagnostics queued: it completes normally.
+9. With `analyticsEnabled` off, repeat any two: queue depth unchanged.
+10. Carried and still unverified: status survives a restart with `droppedCount` intact (2c); a donation appends exactly one row (3a); the disk-full rollback check (3b); the Bluetooth once-per-outage check (3c-i, **without rotating the device**).
 
 ---
 
 ## Limitations, stated rather than buried
 
-**A marker is lost if the app never comes back.** `hardRestart` starts an activity before exiting, so it normally does; a kiosk that dies for good reports nothing. Accepted — the alternative is the dying-process write this phase deliberately abandoned.
+**A marker is lost if the app never comes back.** `hardRestart` starts an activity before exiting, so it normally does.
 
-**`checkout_no_reader` does not ship.** Reasoned above.
+**`checkout_no_reader` trusts the SDK's answer at one moment.** A stale answer costs a diagnostic, never a donation.
 
-**A pairing timeout produces two rows.** By design, correlated by `closed_by`.
+**Two main-thread `commit()` calls become one**, but it is still synchronous disk I/O on the main thread immediately before a restart. Bounded and brief, and the alternative is losing the marker.
 
-**Five new call sites beside the payment path, and only the decisions are unit-tested.** Mitigated by each site observing values already computed for an existing Toast, and by device check 6.
+**Five call sites beside the payment path**, with only the decisions unit-tested. Mitigated by each site observing values already computed for an existing Toast, and by device check 8.
 
 ---
 
 ## Decisions
 
-**Markers, not a dying-process write.** A controlled restart comes back, and 3b already ships this pattern. Three spec reviews found Criticals in the alternative, two of them in the mechanism rather than the drafting.
+**Markers, not a dying-process write.** Three spec reviews found Criticals in the alternative, two in the mechanism itself.
 
-**The kind is stored by wire string.** An ordinal would silently re-map every stored entry the day a kind is inserted into the enum.
+**`syntheticClose` as a present field.** A discriminator that is an *absent* key cannot be distinguished from an older build that never wrote it.
 
-**`decode` is total.** It runs during `onCreate`; a corrupt marker must not stop a kiosk from starting.
+**`remove(drainedIds)`, not a blanket clear.** A restart during startup drain is reachable, and a blanket clear silently eats it.
 
-**The restart decision goes in a pure helper.** It is the only way a test can see that `recordCardReaderFailure()` is called once, and a double call restarts a kiosk early.
+**Detail scrubbed before storage.** The redactor's contract is about what reaches a file, and a marker is a file.
 
-**`MAX_RESTARTS` reports; `COOLDOWN_ACTIVE` does not.** One is a kiosk that has given up; the other is the policy working.
+**`MAX_RESTARTS` edge-triggered in `RestartManager`.** It is a level test over a counter that only success clears; the same shape as 3c-i's Bluetooth fix, which is precedent worth following rather than re-deriving.
 
-**`checkout_no_reader` is dropped rather than shipped wrong.** A kind that fires on every declined card is worse than a missing one, because nothing downstream can tell it is wrong.
+**`checkout_no_reader` reinstated on the SDK query.** Dropping it was right for the predicate it had; the app already had a better one in two other places.
 
-**The TX-code log goes.** It is a transaction identifier in logcat, and two documents promise it is never collected.
+**The sample shows `handleRestartResult`.** Both restart sites are its only callers, and a sample that omits it deletes auto-restart.
 
 ---
 
 ## Required after this phase
 
-`diagnostic_events` is complete apart from the deliberate omission. Remaining: phase 4 (the disclosure screen and its eight translations) and phase 5 (documentation). Carried forward:
+`diagnostic_events` is complete. Remaining: phase 4 (the disclosure screen and eight translations) and phase 5 (documentation). Carried forward:
 
-- **`KioskCrashHandler` appends with the ordinary `append`**, which reads the whole queue under a shared lock on a dying thread — up to ~5,000 rows and a wait behind a flush's rewrite. Real since 3b. The marker pattern cannot serve it, so it needs the bounded-write work that this phase abandoned, done properly and on its own: the three reviews of that design are on file and name every trap.
-- `retryableFailure` is still one global boolean; a refused table backs off the healthy ones. Carried from 2a, and now that eleven kinds enqueue it stalls more than it used to. The most valuable remaining fix.
-- `CrashContext.onOutboxDropped` retains one live Activity; it retires when `telemetryStatusStore` stops being Activity-lazy.
+- **`KioskCrashHandler` uses the ordinary `append`**, reading the whole queue under a shared lock on a dying thread. Real since 3b; the marker pattern cannot serve a crash. It needs the bounded-write work abandoned here, done on its own — the three reviews of that design are on file and name every trap.
+- `retryableFailure` is one global boolean; a refused table backs off the healthy ones. Carried from 2a and now the most valuable remaining fix.
+- `CrashContext.onOutboxDropped` retains one live Activity until `telemetryStatusStore` stops being Activity-lazy.
 - `SettingsBootstrap`'s call site is still untested.
 - The 02:00 flush floor is not guaranteed while offline (3a).
