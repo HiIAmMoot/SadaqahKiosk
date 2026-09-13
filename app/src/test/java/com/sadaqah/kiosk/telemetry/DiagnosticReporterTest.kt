@@ -23,7 +23,7 @@ class DiagnosticReporterTest {
     )
 
     private fun record(
-        settings: Settings? = enabled,
+        settings: () -> Settings? = { enabled },
         kind: DiagnosticKind = DiagnosticKind.NETWORK_OUTAGE,
         detail: (() -> String?)? = { "{}" },
         affiliateKey: () -> String? = { null },
@@ -40,6 +40,13 @@ class DiagnosticReporterTest {
             append = append,
             onError = onError
         )
+    }
+
+    @Test
+    fun aThrowingSettingsSupplierDoesNotPropagateAndAppendIsNotCalled() {
+        var appendCalls = 0
+        record(settings = { error("settings boom") }, append = { appendCalls++ })
+        assertEquals(0, appendCalls)
     }
 
     @Test
