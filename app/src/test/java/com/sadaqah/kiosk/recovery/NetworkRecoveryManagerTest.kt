@@ -190,12 +190,42 @@ class NetworkRecoveryManagerTest {
     }
 
     @Test
-    fun anIgnoredRestorationLeavesTheDurationUntouched() {
+    fun aRestorationWithNothingTrackedLeavesTheDurationUntouched() {
         val m = manager()
         m.onNetworkLost(isLoggedIn = true, testMode = false)
         now += 900_000L
         m.onNetworkRestored(isLoggedIn = true)
         m.onNetworkRestored(isLoggedIn = true) // nothing tracked — Ignore
         assertEquals(900_000L, m.lastOutageMs)
+    }
+
+    /** The spec's other ignore path: logged out during the outage. Distinct
+     *  from the "nothing tracked" case above — this one clears the lost
+     *  timestamp without touching lastOutageMs, per the lifecycle table. */
+    @Test
+    fun aRestorationWhileLoggedOutLeavesTheDurationUntouched() {
+        val m = manager()
+        m.onNetworkLost(isLoggedIn = true, testMode = false)
+        now += 900_000L
+        m.onNetworkRestored(isLoggedIn = true)
+        m.onNetworkLost(isLoggedIn = true, testMode = false)
+        now += 1_000L
+        assertEquals(NetworkRestoredAction.Ignore, m.onNetworkRestored(isLoggedIn = false))
+        assertEquals(900_000L, m.lastOutageMs)
+    }
+
+    // ── longDowntimeThresholdMs ──────────────────────────────────────────────
+
+    /** Pins that the exposed threshold is the same number the comparison in
+     *  onNetworkRestored actually uses, not a separately-derived one that
+     *  could drift from it. */
+    @Test
+    fun theExposedThresholdMatchesWhatTheComparisonUses() {
+        val m = manager()
+        assertEquals(settings.longDowntimeThresholdSec * 1000L, m.longDowntimeThresholdMs)
+
+        m.onNetworkLost(isLoggedIn = true, testMode = false)
+        now += m.longDowntimeThresholdMs + 1 // one ms over the exposed threshold
+        assertEquals(NetworkRestoredAction.AutoReinit, m.onNetworkRestored(isLoggedIn = true))
     }
 }

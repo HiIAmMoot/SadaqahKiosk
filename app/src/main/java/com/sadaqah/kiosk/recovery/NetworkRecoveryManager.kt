@@ -29,6 +29,13 @@ class NetworkRecoveryManager(
     var lastOutageMs: Long = 0L
         private set
 
+    /** The threshold [onNetworkRestored] actually compared [lastOutageMs]
+     *  against. This manager is built once per Activity from a settings
+     *  snapshot, so a mid-session provisioning import cannot change the
+     *  number a caller reports here out from under the decision it describes —
+     *  unlike reading the field from a live Settings elsewhere. */
+    val longDowntimeThresholdMs: Long get() = settings.longDowntimeThresholdSec * 1000L
+
     /** Called when the device truly loses internet. Returns the action the caller should take. */
     fun onNetworkLost(isLoggedIn: Boolean, testMode: Boolean): NetworkLostAction {
         if (!isLoggedIn || testMode) return NetworkLostAction.Ignore
@@ -49,7 +56,7 @@ class NetworkRecoveryManager(
         lastOutageMs = downtime
         networkLostTimestamp = 0L
 
-        return if (downtime > settings.longDowntimeThresholdSec * 1000L) {
+        return if (downtime > longDowntimeThresholdMs) {
             NetworkRestoredAction.AutoReinit
         } else {
             NetworkRestoredAction.ResumeNormally
