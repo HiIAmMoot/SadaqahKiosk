@@ -2126,7 +2126,7 @@ class MainActivity : FragmentActivity() {
         lifecycleScope.launch {
             withContext(Dispatchers.IO) {
                 DiagnosticReporter.record(
-                    settings = CrashContext.settings,
+                    settings = { CrashContext.settings },
                     appVersion = BuildConfig.VERSION_NAME,
                     kind = kind,
                     occurredAtMs = occurredAtMs,

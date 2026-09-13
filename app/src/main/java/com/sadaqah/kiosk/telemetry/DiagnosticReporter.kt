@@ -16,7 +16,7 @@ import kotlinx.coroutines.CancellationException
 object DiagnosticReporter {
 
     fun record(
-        settings: Settings?,
+        settings: () -> Settings?,
         appVersion: String,
         kind: DiagnosticKind,
         occurredAtMs: Long,
@@ -26,11 +26,12 @@ object DiagnosticReporter {
         onError: (Throwable) -> Unit = {}
     ) {
         try {
-            // detail() and affiliateKey() are called inside the guard, not
-            // before it: they run caller-supplied code (JSON building, a
-            // volatile read from another thread) and either can throw.
+            // settings(), detail() and affiliateKey() are called inside the
+            // guard, not before it: they run caller-supplied code (a volatile
+            // read from another thread, JSON building) and any of them can
+            // throw.
             val result = DiagnosticEvents.forKind(
-                settings = settings,
+                settings = settings(),
                 appVersion = appVersion,
                 kind = kind,
                 occurredAtMs = occurredAtMs,
