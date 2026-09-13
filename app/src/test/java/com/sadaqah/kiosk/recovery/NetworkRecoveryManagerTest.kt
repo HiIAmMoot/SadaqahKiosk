@@ -216,11 +216,14 @@ class NetworkRecoveryManagerTest {
 
     // ── longDowntimeThresholdMs ──────────────────────────────────────────────
 
-    /** Pins that the exposed threshold is the same number the comparison in
-     *  onNetworkRestored actually uses, not a separately-derived one that
-     *  could drift from it. */
+    /** Pins the seconds-to-ms formula behind longDowntimeThresholdMs (a wrong
+     *  multiplier or a different backing field fails this) and that exceeding
+     *  it drives AutoReinit. Both sides are derived from the same manager
+     *  instance, so this cannot catch a call site that re-derives the
+     *  threshold from a live Settings instead of reading this property — that
+     *  was I-1, and no JVM test can reach a call site. */
     @Test
-    fun theExposedThresholdMatchesWhatTheComparisonUses() {
+    fun theExposedThresholdMsIsConfiguredSecondsTimesOneThousandAndGatesAutoReinit() {
         val m = manager()
         assertEquals(settings.longDowntimeThresholdSec * 1000L, m.longDowntimeThresholdMs)
 
