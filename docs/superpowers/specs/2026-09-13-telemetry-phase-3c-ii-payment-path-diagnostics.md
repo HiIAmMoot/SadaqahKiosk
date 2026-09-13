@@ -52,18 +52,30 @@ Both also tick the restart counter, so without a discriminator a kiosk that mere
 
 The obvious version — set a field before the synthetic call, read it in the arm that receives the result — is wrong, because **`finishActivity` is a no-op when nothing is outstanding**. `activateScreensaver` (`:943`) runs from a UI tap (`:618`), at which point the pairing page is generally not in the foreground, so the field is set and **no callback ever arrives to clear it**. The next genuine failure then picks up a stale `"screensaver"` label — inverting the very invariant the field exists to establish. Three arms also receive results without touching it: the offline branch (`:656-659`), case-1 success (`:660-672`) and case-2 success (`:691-699`).
 
-So the field is **consumed once at the top of `onActivityResult`**, before any branching, and carries the request code it was armed for:
+Consuming at the top of `onActivityResult` is necessary but **not sufficient**, and the reason is worth stating because it is the trap one layer down. `resetScreensaver` (`:1627`) calls `finishActivity(2)` on *every* screensaver dismissal, almost always with no pairing page open. Consume-at-top never runs, because no callback is delivered — so the label sits armed until the next code-2 result arrives, which is typically a genuine failure, and the request-code match then *approves* the stale label rather than rejecting it.
+
+**The arm must therefore be conditional on something being outstanding**, which is the precondition for a callback existing at all:
 
 ```kotlin
-    /** Armed immediately before a finishActivity() the app issues itself, so the
-     *  result can be told from one the operator caused. Consumed unconditionally
-     *  at the top of onActivityResult — finishActivity is a no-op when nothing
-     *  is outstanding, so an armed label that never produces a callback must not
-     *  survive to mislabel the next genuine failure. */
-    private var syntheticClose: Pair<Int, String>? = null
+    /** Labels for a finishActivity() the app issues itself, so the result can be
+     *  told from one the operator caused. One slot per request code: a reinit can
+     *  have a login and a reader close in flight at once, and a single slot would
+     *  let the later arm evict the earlier and then be discarded as a mismatch.
+     *
+     *  Armed ONLY when that activity is actually outstanding. finishActivity is a
+     *  no-op otherwise, and an arm with no callback coming would survive to
+     *  mislabel the next genuine failure — which is exactly what resetScreensaver
+     *  would do on every screensaver dismissal. */
+    private var syntheticCloseReader: String? = null   // request code 2
+    private var syntheticCloseLogin: String? = null    // request code 1
 ```
 
-At the top of the handler: take it, clear it, and keep its label **only if its request code matches** the result being delivered; otherwise discard. That closes both the stale-label case and the wrong-arm case, where a reinit overlapping a reader connection (`:1222`, `:1228`) could otherwise let a `"login_watchdog"` label be read by case 2.
+- **Code 2 arms only when `isConnectingCardReader` is true** — the flag the pairing page already maintains (`:688`, `:1058`).
+- **Code 1 arms only when a login activity is outstanding** — the silent-login watchdog only runs while one is (`:1010-1017`), and the teardown loop at `:1503` fires six times in sequence, so it arms on the first and the rest find the slot already set.
+
+Both slots are consumed and cleared at the top of `onActivityResult` for the code being delivered, before any branching. The other slot is left alone — it belongs to an activity that has not returned yet.
+
+This is what makes "absent `closed_by` means genuine" true rather than aspirational.
 
 ### All six `finishActivity` call sites
 
@@ -149,7 +161,11 @@ The helper must not both decide and write, or its testability — the only reaso
 ```kotlin
 data class RestartReport(
     val toMarker: List<PendingDiagnostic>,
-    val toReportNow: List<PendingDiagnostic>
+    val toReportNow: List<PendingDiagnostic>,
+    /** True when this decision includes a give-up row, so the caller sets the
+     *  latch instead of re-deriving the edge condition in MainActivity, where
+     *  no test can reach it. */
+    val gaveUpReported: Boolean
 )
 
 fun restartReport(
@@ -168,6 +184,8 @@ fun restartReport(
 | `COOLDOWN_ACTIVE` | empty | causing |
 | `MAX_RESTARTS`, `alreadyGaveUp = false` | empty | causing + `restart_triggered` `{"reason":…, "outcome":"gave_up"}` |
 | `MAX_RESTARTS`, `alreadyGaveUp = true` | empty | causing |
+
+`gaveUpReported` is true only on the fourth row. `reportRestart` calls `markGaveUpReported()` when it is, and asks no question of its own.
 
 Both `restart_triggered` rows carry an explicit `outcome`, so they differ by a **present** field rather than by one row lacking a key.
 
@@ -278,7 +296,7 @@ The call sites, `syntheticClose`, the marker write, and the drain's new branch. 
 1. Three consecutive card-reader failures → after the restart, **both** a `card_reader_connect_failed` and a `restart_triggered` with `outcome: restarted` have arrived. The markers survived the process exit.
 2. **Two** consecutive failures must **not** restart the kiosk. The double-count check; "three → restart" cannot detect one.
 3. Pairing page, walk away ten minutes: a `card_reader_page_timeout`, and a `card_reader_connect_failed` carrying `closed_by: pairing_timeout`.
-4. Tap through to the screensaver (`activateScreensaver`, `:618`) while the pairing page is open: `card_reader_connect_failed` with `closed_by: screensaver`. **Not** the idle path — idle (`:497-508`) sets `isScreensaverActive` inline and calls `disconnectCardReader()` without ever calling `activateScreensaver` or `finishActivity`, so it produces no synthetic close at all. Both timers default to 600s, so an idle wait would race the pairing timeout and assert the opposite of what it looks like it asserts.
+4. Dismiss the screensaver (`resetScreensaver`, `:1627`) repeatedly with **no** pairing page open, then fail a reader connection for real. The failure must carry **no** `closed_by` — this is the regression check for the stale-arm bug, and it is performable where "activate the screensaver while the pairing page is open" is not: the screensaver button lives in `MainActivity`'s own UI (`SettingsScreen.kt:332`), which cannot be foreground while the SumUp pairing activity is.
 5. Stall a silent re-auth past the watchdog: `sumup_reinit_failed` with `closed_by: login_watchdog`. A real interactive login failure produces one **without** `closed_by`.
 6. Exhaust `maxRestartsBeforeGiveUp`: one `restart_triggered` with `outcome: gave_up`. Keep failing: **no further rows** until a success clears the counters.
 7. Fail a checkout with the reader physically off: one `checkout_no_reader`. Decline a card with the reader connected: **none**.
