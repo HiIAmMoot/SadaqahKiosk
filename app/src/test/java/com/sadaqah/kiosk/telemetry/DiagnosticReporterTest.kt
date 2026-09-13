@@ -76,36 +76,42 @@ class DiagnosticReporterTest {
 
     @Test
     fun cancellationFromDetailIsRethrownRatherThanSwallowed() {
+        var errors = 0
         assertThrows(CancellationException::class.java) {
-            record(detail = { throw CancellationException("cancelled") })
+            record(detail = { throw CancellationException("cancelled") }, onError = { errors++ })
         }
+        assertEquals("onError must not run for a rethrown cancellation", 0, errors)
     }
 
     @Test
     fun cancellationFromAffiliateKeyIsRethrownRatherThanSwallowed() {
+        var errors = 0
         assertThrows(CancellationException::class.java) {
-            record(affiliateKey = { throw CancellationException("cancelled") })
+            record(affiliateKey = { throw CancellationException("cancelled") }, onError = { errors++ })
         }
+        assertEquals("onError must not run for a rethrown cancellation", 0, errors)
     }
 
     @Test
     fun cancellationFromAppendIsRethrownRatherThanSwallowed() {
+        var errors = 0
         assertThrows(CancellationException::class.java) {
-            record(append = { throw CancellationException("cancelled") })
+            record(append = { throw CancellationException("cancelled") }, onError = { errors++ })
         }
+        assertEquals("onError must not run for a rethrown cancellation", 0, errors)
     }
 
     @Test
     fun analyticsOffCallsAppendZeroTimes() {
         var appendCalls = 0
-        record(settings = enabled.copy(analyticsEnabled = false), append = { appendCalls++ })
+        record(settings = { enabled.copy(analyticsEnabled = false) }, append = { appendCalls++ })
         assertEquals(0, appendCalls)
     }
 
     @Test
     fun nullSettingsCallsAppendZeroTimes() {
         var appendCalls = 0
-        record(settings = null, append = { appendCalls++ })
+        record(settings = { null }, append = { appendCalls++ })
         assertEquals(0, appendCalls)
     }
 
