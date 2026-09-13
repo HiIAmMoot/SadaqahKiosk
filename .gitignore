@@ -45,3 +45,6 @@ build-output.txt
 # May carry live endpoints or keys, which must never enter git history.
 Handoffs/
 handoffs/
+
+# Session guidance for coding agents — working reference, not shipped source.
+CLAUDE.md
