@@ -39,9 +39,7 @@ That design is abandoned. A controlled restart does not need to write from a dyi
 
 ## Synthetic activity results: six paths, not one
 
-`onActivityResult` cannot tell a user-driven failure from one the app caused itself, and the app causes it six ways:
-
-`finishActivity(2)` lands in case 2's failure arm and `finishActivity(1)` in case 1's — the same arms a real failure reaches. The full list of sites is below; the two that show why this matters:
+`onActivityResult` cannot tell a user-driven failure from one the app caused itself, and the app causes it six ways. `finishActivity(2)` lands in case 2's failure arm and `finishActivity(1)` in case 1's — the same arms a real failure reaches. The full list is below; the two that show why this matters:
 
 - **`activateScreensaver`** closes the pairing page, so putting the kiosk to sleep would report `card_reader_connect_failed` as though a reader had failed.
 - **The silent-login watchdog** closes a stalled *silent* re-auth, producing `sumup_reinit_failed` with `code: -1, message: "Unknown error"` — indistinguishable from a real interactive login failure.
