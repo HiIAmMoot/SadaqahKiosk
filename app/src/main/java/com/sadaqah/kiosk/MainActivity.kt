@@ -347,9 +347,22 @@ class MainActivity : FragmentActivity() {
         // initialisation, and lazy's SYNCHRONIZED mode can block if another
         // thread is mid-init. The outbox's lock is keyed on the file, so two
         // instances over one path are safe.
+        //
+        // onDropped below is a lambda over CrashContext, not ::onOutboxDropped:
+        // a bound reference would capture this Activity and the process-global
+        // handler installed below would retain it for the process's life — the
+        // exact failure CrashContext.kt exists to prevent, one field over.
+        // Repointing the slot on every recreation keeps it live-instance-only.
+        // The touch this closure makes when it fires — telemetryStatusStore's
+        // `by lazy` and a possible first-load getSharedPreferences — runs from
+        // inside the outbox's own monitor, on whatever thread dropped the
+        // event, including a dying one; bounded by compactSlack (only past 100
+        // discards) and by KioskCrashHandler's own catch(Throwable), so it can
+        // delay the chain but never break it.
+        CrashContext.onOutboxDropped = ::onOutboxDropped
         crashOutbox = TelemetryOutbox(
             File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"),
-            onDropped = ::onOutboxDropped
+            onDropped = { CrashContext.onOutboxDropped?.invoke(it) }
         )
 
         val existingHandler = Thread.getDefaultUncaughtExceptionHandler()
