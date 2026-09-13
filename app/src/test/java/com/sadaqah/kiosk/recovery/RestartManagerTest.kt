@@ -207,4 +207,41 @@ class RestartManagerTest {
         // Should succeed even though lastRestart defaults to 0
         assertEquals(1, mgr.restartCount)
     }
+
+    // ── Give-up latch ─────────────────────────────────────────────────────────
+
+    @Test
+    fun theGiveUpLatchStartsUnset() {
+        assertFalse(createManager().gaveUpReported)
+    }
+
+    @Test
+    fun markingTheGiveUpLatchSticksAcrossFurtherFailures() {
+        val m = createManager()
+        m.markGaveUpReported()
+        m.recordCardReaderFailure()
+        assertTrue(m.gaveUpReported)
+    }
+
+    @Test
+    fun clearingTheCountersClearsTheGiveUpLatch() {
+        val m = createManager()
+        m.markGaveUpReported()
+        m.clearCounters()
+        assertFalse(m.gaveUpReported)
+    }
+
+    /**
+     * Without this, raising maxRestartsBeforeGiveUp on a kiosk that had already
+     * given up would let it restart and then give up a second time in silence.
+     */
+    @Test
+    fun anActualRestartClearsTheGiveUpLatch() {
+        val m = createManager()
+        m.markGaveUpReported()
+        // maxConsecutiveFailures is 3 and restartCount starts at 0, so this
+        // reaches tryRestart's RESTART branch, not MAX_RESTARTS.
+        repeat(3) { m.recordCardReaderFailure() }
+        assertFalse(m.gaveUpReported)
+    }
 }

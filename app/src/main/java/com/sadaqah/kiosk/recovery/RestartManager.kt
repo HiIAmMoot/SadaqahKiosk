@@ -19,7 +19,15 @@ class RestartManager(
         const val KEY_LAST_RESTART = "last_restart_timestamp"
         const val KEY_CARD_READER_FAILURES = "consecutive_card_reader_failures"
         const val KEY_REINIT_FAILURES = "consecutive_reinit_failures"
+        const val KEY_GAVE_UP_REPORTED = "gave_up_reported"
     }
+
+    /** Int 0/1 rather than a boolean: KeyValueStore exposes only int and long
+     *  accessors, and widening it would drag the SharedPreferences
+     *  implementation and the in-memory test fake along for one flag. */
+    val gaveUpReported: Boolean get() = store.getInt(KEY_GAVE_UP_REPORTED) == 1
+
+    fun markGaveUpReported() { store.putInt(KEY_GAVE_UP_REPORTED, 1) }
 
     /** Records a card reader connection failure.
      *  If the failure count reaches the threshold and restart guards allow it,
@@ -58,6 +66,7 @@ class RestartManager(
         store.putInt(KEY_RESTART_COUNT, 0)
         store.putInt(KEY_CARD_READER_FAILURES, 0)
         store.putInt(KEY_REINIT_FAILURES, 0)
+        store.putInt(KEY_GAVE_UP_REPORTED, 0)
         return had
     }
 
@@ -83,6 +92,9 @@ class RestartManager(
 
         store.putInt(KEY_RESTART_COUNT, restartCount + 1)
         store.putLong(KEY_LAST_RESTART, now)
+        // Otherwise raising maxRestartsBeforeGiveUp on a kiosk that already
+        // gave up lets it restart, then give up a second time in silence.
+        store.putInt(KEY_GAVE_UP_REPORTED, 0)
         return RestartResult.RESTART
     }
 }
