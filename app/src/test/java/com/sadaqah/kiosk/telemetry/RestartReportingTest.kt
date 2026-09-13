@@ -15,11 +15,12 @@ class RestartReportingTest {
         "causing", DiagnosticKind.CARD_READER_CONNECT_FAILED, atMs, """{"code":-1}"""
     )
 
-    private fun report(result: RestartResult, alreadyGaveUp: Boolean = false) =
+    private fun report(result: RestartResult, alreadyGaveUp: Boolean = false, failureCount: Int = 1) =
         RestartReporting.restartReport(
             result = result,
             causing = causing,
             reason = "card_reader_failures",
+            failureCount = failureCount,
             alreadyGaveUp = alreadyGaveUp,
             nowMs = nowMs,
             idFor = { "generated" }
@@ -109,5 +110,66 @@ class RestartReportingTest {
         assertTrue(r.toMarker.isEmpty())
         assertEquals(listOf("causing"), r.toReportNow.map { it.id })
         assertFalse(r.gaveUpReported)
+    }
+
+    // ── The throttle: only the first failure of an episode says anything new ──
+
+    /**
+     * The motivating case from phase 3c-i's Bluetooth watchdog, repeated here:
+     * a permanently broken reader keeps failing below the restart threshold
+     * forever, and each of those failures must be silent or it fills a
+     * capped, shared outbox with rows that repeat "still broken".
+     */
+    @Test
+    fun belowThresholdOnASecondFailureIsSilent() {
+        val r = report(RestartResult.BELOW_THRESHOLD, failureCount = 2)
+        assertTrue(r.toMarker.isEmpty())
+        assertTrue(r.toReportNow.isEmpty())
+        assertFalse(r.gaveUpReported)
+    }
+
+    @Test
+    fun cooldownOnALaterFailureIsSilent() {
+        val r = report(RestartResult.COOLDOWN_ACTIVE, failureCount = 5)
+        assertTrue(r.toMarker.isEmpty())
+        assertTrue(r.toReportNow.isEmpty())
+        assertFalse(r.gaveUpReported)
+    }
+
+    /**
+     * The other half of the motivating case: once MAX_RESTARTS is hit, the
+     * kiosk stops restarting but keeps failing, so this branch fires forever.
+     * The give-up row already reported it once; every later failure must be
+     * silent, not just the ones that happen to still be "second".
+     */
+    @Test
+    fun aRepeatedGiveUpAfterTheFirstIsSilent() {
+        val r = report(RestartResult.MAX_RESTARTS, alreadyGaveUp = true, failureCount = 40)
+        assertTrue(r.toMarker.isEmpty())
+        assertTrue(r.toReportNow.isEmpty())
+        assertFalse(r.gaveUpReported)
+    }
+
+    /**
+     * RESTART is the failure that crossed the threshold — the single most
+     * useful row there is — so it is marked regardless of how large the
+     * consecutive-failure count has grown (an operator can raise the
+     * threshold after the count already climbed past the old one).
+     */
+    @Test
+    fun aRestartMarksTheCausingFailureRegardlessOfFailureCount() {
+        val r = report(RestartResult.RESTART, failureCount = 9)
+        assertEquals(listOf("causing", "generated"), r.toMarker.map { it.id })
+    }
+
+    /**
+     * Same reasoning for the first give-up: it is the failure that crossed
+     * the give-up threshold, not necessarily failure #1 of anything.
+     */
+    @Test
+    fun theFirstGiveUpReportsTheCausingFailureRegardlessOfFailureCount() {
+        val r = report(RestartResult.MAX_RESTARTS, alreadyGaveUp = false, failureCount = 12)
+        assertEquals(listOf("causing", "generated"), r.toReportNow.map { it.id })
+        assertTrue(r.gaveUpReported)
     }
 }

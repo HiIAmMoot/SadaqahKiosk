@@ -677,7 +677,17 @@ class MainActivity : FragmentActivity() {
                     val errorCode = data?.getIntExtra(SumUpAPI.Response.RESULT_CODE, -1) ?: -1
                     Log.e("SumUpLogin", "Login failed - Code: $errorCode, Message: $errorMessage")
                     Toast.makeText(this, "${strings.logInFailed}: $errorMessage", Toast.LENGTH_LONG).show()
-                    handleRestartResult(restartManager.recordReinitFailure(), "reinit_failures")
+                    val result = restartManager.recordReinitFailure()
+                    reportRestart(
+                        result,
+                        DiagnosticKind.SUMUP_REINIT_FAILED,
+                        DiagnosticEvents.sumUpFailureDetail(
+                            errorCode, TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey), closedBy = null
+                        ),
+                        restartManager.reinitFailures,
+                        "reinit_failures"
+                    )
+                    handleRestartResult(result, "reinit_failures")
                 }
             }
             2 -> {
@@ -708,7 +718,17 @@ class MainActivity : FragmentActivity() {
                         else -> "${strings.connectionFailed}: $errorMessage"
                     }
                     Toast.makeText(this, userMessage, Toast.LENGTH_LONG).show()
-                    handleRestartResult(restartManager.recordCardReaderFailure(), "card_reader_failures")
+                    val result = restartManager.recordCardReaderFailure()
+                    reportRestart(
+                        result,
+                        DiagnosticKind.CARD_READER_CONNECT_FAILED,
+                        DiagnosticEvents.sumUpFailureDetail(
+                            errorCode, TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey), closedBy = null
+                        ),
+                        restartManager.cardReaderFailures,
+                        "card_reader_failures"
+                    )
+                    handleRestartResult(result, "card_reader_failures")
                 }
             }
             3 -> {
@@ -1549,6 +1569,48 @@ class MainActivity : FragmentActivity() {
     }
 
     // ── Auto-restart on unrecoverable conditions ─────────────────────────────
+
+    /**
+     * Executes [RestartReporting.restartReport]'s decision; makes none of its
+     * own. [failureCount] must be read after the `record…Failure()` call that
+     * produced [result], so it reflects the failure just recorded rather than
+     * the one before it.
+     *
+     * The marker write is wrapped here, not inside [PendingDiagnosticStore],
+     * because this call sits immediately before [handleRestartResult] may
+     * trigger [hardRestart] — a thrown exception here must not be what stops
+     * the kiosk from restarting.
+     */
+    private fun reportRestart(
+        result: RestartResult,
+        kind: DiagnosticKind,
+        detail: String,
+        failureCount: Int,
+        reason: String
+    ) {
+        val now = System.currentTimeMillis()
+        val report = RestartReporting.restartReport(
+            result = result,
+            causing = PendingDiagnostic(java.util.UUID.randomUUID().toString(), kind, now, detail),
+            reason = reason,
+            failureCount = failureCount,
+            alreadyGaveUp = restartManager.gaveUpReported,
+            nowMs = now,
+            idFor = { java.util.UUID.randomUUID().toString() }
+        )
+        try {
+            // Same prefs file drainUpdateDiagnostics() reads at startup — see
+            // PendingDiagnosticStore's own comment on why that file, not
+            // `prefs`.
+            PendingDiagnosticStore(UpdateWatchdogReceiver.prefs(this)).add(report.toMarker)
+        } catch (t: Throwable) {
+            Log.e("AutoRestart", "pending diagnostic marker write failed: ${t::class.java.name}")
+        }
+        report.toReportNow.forEach { entry ->
+            reportDiagnostic(entry.kind, { entry.detailJson }, entry.occurredAtMs)
+        }
+        if (report.gaveUpReported) restartManager.markGaveUpReported()
+    }
 
     fun handleRestartResult(result: RestartResult, reason: String) {
         when (result) {

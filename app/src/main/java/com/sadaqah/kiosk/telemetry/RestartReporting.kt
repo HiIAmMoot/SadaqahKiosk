@@ -26,32 +26,48 @@ object RestartReporting {
         result: RestartResult,
         causing: PendingDiagnostic,
         reason: String,
+        failureCount: Int,
         alreadyGaveUp: Boolean,
         nowMs: Long,
         idFor: () -> String
-    ): RestartReport = when (result) {
-        RestartResult.RESTART -> RestartReport(
-            toMarker = listOf(causing, restartTriggeredRow(idFor(), nowMs, reason, outcome = "restarted")),
-            toReportNow = emptyList(),
-            gaveUpReported = false
-        )
+    ): RestartReport {
+        // The causing diagnostic earns its row only when it says something the
+        // last one didn't: the first failure of an episode, the failure that
+        // crossed the restart threshold, or the failure that triggers the
+        // give-up row. Failures 2..N of an episode repeat what failure 1 (or a
+        // prior give-up) already said — and on a kiosk whose reader never
+        // recovers, that repetition is what evicts real donation rows from a
+        // shared, capped outbox. clearCounters() ends an episode on any
+        // success, so a kiosk that recovers starts counting from 1 again.
+        val reportCausing = failureCount == 1 ||
+            result == RestartResult.RESTART ||
+            (result == RestartResult.MAX_RESTARTS && !alreadyGaveUp)
+        val causingRows = if (reportCausing) listOf(causing) else emptyList()
 
-        RestartResult.BELOW_THRESHOLD, RestartResult.COOLDOWN_ACTIVE -> RestartReport(
-            toMarker = emptyList(),
-            toReportNow = listOf(causing),
-            gaveUpReported = false
-        )
-
-        // A level, not an edge: this branch fires on every failure once the
-        // kiosk has given up, forever, so alreadyGaveUp gates the extra row.
-        RestartResult.MAX_RESTARTS -> if (alreadyGaveUp) {
-            RestartReport(toMarker = emptyList(), toReportNow = listOf(causing), gaveUpReported = false)
-        } else {
-            RestartReport(
-                toMarker = emptyList(),
-                toReportNow = listOf(causing, restartTriggeredRow(idFor(), nowMs, reason, outcome = "gave_up")),
-                gaveUpReported = true
+        return when (result) {
+            RestartResult.RESTART -> RestartReport(
+                toMarker = causingRows + restartTriggeredRow(idFor(), nowMs, reason, outcome = "restarted"),
+                toReportNow = emptyList(),
+                gaveUpReported = false
             )
+
+            RestartResult.BELOW_THRESHOLD, RestartResult.COOLDOWN_ACTIVE -> RestartReport(
+                toMarker = emptyList(),
+                toReportNow = causingRows,
+                gaveUpReported = false
+            )
+
+            // A level, not an edge: this branch fires on every failure once the
+            // kiosk has given up, forever, so alreadyGaveUp gates the extra row.
+            RestartResult.MAX_RESTARTS -> if (alreadyGaveUp) {
+                RestartReport(toMarker = emptyList(), toReportNow = causingRows, gaveUpReported = false)
+            } else {
+                RestartReport(
+                    toMarker = emptyList(),
+                    toReportNow = causingRows + restartTriggeredRow(idFor(), nowMs, reason, outcome = "gave_up"),
+                    gaveUpReported = true
+                )
+            }
         }
     }
 
