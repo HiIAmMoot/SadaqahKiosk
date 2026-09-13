@@ -2112,28 +2112,24 @@ class MainActivity : FragmentActivity() {
     ) {
         lifecycleScope.launch {
             withContext(Dispatchers.IO) {
-                try {
-                    val result = DiagnosticEvents.forKind(
-                        settings = CrashContext.settings,
-                        appVersion = BuildConfig.VERSION_NAME,
-                        kind = kind,
-                        occurredAtMs = occurredAtMs,
-                        detailJson = detail?.invoke(),
-                        affiliateKey = CrashContext.affiliateKey
-                    )
-                    if (result is DiagnosticEventResult.Report) {
-                        val event = result.event
+                DiagnosticReporter.record(
+                    settings = CrashContext.settings,
+                    appVersion = BuildConfig.VERSION_NAME,
+                    kind = kind,
+                    occurredAtMs = occurredAtMs,
+                    detail = detail,
+                    affiliateKey = { CrashContext.affiliateKey },
+                    append = { event ->
                         // 3b's eagerly-constructed instance, not the `by lazy`
                         // field: lazy's SYNCHRONIZED mode can block if another
                         // thread is mid-init, and a diagnostic is not worth a
                         // stall on a recovery path.
                         crashOutbox.append(event.id, event.table, event.payloadJson())
+                    },
+                    onError = { t ->
+                        Log.e("Telemetry", "diagnostic ${kind.wire} not recorded: ${t::class.java.name}")
                     }
-                } catch (c: CancellationException) {
-                    throw c
-                } catch (t: Throwable) {
-                    Log.e("Telemetry", "diagnostic ${kind.wire} not recorded: ${t::class.java.name}")
-                }
+                )
             }
         }
     }
