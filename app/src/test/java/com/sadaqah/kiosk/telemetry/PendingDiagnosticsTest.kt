@@ -109,15 +109,31 @@ class PendingDiagnosticsTest {
     }
 
     /** One bad entry must not cost the others — a corrupt marker cannot be
-     *  allowed to stop a kiosk reporting anything at all. */
+     *  allowed to stop a kiosk reporting anything at all. Two different kinds
+     *  so that corrupting one's wire string leaves the other's untouched,
+     *  and asserted straight off `decode(corrupted)` so this actually pins
+     *  per-entry survival rather than survival via a later `add`. */
     @Test
     fun decodeKeepsTheEntriesThatParseAndDropsTheRest() {
-        val good = PendingDiagnostics.encode(listOf(entry("a"), entry("b")))
+        val good = PendingDiagnostics.encode(
+            listOf(entry("a", kind = DiagnosticKind.RESTART_TRIGGERED), entry("b", kind = DiagnosticKind.CARD_READER_PAGE_TIMEOUT))
+        )
         val corrupted = good.replace(DiagnosticKind.RESTART_TRIGGERED.wire, "not_a_kind", ignoreCase = false)
-        // Both entries used the same kind, so corrupting the wire string drops
-        // both; re-encode one good entry alongside to prove partial survival.
-        val mixed = PendingDiagnostics.add(corrupted, listOf(entry("c")))
-        assertEquals(listOf("c"), PendingDiagnostics.decode(mixed).map { it.id })
+        assertEquals(listOf("b"), PendingDiagnostics.decode(corrupted).map { it.id })
+    }
+
+    /**
+     * Depth chosen to exceed the default JVM stack: an unguarded `.asJsonObject`
+     * on a non-object element builds its exception message by serialising the
+     * whole element, which recurses once per nesting level and overflows the
+     * stack — an `Error` that a `catch (_: Exception)` does not stop.
+     */
+    @Test
+    fun decodeSurvivesADeeplyNestedElementWithoutOverflowingTheStack() {
+        val depth = 5000
+        val nestedElement = "[".repeat(depth) + "]".repeat(depth)
+        val raw = "[$nestedElement]"
+        assertTrue(PendingDiagnostics.decode(raw).isEmpty())
     }
 
     @Test

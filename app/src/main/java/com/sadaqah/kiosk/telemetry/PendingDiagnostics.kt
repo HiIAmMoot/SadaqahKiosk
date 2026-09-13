@@ -46,19 +46,23 @@ object PendingDiagnostics {
 
     /** Total by construction: a malformed document fails the whole parse and
      *  yields nothing, while an unknown kind or a missing field fails only
-     *  the one entry that has it. */
+     *  the one entry that has it. `as?`, never `.asJsonArray`/`.asJsonObject`:
+     *  Gson's mismatched-type exception builds its message by serialising the
+     *  whole element, which recurses on a deeply nested one and overflows the
+     *  stack — an `Error`, not an `Exception`, so both catches below are
+     *  widened to [Throwable] as a backstop for whatever `as?` doesn't cover. */
     fun decode(raw: String?): List<PendingDiagnostic> {
         if (raw.isNullOrBlank()) return emptyList()
         val array = try {
-            JsonParser.parseString(raw).asJsonArray
-        } catch (_: Exception) {
+            JsonParser.parseString(raw) as? JsonArray ?: return emptyList()
+        } catch (_: Throwable) {
             return emptyList()
         }
         return array.mapNotNull(::decodeEntry)
     }
 
     private fun decodeEntry(element: JsonElement): PendingDiagnostic? = try {
-        val obj = element.asJsonObject
+        val obj = element as? JsonObject ?: return null
         val wire = obj.get("kind").asString
         // Dropped, not defaulted: a kind this build doesn't recognise is not
         // safely coercible to any other kind.
@@ -69,7 +73,7 @@ object PendingDiagnostics {
             occurredAtMs = obj.get("at").asLong,
             detailJson = if (obj.has("detail")) obj.get("detail").asString else null
         )
-    } catch (_: Exception) {
+    } catch (_: Throwable) {
         null
     }
 
