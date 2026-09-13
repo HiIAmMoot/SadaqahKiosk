@@ -128,24 +128,31 @@ class MainActivity : FragmentActivity() {
     private val telemetryOutbox: TelemetryOutbox by lazy {
         TelemetryOutbox(
             File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"),
-            onDropped = { count ->
-                // Can fire from a background thread and from inside the outbox's
-                // own lock, so this stays a small, non-blocking update on the
-                // status store and never calls back into the outbox. Going
-                // through update() rather than a hand-written read-then-write
-                // also closes the race between two of these landing concurrently
-                // (Ruling BA) and the larger one against an in-flight flush
-                // (TelemetryManager.flush reads its own snapshot before a
-                // network call that can run for minutes) — both are now the
-                // same "someone else wrote first" case update() exists to handle.
-                telemetryStatusStore.update { it.copy(droppedCount = it.droppedCount + count) }
-            }
+            onDropped = ::onOutboxDropped
         )
     }
     // Backs both the crash handler and the diagnostic helper below. A field
     // assigned in onCreate, not a property initializer: filesDir is unusable
     // before attachBaseContext runs, which is before field initializers do.
+    // Shares onOutboxDropped with telemetryOutbox above: 3c-i turned this
+    // instance from a dying-thread-only crash sink into a routine append path
+    // for every recovery diagnostic, so a compaction it triggers can now shed
+    // donation rows exactly as easily as the other instance can, and
+    // droppedCount is the operator's only visibility into that loss.
     private lateinit var crashOutbox: TelemetryOutbox
+
+    /** Can fire from a background thread and from inside the outbox's own
+     *  lock, so this stays a small, non-blocking update on the status store
+     *  and never calls back into the outbox. Going through update() rather
+     *  than a hand-written read-then-write also closes the race between two
+     *  of these landing concurrently (Ruling BA) and the larger one against an
+     *  in-flight flush (TelemetryManager.flush reads its own snapshot before a
+     *  network call that can run for minutes) — both are now the same
+     *  "someone else wrote first" case update() exists to handle. */
+    private fun onOutboxDropped(count: Int) {
+        telemetryStatusStore.update { it.copy(droppedCount = it.droppedCount + count) }
+    }
+
     private val telemetryCredentials: TelemetryCredentials by lazy {
         TelemetryCredentials(KeystoreSecretStore(this))
     }
@@ -341,7 +348,8 @@ class MainActivity : FragmentActivity() {
         // thread is mid-init. The outbox's lock is keyed on the file, so two
         // instances over one path are safe.
         crashOutbox = TelemetryOutbox(
-            File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl")
+            File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"),
+            onDropped = ::onOutboxDropped
         )
 
         val existingHandler = Thread.getDefaultUncaughtExceptionHandler()
