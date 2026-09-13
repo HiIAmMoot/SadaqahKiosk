@@ -123,16 +123,36 @@ class PendingDiagnosticsTest {
     }
 
     /**
-     * Depth chosen to exceed the default JVM stack: an unguarded `.asJsonObject`
-     * on a non-object element builds its exception message by serialising the
+     * Depth chosen to exceed not just a desktop JVM's default stack but a
+     * small one too — ART's, or any 2 MB-stack JVM — so a full revert of the
+     * guard fails everywhere the kiosk actually runs, not just on the machine
+     * that happened to measure the threshold. An unguarded `.asJsonObject` on
+     * a non-object element builds its exception message by serialising the
      * whole element, which recurses once per nesting level and overflows the
      * stack — an `Error` that a `catch (_: Exception)` does not stop.
      */
     @Test
     fun decodeSurvivesADeeplyNestedElementWithoutOverflowingTheStack() {
-        val depth = 5000
+        val depth = 200000
         val nestedElement = "[".repeat(depth) + "]".repeat(depth)
         val raw = "[$nestedElement]"
+        assertTrue(PendingDiagnostics.decode(raw).isEmpty())
+    }
+
+    /**
+     * A different recursive path from the element-cast one above: Gson's
+     * `JsonArray.getAsString()` treats a single-element array as a stand-in
+     * for its element and recurses into `getAsSingleElement().getAsString()`,
+     * so a deeply nested array *value* in the `kind` field overflows the
+     * stack via plain method recursion — no exception-message serialisation
+     * involved. This is the one path the widened catch alone accounts for,
+     * once the element-level `as?` cast has ruled out the other.
+     */
+    @Test
+    fun decodeSurvivesADeeplyNestedKindValueWithoutOverflowingTheStack() {
+        val depth = 200000
+        val nestedKind = "[".repeat(depth) + "]".repeat(depth)
+        val raw = """[{"id":"a","kind":$nestedKind,"at":1}]"""
         assertTrue(PendingDiagnostics.decode(raw).isEmpty())
     }
 
