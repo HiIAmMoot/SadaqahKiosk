@@ -41,14 +41,12 @@ That design is abandoned. A controlled restart does not need to write from a dyi
 
 `onActivityResult` cannot tell a user-driven failure from one the app caused itself, and the app causes it six ways:
 
-| Caller | Call | Lands in | Would report |
-|---|---|---|---|
-| pairing timeout job (`:1064`) | `finishActivity(2)` | case 2 failure arm | `card_reader_connect_failed` |
-| `activateScreensaver` (`:943`) | `finishActivity(2)` | case 2 failure arm | `card_reader_connect_failed` |
-| silent-login watchdog (`:1016`) | `finishActivity(1)` | case 1 failure arm | `sumup_reinit_failed` |
-| a real user-driven failure | — | either | the same kinds |
+`finishActivity(2)` lands in case 2's failure arm and `finishActivity(1)` in case 1's — the same arms a real failure reaches. The full list of sites is below; the two that show why this matters:
 
-So without a discriminator, closing the screensaver reports a reader failure, and a stalled *silent* re-auth reports a `sumup_reinit_failed` carrying `code: -1, message: "Unknown error"` — indistinguishable from a real interactive login failure, and both tick the restart counter.
+- **`activateScreensaver`** closes the pairing page, so putting the kiosk to sleep would report `card_reader_connect_failed` as though a reader had failed.
+- **The silent-login watchdog** closes a stalled *silent* re-auth, producing `sumup_reinit_failed` with `code: -1, message: "Unknown error"` — indistinguishable from a real interactive login failure.
+
+Both also tick the restart counter, so without a discriminator a kiosk that merely went to sleep looks like one failing its way toward an auto-restart.
 
 ### The consumption protocol, which is where the obvious design breaks
 
