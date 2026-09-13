@@ -18,9 +18,12 @@ object CrashContext {
     @Volatile var settings: Settings? = null
     @Volatile var affiliateKey: String? = null
 
-    // Same reasoning as settings/affiliateKey above: crashOutbox's onDropped
-    // must reach the live Activity's status store without the crash handler
-    // itself ever holding an Activity reference. onCreate repoints this on
-    // every recreation; a lambda that reads this field is non-capturing.
+    // Holds a bound reference to MainActivity.onOutboxDropped, repointed on
+    // every onCreate. The handler retains one live Activity instance by design;
+    // the indirection exists so the reference cannot go stale across a
+    // configuration change. A lambda that reads this slot is non-capturing.
+    // Do not clear this in onDestroy: during overlapping recreation the new
+    // instance sets the slot before the old instance is destroyed, so a null
+    // would eliminate the live handler mid-chain.
     @Volatile var onOutboxDropped: ((Int) -> Unit)? = null
 }

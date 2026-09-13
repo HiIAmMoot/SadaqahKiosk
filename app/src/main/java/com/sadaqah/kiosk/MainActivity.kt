@@ -348,11 +348,11 @@ class MainActivity : FragmentActivity() {
         // thread is mid-init. The outbox's lock is keyed on the file, so two
         // instances over one path are safe.
         //
-        // onDropped below is a lambda over CrashContext, not ::onOutboxDropped:
-        // a bound reference would capture this Activity and the process-global
-        // handler installed below would retain it for the process's life — the
-        // exact failure CrashContext.kt exists to prevent, one field over.
-        // Repointing the slot on every recreation keeps it live-instance-only.
+        // The onDropped lambda below reads only CrashContext, making it
+        // non-capturing. But the slot assigned here holds a bound reference to
+        // this Activity's method, retaining one instance by design. Repointing
+        // on every recreation prevents the reference from going stale across
+        // configuration changes — a problem CrashContext.kt documents in detail.
         // The touch this closure makes when it fires — telemetryStatusStore's
         // `by lazy` and a possible first-load getSharedPreferences — runs from
         // inside the outbox's own monitor, on whatever thread dropped the
