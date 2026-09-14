@@ -361,7 +361,12 @@ class StatusCodecTest {
     @Test
     fun `a legacy single value seeds every table on first upgrade`() {
         val decoded = StatusCodec.decode(
-            mapOf(StatusCodec.KEY_FAILURES to 4, StatusCodec.KEY_BACKOFF_UNTIL to 5_000L)
+            // mapOf<String, Any> is explicit, not decorative: left inferred,
+            // Kotlin resolves the bare `4` literal to Long to unify with
+            // `5_000L`, so `as? Int` in decode would miss it and this would
+            // assert against an empty map for a reason that has nothing to do
+            // with the code under test.
+            mapOf<String, Any>(StatusCodec.KEY_FAILURES to 4, StatusCodec.KEY_BACKOFF_UNTIL to 5_000L)
         )
         assertEquals(TelemetryTables.ALL.associateWith { 4 }, decoded.consecutiveFailuresByTable)
         assertEquals(TelemetryTables.ALL.associateWith { 5_000L }, decoded.backoffUntilMsByTable)
