@@ -4,7 +4,7 @@
 
 **Goal:** A diagnostics table the backend refuses stops delaying donations that would upload fine.
 
-**Architecture:** `TelemetryStatus`'s two failure fields become maps keyed by table name, and the uploader — which already sends one request per table — starts reporting which tables failed and which succeeded instead of one global boolean. The flush excludes backed-off tables *inside* `TelemetryOutbox.peek`, before the batch is truncated to its limit, so backed-off rows at the head can never crowd out the rows behind them. Four carried cleanups ride along on the same send path.
+**Architecture:** `TelemetryStatus`'s two failure fields become maps keyed by table name, and the uploader — which already sends one request per table — reports which tables failed and which succeeded instead of one global boolean. The flush excludes backed-off tables *inside* `TelemetryOutbox.peek`, before the batch is truncated to its limit, so backed-off rows at the head can never crowd out the rows behind them. Four carried cleanups ride along on the same send path.
 
 **Tech Stack:** Kotlin 2.0.21, JUnit 4, Gson, `java.time`, SharedPreferences. No new dependencies.
 
@@ -18,18 +18,30 @@
 - **The donation flow is not altered.** No change to `makePayment` or any path a payment travels.
 - **Every deletion decision still comes from the uploader**, never re-derived. `TelemetryManager` deletes exactly the ids the uploader names.
 - **One corrupt prefs key costs one field, not the whole status.** `droppedCount` must never be zeroed by an unrelated key going bad.
-- **A kiosk with `analyticsEnabled` off writes nothing identified to disk.**
+- **A kiosk with `analyticsEnabled` off writes nothing identified to disk.** No task changes this; it is listed so a reviewer knows it was considered and is out of scope.
 - Comments explain a non-obvious *why*, never a *what*.
-- Commit messages are short; no AI attribution, no session links, in any commit or PR.
-- Run `./gradlew :app:compileDebugKotlin` and `./gradlew :app:testDebugUnitTest` before every commit. Both must pass.
+- Commit messages stay short; no AI attribution and no session links in any commit or PR.
+- Run `./gradlew :app:compileDebugKotlin` and `./gradlew :app:testDebugUnitTest` before every commit. Both must pass, with no `@Ignore` added by this phase.
 
-## Plan-level decision the spec does not make
+## Read the test file before you write a test in it
 
-**The spec requires `PrefsStatusStore` tests that the current design cannot support.** Its Testing section asks for a per-table round trip, a one-corrupt-key-costs-one-field check, and a legacy-key migration check. No JVM test in this project can construct a `Context`, and both Robolectric and an instrumented harness are excluded (new dependency; hardware deferred).
+**Every task below opens with a reconnaissance step, and it is not optional.** A plan review of the first draft of this document found three Criticals and twelve Importants, and its root-cause finding was that the test steps had been written without opening the test files: helpers were named that do not exist, a fixture hard-codes a table every new test needs to vary, and twenty-two existing assertions were left unported under a step that declared "Expected: PASS".
 
-So the mapping is extracted into a pure object, `StatusCodec`, that converts between `TelemetryStatus` and a plain `Map<String, Any?>`. `PrefsStatusStore` supplies `prefs.all` on the way in and drives the editor on the way out; it keeps no judgement of its own. Every risky part — the per-table key scheme, the per-key defensiveness, the legacy migration — becomes a pure function a JVM test exercises directly.
+The fixtures, as they actually are at HEAD:
 
-This also disposes of the `ClassCastException` catch entirely: reading from `Map<String, Any?>` with `as?` cannot throw, so a bad key yields its own field's default and nothing else. That is the spec's per-key totality requirement, obtained structurally rather than by discipline.
+| File | What exists |
+|---|---|
+| `TelemetryManagerTest.kt` | `manager(outbox, poster, …)` `:49`; `outboxWith(vararg ids)` `:79` — **hard-codes `TelemetryTables.DONATIONS`**; nested `ConstantPoster` `:20` and `ScriptedPoster` `:36`, constructed inline; stores are inline `InMemoryStatusStore()`; `now` is a `var` field `:16` = `1_000_000L`. There is no `outbox`, `poster` or `store` helper. |
+| `TelemetryUploaderTest.kt` | `RecordingPoster(respond)` `:13`; `event(id, table = DONATIONS)` `:23`; `uploader(poster)` `:26`. **Reads `retryableFailure` 22 times.** |
+| `TelemetryOutboxTest.kt` | `outbox(...)` is a **factory function** `:18`, used as `val box = outbox()`; `file` field; `TelemetryOutbox.appendDonation(id)` extension `:31`. |
+| `AnalyticsPresenterTest.kt` | `view(settings, config, status)` `:13` — **`now` is a class field `:11`, not a parameter**; `zone` and `locale` do not exist. |
+| `ClearCredentialsTest.kt` | `:27` constructs a `TelemetryStatus` with `consecutiveFailures`; `:35` asserts on it. |
+
+## Plan-level decisions the spec does not make
+
+**1. `StatusCodec`, because the spec requires tests the current design cannot support.** The spec asks for a `PrefsStatusStore` per-table round trip, a one-corrupt-key-costs-one-field check, and a legacy-migration check. No JVM test in this project can construct a `Context`, and Robolectric and an instrumented harness are both excluded. So the mapping moves into a pure object over a plain `Map<String, Any?>`; `PrefsStatusStore` becomes the SharedPreferences plumbing around it. Reading with `as?` also means a bad value cannot throw at all, so per-key totality is obtained structurally rather than by discipline.
+
+**2. Exclusion ships in the same commit that removes the gate's backoff check.** The first draft put the gate change in Task 1 and the exclusion in Task 4, which would have left three commits on the branch with backoff state that nothing reads — a kiosk pointed at a refusing backend retrying on every tick with no delay. Because Task 1 moves every table in lockstep, excluding *all* backed-off tables is exactly today's global behaviour, so the two land together and Task 1's behaviour-preservation claim is true rather than aspirational. No test is `@Ignore`d anywhere in this plan.
 
 ---
 
@@ -44,57 +56,56 @@ This also disposes of the `ClassCastException` catch entirely: reading from `Map
 - `telemetry/TelemetryStatusStore.kt` — `TelemetryStatus`'s two scalars become maps; gains `effectiveBackoffUntilMs`.
 - `telemetry/TelemetryGate.kt` — `GateInputs.backoffUntilMs` removed; gains `isTableBackedOff`.
 - `telemetry/PrefsStatusStore.kt` — delegates to `StatusCodec`.
-- `telemetry/TelemetryUploader.kt` — `UploadOutcome` carries `retryableTables` and `succeededTables`.
-- `telemetry/TelemetryManager.kt` — per-table outcome accounting, exclusion, `BACKING_OFF`, `activate()`.
 - `telemetry/TelemetryOutbox.kt` — `peek` gains `excludeTables`.
+- `telemetry/TelemetryUploader.kt` — `UploadOutcome` carries `retryableTables` and `succeededTables`.
+- `telemetry/TelemetryManager.kt` — exclusion in the flush, per-table outcome accounting, `BACKING_OFF`, `activate()`.
 - `telemetry/AnalyticsPresenter.kt` — aggregation, the error rule, `lastSuccessText`.
 - `telemetry/TelemetryRedactor.kt` — `truncate` loses its parameter; owns the truncation suffix.
 - `telemetry/DiagnosticEvents.kt` — references the shared suffix.
-- `MainActivity.kt` — ticker helper, watchdog clear, presenter call site.
+- `recovery/RestartManager.kt` — comment only.
+- `MainActivity.kt` — ticker helper, watchdog clear, presenter call site, one stale comment.
 - `screens/AnalyticsSettingsScreen.kt` — `formatTimestamp` deleted; renders `view.lastSuccessText`.
-- Tests: `TelemetryGateTest`, `TelemetryManagerTest`, `TelemetryOutboxTest`, `AnalyticsPresenterTest`, `TelemetryUploaderTest`, `TelemetryRedactorTest`, `DiagnosticEventsTest`.
+- Tests: `TelemetryGateTest`, `TelemetryManagerTest`, `TelemetryOutboxTest`, `TelemetryUploaderTest`, `AnalyticsPresenterTest`, `TelemetryRedactorTest`, `ClearCredentialsTest`.
 
 ---
 
-## Task 1: The representation change, behaviour held constant
+## Task 1: Per-table state, and exclusion in the same commit
 
-Every table moves in lockstep in this task: the *shape* becomes per-table, the *behaviour* stays global. Nothing here should change what a kiosk does. That isolation is the point — Task 3 changes behaviour against a suite that already passes in the new shape.
+The shape becomes per-table; the behaviour stays global, because every table moves in lockstep. Exclusion is here rather than later so that the enforcement the gate loses is replaced in the same commit.
+
+**Two deliberate exceptions to "behaviour unchanged", both improvements the spec asks for, called out so a reviewer is not left to discover them:**
+
+- A deadline beyond `MAX_BACKOFF_MS` renders `backingOff = true` today (`AnalyticsPresenter.kt:112` compares raw, with no ceiling guard) and `false` afterwards. That is the fail-open guard reaching the screen, which is the point of putting it in `effectiveBackoffUntilMs`.
+- `BACKING_OFF` now comes from the flush rather than the gate. `activate()` cannot produce it either way, because its reset clears both maps before `flush` reads them.
 
 **Files:**
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryEvent.kt:9-13`
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryStatusStore.kt:16-24`
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryGate.kt`
-- Create: `app/src/main/java/com/sadaqah/kiosk/telemetry/StatusCodec.kt`
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/PrefsStatusStore.kt`
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryManager.kt` (call sites only)
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/AnalyticsPresenter.kt` (call sites only)
-- Modify: `app/src/main/java/com/sadaqah/kiosk/MainActivity.kt:2001,2008`
-- Test: `app/src/test/java/com/sadaqah/kiosk/telemetry/StatusCodecTest.kt` (new), `TelemetryGateTest.kt`, `TelemetryManagerTest.kt`, `AnalyticsPresenterTest.kt`
+- Modify: `telemetry/TelemetryEvent.kt:9-13`, `telemetry/TelemetryStatusStore.kt:16-24`, `telemetry/TelemetryGate.kt`, `telemetry/TelemetryOutbox.kt:61-63`, `telemetry/TelemetryManager.kt`, `telemetry/AnalyticsPresenter.kt`, `MainActivity.kt:2001,2008`
+- Create: `telemetry/StatusCodec.kt`, `test/.../StatusCodecTest.kt`
+- Test: `StatusCodecTest.kt`, `TelemetryGateTest.kt`, `TelemetryOutboxTest.kt`, `TelemetryManagerTest.kt`, `AnalyticsPresenterTest.kt`, `ClearCredentialsTest.kt`
 
 **Interfaces:**
-- Produces: `TelemetryTables.ALL: List<String>`; `TelemetryStatus.backoffUntilMsByTable: Map<String, Long>`, `TelemetryStatus.consecutiveFailuresByTable: Map<String, Int>`, `TelemetryStatus.effectiveBackoffUntilMs(nowMs: Long): Long`; `TelemetryGate.isTableBackedOff(backoffUntilMs: Long, nowMs: Long): Boolean`; `StatusCodec.decode(raw: Map<String, Any?>): TelemetryStatus`, `StatusCodec.encode(status: TelemetryStatus): Map<String, Any?>`.
-- Consumes: nothing from earlier tasks.
+- Produces: `TelemetryTables.ALL: List<String>`; `TelemetryStatus.backoffUntilMsByTable: Map<String, Long>`, `.consecutiveFailuresByTable: Map<String, Int>`, `.effectiveBackoffUntilMs(nowMs: Long): Long`; `TelemetryGate.isTableBackedOff(backoffUntilMs: Long, nowMs: Long): Boolean`; `StatusCodec.decode(raw: Map<String, Any?>): TelemetryStatus`, `.encode(status: TelemetryStatus): Map<String, Any?>`, `.keyFor(base: String, table: String): String`; `TelemetryOutbox.peek(limit: Int = DEFAULT_BATCH, excludeTables: Set<String> = emptySet())`; `TelemetryManagerTest.outboxWithRows(vararg rows: Pair<String, String>)`.
 
-- [ ] **Step 1: Add the table list**
+- [ ] **Step 1: Reconnaissance**
 
-In `TelemetryEvent.kt`, replace the `TelemetryTables` object:
+Read, in full, before writing anything: `TelemetryGateTest.kt`, `TelemetryOutboxTest.kt`, `TelemetryManagerTest.kt`, `AnalyticsPresenterTest.kt`, `ClearCredentialsTest.kt`. Write down every assertion that reads `TelemetryStatus.consecutiveFailures` or `.backoffUntilMs`, or constructs `GateInputs`. The enumeration in Step 14 is your cross-check, not your source — if you find a site it does not list, port it and say so in your report.
+
+- [ ] **Step 2: Add the table list**
+
+In `TelemetryEvent.kt`, extend `TelemetryTables`:
 
 ```kotlin
-object TelemetryTables {
-    const val DONATIONS = "donation_events"
-    const val DIAGNOSTICS = "diagnostic_events"
-    const val ACTIVATIONS = "telemetry_activations"
-
     /** Enumerated so per-table persistence reads and writes the same set. A
      *  fourth table added above and forgotten here would be written by one and
      *  never read back by the other, which no test would fail on. */
     val ALL = listOf(DONATIONS, DIAGNOSTICS, ACTIVATIONS)
-}
 ```
 
-- [ ] **Step 2: Write the failing test for the status helper**
+- [ ] **Step 3: Write the failing tests for the status helper**
 
-Add to `app/src/test/java/com/sadaqah/kiosk/telemetry/TelemetryGateTest.kt`:
+Add to `TelemetryGateTest.kt` (`import org.junit.Assert.*` is already at `:3`; add nothing).
+
+These live here rather than in a `TelemetryStatusStoreTest` because the helper is a thin wrapper over `TelemetryGate.isTableBackedOff` and there is no status-store test file; note it in your report if you disagree.
 
 ```kotlin
     @Test
@@ -119,10 +130,9 @@ Add to `app/src/test/java/com/sadaqah/kiosk/telemetry/TelemetryGateTest.kt`:
     }
 
     /**
-     * A deadline beyond the ceiling was computed against a clock that has since
-     * been corrected, and it is the *aggregate* that makes it dangerous: taking
-     * a maximum, one corrupt entry dominates every healthy one and freezes the
-     * screen for as long as the bad value says.
+     * The aggregate is what makes a corrupt deadline dangerous: taking a
+     * maximum, one entry beyond the ceiling dominates every healthy one and
+     * freezes the screen for as long as the bad value says.
      *
      * Mutation check: delete the isTableBackedOff filter from
      * effectiveBackoffUntilMs and this test must fail.
@@ -145,32 +155,42 @@ Add to `app/src/test/java/com/sadaqah/kiosk/telemetry/TelemetryGateTest.kt`:
         assertFalse(TelemetryGate.isTableBackedOff(now, now))
         assertTrue(TelemetryGate.isTableBackedOff(now + 1, now))
     }
+
+    @Test
+    fun `a deadline exactly at the ceiling still counts`() {
+        val now = 10_000L
+        assertTrue(TelemetryGate.isTableBackedOff(now + TelemetryGate.MAX_BACKOFF_MS, now))
+    }
+
+    @Test
+    fun `a deadline past the ceiling fails open`() {
+        val now = 10_000L
+        assertFalse(
+            "a corrected clock must not silence a kiosk for years",
+            TelemetryGate.isTableBackedOff(now + TelemetryGate.MAX_BACKOFF_MS + 1, now)
+        )
+    }
 ```
 
-Ensure `org.junit.Assert.assertFalse` and `assertTrue` are imported.
-
-- [ ] **Step 3: Run it and watch it fail**
+- [ ] **Step 4: Run them and watch them fail**
 
 Run: `./gradlew :app:testDebugUnitTest --tests '*TelemetryGateTest*'`
 Expected: FAIL — `effectiveBackoffUntilMs` and `isTableBackedOff` are unresolved.
 
-- [ ] **Step 4: Change `TelemetryStatus`**
+- [ ] **Step 5: Change `TelemetryStatus`**
 
-In `TelemetryStatusStore.kt`, replace the two scalar fields and add the helper. Keep the existing KDoc on the data class and on `droppedCount` unchanged.
+In `TelemetryStatusStore.kt`, replace the two scalar fields and add the helper. Keep the existing KDoc on the data class and on `droppedCount` verbatim.
 
 ```kotlin
-data class TelemetryStatus(
-    val queued: Int = 0,
-    val lastSuccessMs: Long = 0L,
-    val lastError: String? = null,
-    val lastErrorAtMs: Long = 0L,
     /** Per table, because the uploader sends one request per table and a table
      *  the backend refuses must not delay a table it accepts. A table absent
      *  from either map has no failures and no deadline — absence is the healthy
-     *  state, so a fresh kiosk and a fully recovered one are the same value. */
+     *  state, so a fresh kiosk and a fully recovered one read identically. */
     val consecutiveFailuresByTable: Map<String, Int> = emptyMap(),
     val backoffUntilMsByTable: Map<String, Long> = emptyMap(),
-    val droppedCount: Int = 0
+```
+
+```kotlin
 ) {
     /**
      * The latest deadline any table is still waiting on, or 0 if none is.
@@ -188,9 +208,9 @@ data class TelemetryStatus(
 }
 ```
 
-- [ ] **Step 5: Change `TelemetryGate`**
+- [ ] **Step 6: Change `TelemetryGate`**
 
-Remove `backoffUntilMs` from `GateInputs`, drop the two backoff branches from `evaluate`, and add the predicate. `FlushBlock.BACKING_OFF` stays in the enum — `TelemetryManager` returns it now.
+Remove `backoffUntilMs` from `GateInputs`, drop the two backoff branches from `evaluate`, add the predicate. `FlushBlock.BACKING_OFF` stays in the enum — Step 12 makes the flush return it.
 
 ```kotlin
 data class GateInputs(
@@ -224,43 +244,15 @@ data class GateInputs(
         backoffUntilMs - nowMs <= MAX_BACKOFF_MS && nowMs < backoffUntilMs
 ```
 
-Update the comment above `evaluate` — it currently promises the reason names "the real problem", which is still true, but the list it walks no longer ends at backoff. Leave the sentence, drop nothing else.
+- [ ] **Step 7: Port `TelemetryGateTest`, and delete the one case that stops meaning anything**
 
-- [ ] **Step 6: Run the gate tests**
+- `ready()` at `:16` drops its `backoffUntilMs = 0L` argument.
+- `:58-59` and `:64-65` asserted `evaluate` returning `BACKING_OFF` and `NONE` around the deadline. That behaviour is now `isTableBackedOff`, covered by Step 3's `is false at the instant the deadline is reached` — delete both, and say in your report that Step 3 is where they went.
+- `:70-77` (stale deadline ignored, deadline at ceiling) are likewise covered by Step 3's ceiling cases. Delete.
+- `:80-85`, `aStaleDeadlineDoesNotOutrankTheOtherBlocks`: **delete it.** It is `ready().copy(enabled = false, backoffUntilMs = <stale>)` asserting `DISABLED`; strip the deadline and it is character-for-character `disabled_blocks` at `:26-30`, under a name about staleness the gate no longer knows anything about. A duplicate body under a name that has stopped being true is worse than one test fewer.
+- `:89-96`, `disabledOutranksEveryOtherBlock`: drop the `backoffUntilMs` argument and keep it. It still pins `DISABLED` against four other failing inputs.
 
-Run: `./gradlew :app:testDebugUnitTest --tests '*TelemetryGateTest*'`
-Expected: FAIL to compile — the existing backoff cases still reference the removed field.
-
-- [ ] **Step 7: Port the gate's backoff tests, do not delete them**
-
-In `TelemetryGateTest.kt`: `ready()` at `:16` drops its `backoffUntilMs = 0L` argument. The four cases at `:58-77` assert on `evaluate` returning `BACKING_OFF`; that behaviour moved, so each becomes an `isTableBackedOff` case. Replace them with:
-
-```kotlin
-    @Test
-    fun `a live deadline backs its table off`() {
-        val now = 10_000L
-        assertTrue(TelemetryGate.isTableBackedOff(now + 1, now))
-    }
-
-    @Test
-    fun `a deadline exactly at the ceiling still counts`() {
-        val now = 10_000L
-        assertTrue(TelemetryGate.isTableBackedOff(now + TelemetryGate.MAX_BACKOFF_MS, now))
-    }
-
-    @Test
-    fun `a deadline past the ceiling fails open`() {
-        val now = 10_000L
-        assertFalse(
-            "a corrected clock must not silence a kiosk for years",
-            TelemetryGate.isTableBackedOff(now + TelemetryGate.MAX_BACKOFF_MS + 1, now)
-        )
-    }
-```
-
-The case at `:83` (a disabled kiosk with an absurd deadline reports `DISABLED`) and the one at `:93` now simply drop the `backoffUntilMs` argument — precedence among the remaining checks is unchanged and both still assert something real.
-
-- [ ] **Step 8: Write the failing `StatusCodec` test**
+- [ ] **Step 8: Write the failing `StatusCodec` tests**
 
 Create `app/src/test/java/com/sadaqah/kiosk/telemetry/StatusCodecTest.kt`:
 
@@ -269,18 +261,30 @@ package com.sadaqah.kiosk.telemetry
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
  * The mapping is tested here rather than through [PrefsStatusStore] because no
- * JVM test in this project can construct a Context, and Robolectric is not an
+ * JVM test in this project can construct a Context and Robolectric is not an
  * available dependency. Everything with judgement in it lives in this object;
  * the store is the SharedPreferences plumbing around it.
  */
 class StatusCodecTest {
 
+    /**
+     * What [PrefsStatusStore.write] leaves in SharedPreferences, which is NOT
+     * what [StatusCodec.encode] returns: the store turns a null value into
+     * `editor.remove`, so an absent table's key is **missing**, where encode
+     * leaves it **present and null**. Decoding encode's raw output would
+     * therefore exercise a shape the device never has — and would miss that a
+     * missing key falls back to the legacy value.
+     */
+    private fun asStored(status: TelemetryStatus): Map<String, Any?> =
+        StatusCodec.encode(status).filterValues { it != null }
+
     @Test
-    fun `round trips per-table state`() {
+    fun `round trips per-table state through the shape the store actually writes`() {
         val status = TelemetryStatus(
             lastSuccessMs = 111L,
             lastError = "HTTP 400 bad column",
@@ -289,36 +293,64 @@ class StatusCodecTest {
             backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to 999L),
             droppedCount = 7
         )
-        val decoded = StatusCodec.decode(StatusCodec.encode(status))
-        assertEquals(status.copy(queued = 0), decoded)
-    }
-
-    @Test
-    fun `a healthy table is absent from both maps rather than stored as zero`() {
-        val encoded = StatusCodec.encode(
-            TelemetryStatus(consecutiveFailuresByTable = mapOf(TelemetryTables.DIAGNOSTICS to 2))
-        )
-        val decoded = StatusCodec.decode(encoded)
-        assertEquals(mapOf(TelemetryTables.DIAGNOSTICS to 2), decoded.consecutiveFailuresByTable)
+        assertEquals(status, StatusCodec.decode(asStored(status)))
     }
 
     /**
-     * droppedCount is an operator's only view of telemetry loss, and it must not
-     * be collateral damage from an unrelated key going bad. Before per-key
-     * totality one ClassCastException anywhere yielded a wholly default status,
-     * silently zeroing it — and going from six keys to ten multiplies the ways
-     * that happens.
+     * The defect this test exists for: a table that recovers has its per-table
+     * key removed, and if the pre-upgrade global keys were still on disk the
+     * fallback would resurrect them — re-backing-off every recovered table and
+     * pinning its failure count at the pre-upgrade value for the life of the
+     * install, so the very first failure after recovery would cost the full
+     * one-hour ceiling instead of a minute.
+     *
+     * Mutation check: stop emitting the two legacy keys from `encode` and this
+     * test must fail.
+     */
+    @Test
+    fun `a write clears the legacy keys, so a recovered table stays recovered`() {
+        val upgraded = mutableMapOf<String, Any?>(
+            StatusCodec.KEY_FAILURES to 6,
+            StatusCodec.KEY_BACKOFF_UNTIL to 5_000L
+        )
+
+        // The migration seeds every table on the first read.
+        val migrated = StatusCodec.decode(upgraded)
+        assertEquals(TelemetryTables.ALL.associateWith { 6 }, migrated.consecutiveFailuresByTable)
+
+        // Everything then recovers, and the store applies the write.
+        for ((key, value) in StatusCodec.encode(migrated.copy(
+            consecutiveFailuresByTable = emptyMap(),
+            backoffUntilMsByTable = emptyMap()
+        ))) {
+            if (value == null) upgraded.remove(key) else upgraded[key] = value
+        }
+
+        assertTrue("the legacy keys must not survive a write", 
+            !upgraded.containsKey(StatusCodec.KEY_FAILURES) &&
+            !upgraded.containsKey(StatusCodec.KEY_BACKOFF_UNTIL))
+        val after = StatusCodec.decode(upgraded)
+        assertEquals(emptyMap<String, Int>(), after.consecutiveFailuresByTable)
+        assertEquals(emptyMap<String, Long>(), after.backoffUntilMsByTable)
+    }
+
+    /**
+     * droppedCount is an operator's only view of telemetry loss and must not be
+     * collateral damage from an unrelated key. Before per-key totality one
+     * ClassCastException anywhere yielded a wholly default status, silently
+     * zeroing it — and going from six keys to ten multiplies the ways that
+     * happens.
      */
     @Test
     fun `one corrupt key costs one field and nothing else`() {
-        val raw = StatusCodec.encode(
+        val raw = asStored(
             TelemetryStatus(
                 droppedCount = 42,
                 lastSuccessMs = 111L,
                 backoffUntilMsByTable = mapOf(TelemetryTables.DONATIONS to 999L)
             )
         ).toMutableMap()
-        raw["backoff_until_ms.donation_events"] = "not a long"
+        raw[StatusCodec.keyFor(StatusCodec.KEY_BACKOFF_UNTIL, TelemetryTables.DONATIONS)] = "not a long"
 
         val decoded = StatusCodec.decode(raw)
         assertEquals(42, decoded.droppedCount)
@@ -329,27 +361,18 @@ class StatusCodecTest {
     @Test
     fun `a legacy single value seeds every table on first upgrade`() {
         val decoded = StatusCodec.decode(
-            mapOf(
-                "consecutive_failures" to 4,
-                "backoff_until_ms" to 5_000L
-            )
+            mapOf(StatusCodec.KEY_FAILURES to 4, StatusCodec.KEY_BACKOFF_UNTIL to 5_000L)
         )
-        assertEquals(
-            TelemetryTables.ALL.associateWith { 4 },
-            decoded.consecutiveFailuresByTable
-        )
-        assertEquals(
-            TelemetryTables.ALL.associateWith { 5_000L },
-            decoded.backoffUntilMsByTable
-        )
+        assertEquals(TelemetryTables.ALL.associateWith { 4 }, decoded.consecutiveFailuresByTable)
+        assertEquals(TelemetryTables.ALL.associateWith { 5_000L }, decoded.backoffUntilMsByTable)
     }
 
     @Test
     fun `a per-table key wins over the legacy key it supersedes`() {
         val decoded = StatusCodec.decode(
             mapOf(
-                "backoff_until_ms" to 5_000L,
-                "backoff_until_ms.donation_events" to 9_000L
+                StatusCodec.KEY_BACKOFF_UNTIL to 5_000L,
+                StatusCodec.keyFor(StatusCodec.KEY_BACKOFF_UNTIL, TelemetryTables.DONATIONS) to 9_000L
             )
         )
         assertEquals(9_000L, decoded.backoffUntilMsByTable[TelemetryTables.DONATIONS])
@@ -363,7 +386,7 @@ class StatusCodecTest {
 }
 ```
 
-- [ ] **Step 9: Run it and watch it fail**
+- [ ] **Step 9: Run them and watch them fail**
 
 Run: `./gradlew :app:testDebugUnitTest --tests '*StatusCodecTest*'`
 Expected: FAIL — `StatusCodec` is unresolved.
@@ -378,8 +401,8 @@ package com.sadaqah.kiosk.telemetry
 /**
  * The mapping between [TelemetryStatus] and a flat key-value store.
  *
- * Separate from [PrefsStatusStore] so that everything with judgement in it —
- * the per-table key scheme, the defensiveness against a bad value, the legacy
+ * Separate from [PrefsStatusStore] so everything with judgement in it — the
+ * per-table key scheme, the defensiveness against a bad value, the legacy
  * migration — is a pure function a JVM test can exercise. No unit test in this
  * project can construct a Context, so a mapping left inside the store is a
  * mapping nothing checks.
@@ -387,8 +410,8 @@ package com.sadaqah.kiosk.telemetry
  * Reads go through `as?` rather than a typed getter, so a key holding the wrong
  * type (a hand-edited or malformed adb-pushed prefs file — this project
  * provisions settings that way) costs its own field and nothing else. That
- * matters most for [TelemetryStatus.droppedCount], which is an operator's only
- * view of telemetry loss.
+ * matters most for [TelemetryStatus.droppedCount], an operator's only view of
+ * telemetry loss.
  */
 object StatusCodec {
 
@@ -397,7 +420,7 @@ object StatusCodec {
     const val KEY_LAST_ERROR_AT = "last_error_at_ms"
     const val KEY_DROPPED = "dropped_count"
 
-    /** Also the exact key an install from before this phase holds a single
+    /** Also the exact keys an install from before this phase holds a single
      *  global value under. */
     const val KEY_FAILURES = "consecutive_failures"
     const val KEY_BACKOFF_UNTIL = "backoff_until_ms"
@@ -421,7 +444,16 @@ object StatusCodec {
             KEY_LAST_SUCCESS to status.lastSuccessMs,
             KEY_LAST_ERROR to status.lastError,
             KEY_LAST_ERROR_AT to status.lastErrorAtMs,
-            KEY_DROPPED to status.droppedCount
+            KEY_DROPPED to status.droppedCount,
+            // Emitted as null on every write — the store turns null into a
+            // removal — so the migration below is genuinely one-shot. Without
+            // this, a recovered table's per-table key is removed while the
+            // pre-upgrade global key survives, and the fallback resurrects it:
+            // every recovered table is instantly backed off again, and its
+            // failure count reads the pre-upgrade value forever, so the first
+            // failure after recovery costs the full ceiling instead of a minute.
+            KEY_FAILURES to null,
+            KEY_BACKOFF_UNTIL to null
         )
         for (table in TelemetryTables.ALL) {
             out[keyFor(KEY_FAILURES, table)] = status.consecutiveFailuresByTable[table]
@@ -434,9 +466,9 @@ object StatusCodec {
      * A table's own key if it has one, otherwise the pre-3d-i global value.
      *
      * The fallback is what keeps a kiosk that upgrades mid-backoff backing off
-     * rather than resetting to zero and hammering a destination that is still
-     * refusing it. It is superseded table by table on the next write, and the
-     * legacy key is never written again.
+     * rather than resetting to zero and hammering a destination still refusing
+     * it. It survives exactly until the first write, which deletes both legacy
+     * keys.
      *
      * A null result drops the table from the map entirely: absence is the
      * healthy state, so a recovered table and a fresh one read identically.
@@ -448,11 +480,8 @@ object StatusCodec {
     ): Map<String, T> {
         val legacy = cast(raw[base])
         return TelemetryTables.ALL.mapNotNull { table ->
-            val value = if (raw.containsKey(keyFor(base, table))) {
-                cast(raw[keyFor(base, table)])
-            } else {
-                legacy
-            }
+            val key = keyFor(base, table)
+            val value = if (raw.containsKey(key)) cast(raw[key]) else legacy
             value?.let { table to it }
         }.toMap()
     }
@@ -462,11 +491,11 @@ object StatusCodec {
 - [ ] **Step 11: Run the codec tests**
 
 Run: `./gradlew :app:testDebugUnitTest --tests '*StatusCodecTest*'`
-Expected: PASS.
+Expected: PASS. Then perform the mutation check the legacy test names: delete `KEY_FAILURES to null, KEY_BACKOFF_UNTIL to null` from `encode`, re-run, confirm `a write clears the legacy keys` fails, and restore. Record the result in your report.
 
 - [ ] **Step 12: Rewrite `PrefsStatusStore` around the codec**
 
-Replace the body of `PrefsStatusStore.kt` below the class declaration. The `ClassCastException` catch goes: `prefs.all` hands back `Any?` values and the codec casts defensively, so nothing in `read()` can throw. Keep the class KDoc, adding one line about where the mapping now lives.
+Replace everything below the class declaration. The `ClassCastException` catch goes — `prefs.all` hands back `Any?` and the codec casts defensively, so `read()` cannot throw. Keep the class KDoc, adding a line saying the mapping lives in `StatusCodec`.
 
 ```kotlin
     private val prefs = context.getSharedPreferences(prefsName, Context.MODE_PRIVATE)
@@ -482,13 +511,16 @@ Replace the body of `PrefsStatusStore.kt` below the class declaration. The `Clas
         val editor = prefs.edit()
         for ((key, value) in StatusCodec.encode(status)) {
             when (value) {
+                // A recovered table's key must be removed, not left at a stale
+                // value, or the next read would resurrect the deadline this
+                // write just cleared.
                 null -> editor.remove(key)
                 is Long -> editor.putLong(key, value)
                 is Int -> editor.putInt(key, value)
                 is String -> editor.putString(key, value)
-                // Unreachable: encode only produces the three types above. A
-                // silent skip here would drop a field, so fail loudly instead —
-                // this is a programming error, not a data error.
+                // Unreachable: encode produces only the three types above and
+                // null. A silent skip would drop a field, so fail loudly — this
+                // would be a programming error, not a data error.
                 else -> throw IllegalStateException("unsupported status value for $key")
             }
         }
@@ -502,56 +534,208 @@ Replace the body of `PrefsStatusStore.kt` below the class declaration. The `Clas
 
 Delete the private companion — the keys live in `StatusCodec` now.
 
-Note the `null -> editor.remove(key)` branch: a table that recovers must have its key removed, not left at a stale value, or the next `read` would resurrect the deadline it just cleared.
+- [ ] **Step 13: Write the failing outbox tests**
 
-- [ ] **Step 13: Adapt the manager's call sites, behaviour unchanged**
-
-This step is mechanical. In `TelemetryManager.kt`:
-
-- `activate()`'s precheck `GateInputs(...)` drops `backoffUntilMs = 0L`. Trim the comment above it: the clause "backoff forced to 0 (the reset a few lines down always clears it for real, so a stale deadline genuinely cannot block this press)" describes a simulation that no longer exists — delete that clause and leave the rest.
-- `activate()`'s reset becomes, per the spec's "activate clears every table":
+Add to `TelemetryOutboxTest.kt`. Note `outbox()` is a **factory function**, so every test starts `val box = outbox()`, and the file's `appendDonation` extension exists for donation rows.
 
 ```kotlin
-        statusStore.update {
-            it.copy(
-                consecutiveFailuresByTable = emptyMap(),
-                backoffUntilMsByTable = emptyMap(),
-                lastError = null
-            )
+    /**
+     * The defect this phase exists to avoid, and the reason exclusion lives
+     * inside the read. Filtering a batch already truncated to its first `limit`
+     * rows yields nothing at all while the head is excluded — and because peek
+     * removes nothing, the head never advances. A bounded delay would have
+     * become permanent starvation for every row behind it.
+     *
+     * Mutation check: move the filter after `take` and this test must fail.
+     */
+    @Test
+    fun excludedRowsAtTheHeadDoNotCrowdOutTheRowsBehindThem() {
+        val box = outbox()
+        repeat(5) { box.append("d$it", TelemetryTables.DIAGNOSTICS, """{"id":"d$it"}""") }
+        box.appendDonation("donation")
+
+        val batch = box.peek(limit = 3, excludeTables = setOf(TelemetryTables.DIAGNOSTICS))
+
+        assertEquals(listOf("donation"), batch.map { it.id })
+    }
+
+    @Test
+    fun exclusionPreservesQueueOrder() {
+        val box = outbox()
+        box.appendDonation("a")
+        box.append("d", TelemetryTables.DIAGNOSTICS, """{"id":"d"}""")
+        box.appendDonation("b")
+
+        val batch = box.peek(excludeTables = setOf(TelemetryTables.DIAGNOSTICS))
+
+        assertEquals(listOf("a", "b"), batch.map { it.id })
+    }
+
+    @Test
+    fun peekWithNoExclusionsBehavesExactlyAsBefore() {
+        val box = outbox()
+        box.appendDonation("a")
+        box.append("d", TelemetryTables.DIAGNOSTICS, """{"id":"d"}""")
+        assertEquals(listOf("a", "d"), box.peek().map { it.id })
+    }
+```
+
+There is deliberately no `excluded rows stay queued` outbox test. `peek` removes nothing and never has, so such a test passes even if `excludeTables` is ignored entirely, even if the filter is moved after `take`, and even if `peek` is replaced by `{ emptyList() }`. The property it was reaching for — an excluded row is not treated as consumed — is asserted at the flush level in Task 3.
+
+- [ ] **Step 14: Add the parameter**
+
+```kotlin
+    /**
+     * The head of the queue, minus any row belonging to [excludeTables].
+     *
+     * Filtering happens **before** [limit] is applied, and that ordering is the
+     * whole point: taking the first [limit] rows and then dropping the excluded
+     * ones would return nothing at all while the head is excluded, and since
+     * peek removes nothing the head would never advance. Rows behind an
+     * excluded run would stop sending entirely.
+     *
+     * Default-empty, so no existing caller changes. Queue order is preserved;
+     * nothing here groups or sorts by table.
+     */
+    fun peek(limit: Int = DEFAULT_BATCH, excludeTables: Set<String> = emptySet()): List<QueuedEvent> =
+        synchronized(lock) {
+            readAll().asSequence()
+                .filterNot { it.table in excludeTables }
+                .take(limit)
+                .toList()
         }
 ```
 
-- `flush`'s `GateInputs(...)` drops `backoffUntilMs = before.backoffUntilMs`. `before` is now unused *only if* nothing else reads it — check, and if so delete the `val before` line.
-- The throw branch and the `when` still compile against the old scalars; rewrite both to write every table in the batch, which is exactly today's global behaviour expressed per table. In the throw branch:
+Run: `./gradlew :app:testDebugUnitTest --tests '*TelemetryOutboxTest*'` — expected PASS. Then run the mutation the head-of-line test names (move `.take(limit)` above `.filterNot`), confirm it fails, restore, and record it.
+
+- [ ] **Step 15: Add the mixed-table fixture**
+
+`outboxWith` at `TelemetryManagerTest.kt:79` hard-codes `TelemetryTables.DONATIONS`. Every multi-table test in this plan needs a queue that varies the table, so add a sibling rather than changing the existing one (thirty-odd tests depend on its shape):
 
 ```kotlin
-            val failedTables = batch.map { it.table }.toSet()
-            statusStore.update { fresh ->
-                var next = fresh
-                for (table in failedTables) {
-                    val failures = (fresh.consecutiveFailuresByTable[table] ?: 0) + 1
-                    next = next.copy(
-                        consecutiveFailuresByTable = next.consecutiveFailuresByTable + (table to failures),
-                        backoffUntilMsByTable = next.backoffUntilMsByTable +
-                            (table to finishedAt + TelemetryGate.backoffDelayMs(failures))
-                    )
-                }
-                next.copy(lastError = t::class.java.name, lastErrorAtMs = finishedAt)
-            }
+    /** A queue whose rows name their own table, for the per-table backoff tests.
+     *  The existing [outboxWith] is donations-only and stays that way — the
+     *  tests built on it are about the flush, not about tables. */
+    private fun outboxWithRows(vararg rows: Pair<String, String>): TelemetryOutbox {
+        val outbox = TelemetryOutbox(temp.newFile())
+        rows.forEach { (id, table) -> outbox.append(id, table, """{"id":"$id"}""") }
+        return outbox
+    }
 ```
 
-Keep the existing comments in that branch; they are still true.
+- [ ] **Step 16: Write the failing flush-exclusion tests**
 
-- In the `when`, the `retryableFailure` arm applies the same loop over `batch.map { it.table }.toSet()`, and the success arm clears both maps entirely (`emptyMap()`) — which is what `backoffUntilMs = 0L` and `consecutiveFailures = 0` meant globally. Task 3 replaces this whole block; it exists here only so the suite stays green.
+Add to `TelemetryManagerTest.kt`. `now` is the class field `1_000_000L`; posters are constructed inline.
 
-- [ ] **Step 14: Adapt the presenter and the ticker, behaviour unchanged**
+```kotlin
+    /**
+     * The reason this phase exists. A refused diagnostics table must not hold
+     * up a donation queued behind it — and with more backed-off rows at the
+     * head than a batch holds, a filter applied after the batch was taken would
+     * send nothing at all.
+     */
+    @Test
+    fun aDonationStillUploadsWhileDiagnosticsAreBackedOff() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(
+            backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to now + 30_000)
+        ))
+        val outbox = outboxWithRows(
+            "x1" to TelemetryTables.DIAGNOSTICS,
+            "x2" to TelemetryTables.DIAGNOSTICS,
+            "a" to TelemetryTables.DONATIONS
+        )
+        val poster = ConstantPoster(HttpResponse(201, null))
 
-In `AnalyticsPresenter.view`, add one local above the `return` and use it for both backoff fields:
+        val result = manager(outbox, poster, statusStore = store).flush()
+
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals("the excluded rows must still be queued", 2, outbox.size())
+        assertEquals(listOf("x1", "x2"), outbox.peek().map { it.id })
+    }
+
+    @Test
+    fun aBatchEmptiedByExclusionReportsBackingOff() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(
+            backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to now + 30_000)
+        ))
+        val outbox = outboxWithRows("x1" to TelemetryTables.DIAGNOSTICS)
+        val poster = ConstantPoster(HttpResponse(201, null))
+
+        assertEquals(
+            FlushBlock.BACKING_OFF,
+            manager(outbox, poster, statusStore = store).flush()
+        )
+        assertEquals("nothing may be sent while backing off", 0, poster.callCount)
+    }
+
+    @Test
+    fun aGenuinelyEmptyQueueStillReportsEmptyQueue() {
+        val outbox = TelemetryOutbox(temp.newFile())
+        assertEquals(
+            FlushBlock.EMPTY_QUEUE,
+            manager(outbox, ConstantPoster(HttpResponse(201, null))).flush()
+        )
+    }
+
+    @Test
+    fun anElapsedDeadlineDoesNotExcludeItsTable() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(
+            backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to now - 1)
+        ))
+        val outbox = outboxWithRows("x1" to TelemetryTables.DIAGNOSTICS)
+        val poster = ConstantPoster(HttpResponse(201, null))
+
+        assertEquals(FlushBlock.NONE, manager(outbox, poster, statusStore = store).flush())
+        assertEquals(0, outbox.size())
+    }
+```
+
+The existing `aBackoffDeadlineInTheFutureBlocksTheFlush` at `:220-229` keeps its name and its assertion; only its seed changes, in Step 18.
+
+- [ ] **Step 17: Exclusion and `BACKING_OFF` in the flush**
+
+In `TelemetryManager.flush`, `GateInputs(...)` drops `backoffUntilMs = before.backoffUntilMs`. Then, after the `cfg` line:
+
+```kotlin
+        val backedOffTables = before.backoffUntilMsByTable
+            .filterValues { TelemetryGate.isTableBackedOff(it, now) }
+            .keys
+
+        val batch = outbox.peek(excludeTables = backedOffTables)
+        // Recorded regardless of what happens next, so activate() can tell a row
+        // this page never reached (FIX 3) apart from one it sent but could not
+        // confirm. Automatically correct under exclusion: an excluded row was
+        // never in the batch to begin with.
+        lastAttemptedIds = batch.map { it.id }.toSet()
+        if (batch.isEmpty()) {
+            // The gate already reported EMPTY_QUEUE if the queue was empty, so
+            // an empty batch here almost always means exclusion emptied it. A
+            // queue that drained between the two reads while some table was
+            // backed off is reported as BACKING_OFF rather than EMPTY_QUEUE —
+            // a wrong logcat reason and a wrong Blocked payload, nothing more.
+            // The cost of getting here at all is one extra readAll on a flush
+            // that does no network work.
+            return if (backedOffTables.isEmpty()) FlushBlock.EMPTY_QUEUE else FlushBlock.BACKING_OFF
+        }
+```
+
+Keep `val before = statusStore.read()` — it is now read for the exclusion set rather than for the gate.
+
+- [ ] **Step 18: Port every remaining call site**
+
+`TelemetryManager.kt`:
+- `activate()`'s precheck drops `backoffUntilMs = 0L`. Its comment claims "backoff forced to 0 (the reset a few lines down always clears it for real, so a stale deadline genuinely cannot block this press)" — that simulation no longer exists; delete the clause, keep the rest.
+- `activate()`'s reset becomes `it.copy(consecutiveFailuresByTable = emptyMap(), backoffUntilMsByTable = emptyMap(), lastError = null)`.
+- The throw branch and the `when` still write the scalars. Rewrite both to write **every table in the batch**, which is today's global behaviour expressed per table: on failure, `for (table in batch.map { it.table }.toSet())` set count+1 and the derived deadline; on success, clear both maps entirely. Task 3 replaces this block; it exists here only so the suite stays green and the commit is behaviour-preserving.
+
+`AnalyticsPresenter.view` — add one local above the `return` and use it for both backoff fields. Leave `error` alone; Task 4 changes it, and changing it here would blur which task the behaviour came from.
 
 ```kotlin
         val effectiveBackoffUntilMs = status.effectiveBackoffUntilMs(nowMs)
 ```
-
 ```kotlin
             backingOff = effectiveBackoffUntilMs > nowMs,
             backoffRemainingSeconds =
@@ -559,39 +743,40 @@ In `AnalyticsPresenter.view`, add one local above the `return` and use it for bo
             consecutiveFailures = status.consecutiveFailuresByTable.values.maxOrNull() ?: 0,
 ```
 
-Leave `error` exactly as it is — Task 5 changes it, and changing it here would hide which task the behaviour came from.
-
-In `MainActivity.kt`, `startAnalyticsBackoffTickerIfNeeded` reads the raw field twice (`:2001`, `:2008`). Both become the helper, each with the `now` it is comparing against:
+`MainActivity.startAnalyticsBackoffTickerIfNeeded` reads the raw field at `:2001` and `:2008`. Both become the helper, each against the `now` it is comparing to. Missing either leaves the countdown frozen or the ticker never starting.
 
 ```kotlin
         val backoffUntilMs = analyticsSnapshot?.status?.effectiveBackoffUntilMs(analyticsNowMs) ?: 0L
 ```
-
 ```kotlin
                 val stillBackingOff =
                     (analyticsSnapshot?.status?.effectiveBackoffUntilMs(analyticsNowMs) ?: 0L) > analyticsNowMs
 ```
 
-Missing either leaves the countdown frozen or the ticker never starting.
+Tests. Seeds of the form `consecutiveFailures = N` / `backoffUntilMs = X` become `consecutiveFailuresByTable = TelemetryTables.ALL.associateWith { N }` / `backoffUntilMsByTable = TelemetryTables.ALL.associateWith { X }`; reads become `.values.maxOrNull() ?: 0` and `effectiveBackoffUntilMs(now)`. Known sites — **treat this as a cross-check against your Step 1 recon, not as the complete list**:
 
-- [ ] **Step 15: Port the manager and presenter tests**
+- `TelemetryManagerTest.kt` seeds: `:166`, `:214`, `:223`, `:316-317`, `:368`, `:550-551`, `:587`.
+- `TelemetryManagerTest.kt` reads: `:145`, `:146`, `:168`, `:217`, `:324-325`, `:342`, `:343`, `:383`, `:423`, `:465`, `:466`, `:598`.
+- `ClearCredentialsTest.kt:27` (seed) and `:35` (read). `TelemetryTeardown` itself needs no change — it writes `TelemetryStatus()`, whose new defaults are empty maps.
+- `AnalyticsPresenterTest.kt`: any case seeding either scalar.
 
-These read the removed scalars and must be updated, not deleted — each has a per-table equivalent.
+- [ ] **Step 19: Give `AnalyticsPresenterTest.view` a `now` parameter**
 
-- `TelemetryManagerTest.kt:146`, `:343`, `:465`: `status.backoffUntilMs > now` becomes `status.effectiveBackoffUntilMs(now) > now`.
-- `:145`, `:168`, `:342`, `:383`, `:423`, `:466`, `:598`: `status.consecutiveFailures` becomes `status.consecutiveFailuresByTable.values.maxOrNull() ?: 0`.
-- `:166`, `:214`, `:316-317`, `:550-551`, `:587`: writes that seed `consecutiveFailures = N, backoffUntilMs = X` become `consecutiveFailuresByTable = TelemetryTables.ALL.associateWith { N }, backoffUntilMsByTable = TelemetryTables.ALL.associateWith { X }`.
-- `:223-226` seeds a backoff and asserts `flush()` returns `BACKING_OFF`. That path moves from the gate to the flush in Task 4; until then the flush no longer reports it. Mark this test `@Ignore("BACKING_OFF moves from the gate to the flush in Task 4")` with the annotation imported, and Task 4 un-ignores it. Do not delete it — it is the regression test for the behaviour Task 4 restores.
-- `:324-325` asserts `status()` reports what the store holds; update both assertions to the map fields.
-- `:524` constructs an `UploadOutcome(... retryableFailure = false ...)` — leave it, Task 2 changes that signature.
-- `AnalyticsPresenterTest.kt`: any case seeding `backoffUntilMs` seeds `backoffUntilMsByTable = mapOf(TelemetryTables.DONATIONS to X)`; any seeding `consecutiveFailures` seeds `consecutiveFailuresByTable`.
+Task 4's tests need to vary `now`, and the helper at `:13-17` closes over the class field. Add the parameter now, defaulting to the field, so Task 4 changes nothing structural:
 
-- [ ] **Step 16: Build and run the whole suite**
+```kotlin
+    private fun view(
+        settings: Settings = Settings(analyticsEnabled = true, installId = "install-1"),
+        config: TelemetryConfig? = TelemetryConfig("https://abc.supabase.co", "publishable-key"),
+        status: TelemetryStatus = TelemetryStatus(),
+        now: Long = this.now
+    ) = AnalyticsPresenter.view(settings, config, status, now)
+```
+
+- [ ] **Step 20: Build, run the whole suite, commit**
 
 Run: `./gradlew :app:compileDebugKotlin && ./gradlew :app:testDebugUnitTest`
-Expected: PASS, with exactly one `@Ignore`d test.
-
-- [ ] **Step 17: Commit**
+Expected: PASS, with no `@Ignore` anywhere.
 
 ```bash
 git add -A
@@ -603,54 +788,72 @@ git commit -m "Key backoff state by table"
 ## Task 2: The uploader reports which tables failed and which succeeded
 
 **Files:**
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryUploader.kt`
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryManager.kt` (adapt to the new field)
-- Test: `app/src/test/java/com/sadaqah/kiosk/telemetry/TelemetryUploaderTest.kt`, `TelemetryManagerTest.kt`
+- Modify: `telemetry/TelemetryUploader.kt`, `telemetry/TelemetryManager.kt`
+- Test: `TelemetryUploaderTest.kt`, `TelemetryManagerTest.kt`
 
 **Interfaces:**
-- Consumes: `TelemetryTables.ALL` from Task 1.
+- Consumes: `TelemetryTables.ALL` (Task 1).
 - Produces: `UploadOutcome(uploadedIds: Set<String>, rejectedIds: Set<String>, retryableTables: Set<String>, succeededTables: Set<String>, lastError: String?)`.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Reconnaissance**
 
-Add to `TelemetryUploaderTest.kt`. Follow the file's existing helpers for building events and a fake poster rather than inventing new ones — read the top of the file first and reuse exactly what is there.
+Read `TelemetryUploaderTest.kt` in full and list every line reading `retryableFailure`. There are 22, at `:107, 117, 142, 161, 173, 184, 228, 239, 250, 265, 290, 320, 349, 369, 389, 412, 431, 448, 546, 570, 592, 636`. All stop compiling in Step 4. If your list differs from this one, trust your list and say so in your report.
+
+- [ ] **Step 2: Write the failing tests**
+
+Add to `TelemetryUploaderTest.kt`, using its `RecordingPoster`, `event(id, table)` and `uploader(poster)`.
 
 ```kotlin
-    @Test
-    fun `a refused table is reported alone`() {
-        // One donation row that succeeds, one diagnostic row that does not.
-        // Assert: retryableTables holds only the diagnostics table, and
-        // succeededTables holds only the donations table.
-    }
-
     /**
-     * Reachable in the per-row fallback: some rows upload and the network then
-     * drops mid-sweep, setting retryable while uploadedHere is non-empty. The
-     * manager resolves the overlap; the uploader must report it honestly rather
-     * than picking a side here.
+     * The precedence rule the spec names: **failure wins**. Reachable only in
+     * the per-row fallback, which needs a batch-level refusal first — a
+     * multi-row group whose first response is a plain failure takes the else
+     * arm and never retries rows individually.
      */
     @Test
-    fun `a table that partly uploaded and then failed appears in both sets`() {
-        // A multi-row diagnostics batch, first row 201, second a transport
-        // failure. Assert the diagnostics table is in retryableTables AND in
-        // succeededTables.
+    fun aTableThatPartlyUploadedAndThenFailedAppearsInBothSets() {
+        var call = 0
+        val poster = RecordingPoster { _, _ ->
+            when (call++) {
+                0 -> HttpResponse(400, "batch refused")               // the 2-row batch
+                1 -> HttpResponse(201, null)                          // row x1 alone: accepted
+                else -> HttpResponse(HttpResponse.TRANSPORT_FAILURE, null)  // row x2: network dies
+            }
+        }
+        val outcome = uploader(poster).upload(listOf(
+            event("x1", TelemetryTables.DIAGNOSTICS),
+            event("x2", TelemetryTables.DIAGNOSTICS)
+        ))
+
+        assertEquals(setOf("x1"), outcome.uploadedIds)
+        assertTrue(outcome.succeededTables.contains(TelemetryTables.DIAGNOSTICS))
+        assertTrue(outcome.retryableTables.contains(TelemetryTables.DIAGNOSTICS))
     }
 
     @Test
-    fun `succeededTables names a table whose rows were absorbed as already stored`() {
-        // A single-row request answering 409 with a 23505 body counts as
-        // uploaded, so its table counts as succeeded.
+    fun succeededTablesNamesATableWhoseRowWasAbsorbedAsAlreadyStored() {
+        // A single-row 409 confirmed as 23505 counts as uploaded, so its table
+        // counts as succeeded. Build the response body the same way the
+        // existing already-stored tests in this file do.
     }
 ```
 
-Write each of these out in full against the file's real helpers — the comments above describe the setup, they do not replace it.
+Write the second body out against the file's existing already-stored fixture rather than inventing one — grep the file for `isAlreadyStored` / `23505` and copy the shape.
 
-- [ ] **Step 2: Run them and watch them fail**
+Then **strengthen** the existing `oneTableFailingDoesNotLoseAnotherTablesSuccess` at `:254-266` rather than adding a parallel test: it is already the exact per-table-isolation fixture, and a mechanical port of its `assertTrue(outcome.retryableFailure)` would leave a name about isolation on an assertion that has stopped checking it.
+
+```kotlin
+        assertEquals(setOf("d1"), outcome.uploadedIds)
+        assertEquals(setOf(TelemetryTables.DIAGNOSTICS), outcome.retryableTables)
+        assertEquals(setOf(TelemetryTables.DONATIONS), outcome.succeededTables)
+```
+
+- [ ] **Step 3: Run and watch them fail**
 
 Run: `./gradlew :app:testDebugUnitTest --tests '*TelemetryUploaderTest*'`
 Expected: FAIL — `retryableTables` and `succeededTables` are unresolved.
 
-- [ ] **Step 3: Change `UploadOutcome`**
+- [ ] **Step 4: Change `UploadOutcome`**
 
 ```kotlin
 data class UploadOutcome(
@@ -669,7 +872,7 @@ data class UploadOutcome(
 )
 ```
 
-Extend the class KDoc with the overlap note:
+Extend the class KDoc:
 
 ```
  * A table can legitimately appear in both [retryableTables] and
@@ -677,33 +880,43 @@ Extend the class KDoc with the overlap note:
  * the network. Which one wins is the caller's rule, not this class's.
 ```
 
-- [ ] **Step 4: Populate them in `upload`**
+- [ ] **Step 5: Populate them in `upload`**
 
-Replace `var retryable = false` with `val retryableTables = mutableSetOf<String>()`, and add `val succeededTables = mutableSetOf<String>()`. Every existing `retryable = true` becomes `retryableTables += table` — all four sites, including both inside the per-row fallback. The empty-batch early return becomes `UploadOutcome(emptySet(), emptySet(), emptySet(), emptySet(), null)`.
+Replace `var retryable = false` (`:58`) with `val retryableTables = mutableSetOf<String>()`, and add `val succeededTables = mutableSetOf<String>()`. **Three** existing `retryable = true` sites become `retryableTables += table`: `:123` and `:142` inside the per-row fallback, and `:156` in the lone-refusal else arm. The empty-batch early return becomes `UploadOutcome(emptySet(), emptySet(), emptySet(), emptySet(), null)`.
 
-At the end of each `for ((table, forTable) in ...)` iteration, record the success side once rather than at each of the three places a row can land in `uploaded`:
+At the end of each `for ((table, forTable) in ...)` iteration, record the success side once rather than at each of the three places a row can reach `uploaded`:
 
 ```kotlin
             if (forTable.any { it.id in uploaded }) succeededTables += table
 ```
 
-and return `UploadOutcome(uploaded, rejected, retryableTables, succeededTables, lastError)`.
+Return `UploadOutcome(uploaded, rejected, retryableTables, succeededTables, lastError)`.
 
-- [ ] **Step 5: Run the uploader tests**
+- [ ] **Step 6: Port the 22 assertions**
 
-Run: `./gradlew :app:testDebugUnitTest --tests '*TelemetryUploaderTest*'`
-Expected: PASS.
+Mechanical, except where noted: `assertTrue(outcome.retryableFailure)` → `assertTrue(outcome.retryableTables.isNotEmpty())`; `assertFalse(outcome.retryableFailure)` → `assertTrue(outcome.retryableTables.isEmpty())`. Where a test's name is about a *specific* table, assert the set's contents rather than its emptiness — `:265` is done in Step 2; check `:290`, `:320` and `:448` for the same.
 
-- [ ] **Step 6: Adapt the manager, behaviour unchanged**
+- [ ] **Step 7: Adapt the manager**
 
-In `TelemetryManager.flush`, `outcome.retryableFailure` becomes `outcome.retryableTables.isNotEmpty()` — identical behaviour, since the boolean was true exactly when some table failed. Task 3 replaces this branch entirely. Fix the `UploadOutcome` construction in `TelemetryManagerTest.kt:524` to the new arity.
+`outcome.retryableFailure` becomes `outcome.retryableTables.isNotEmpty()` — identical behaviour, since the boolean was true exactly when some table failed. Task 3 replaces the branch entirely.
 
-- [ ] **Step 7: Build and run the whole suite**
+`TelemetryManagerTest.kt:518-525`, `aDropRecordedWhileAFlushIsInFlightSurvivesTheFlushsOwnStatusWrite`, drives the `upload` seam directly and must become:
+
+```kotlin
+                UploadOutcome(
+                    uploadedIds = batch.map { it.id }.toSet(),
+                    rejectedIds = emptySet(),
+                    retryableTables = emptySet(),
+                    succeededTables = setOf(TelemetryTables.DONATIONS),
+                    lastError = null
+                )
+```
+
+`succeededTables` must **not** be empty here. `outboxWith` appends to `DONATIONS` (`:81`), and Task 3's `recordOutcome` returns early when both table sets are empty — so an empty-both outcome would mean no status write at all, and this test's whole point is that a mid-flight `droppedCount` bump survives the flush's own write. With no write to clobber it, the test would pass with the I4 guard deleted.
+
+- [ ] **Step 8: Build, run the whole suite, commit**
 
 Run: `./gradlew :app:compileDebugKotlin && ./gradlew :app:testDebugUnitTest`
-Expected: PASS.
-
-- [ ] **Step 8: Commit**
 
 ```bash
 git add -A
@@ -714,123 +927,151 @@ git commit -m "Report upload outcomes per table"
 
 ## Task 3: Per-table accounting in the flush
 
-This is the behaviour change. Everything before it was shape.
+The behaviour change. Everything before it was shape.
+
+**Seeding rule for every test in this task:** the flush now excludes any table whose deadline is live (Task 1 Step 17). Seed failure *counts* freely; seed *deadlines* in the past, or not at all, unless the test is specifically about exclusion. A live deadline on the table under test means its rows are never attempted and the assertion will be about the wrong thing.
 
 **Files:**
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryManager.kt`
-- Test: `app/src/test/java/com/sadaqah/kiosk/telemetry/TelemetryManagerTest.kt`
+- Modify: `telemetry/TelemetryManager.kt`
+- Test: `TelemetryManagerTest.kt`
 
 **Interfaces:**
-- Consumes: `UploadOutcome.retryableTables` / `.succeededTables` (Task 2); `TelemetryStatus`'s maps and `effectiveBackoffUntilMs`, `TelemetryGate.isTableBackedOff` (Task 1).
-- Produces: nothing new to later tasks.
+- Consumes: `UploadOutcome.retryableTables` / `.succeededTables` (Task 2); `TelemetryStatus`'s maps, `TelemetryGate.isTableBackedOff`, `outboxWithRows` (Task 1).
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Reconnaissance**
 
-Add to `TelemetryManagerTest.kt`, using the file's existing `manager(...)`, `outbox`, `poster` and `store` helpers:
+Read `TelemetryManagerTest.kt` in full. Note `ScriptedPoster` (`:36`) returns one response per call by index and repeats the last — `:448-467` is the worked example of driving the per-row fallback. Note `outboxWithRows` from Task 1 Step 15. List the tests that assert on `lastError`, `lastSuccessMs` or the failure counts, since Step 4 changes when each is written.
+
+- [ ] **Step 2: Write the failing tests**
+
+Add to `TelemetryManagerTest.kt`. Each prose body below states the setup and the assertion; write it out against the real fixtures.
 
 ```kotlin
     @Test
-    fun `a refused diagnostics table leaves donations clear`() {
-        // Batch with both tables; diagnostics 500, donations 201.
-        // Assert: backoffUntilMsByTable has diagnostics only; donations absent
-        // from both maps.
+    fun aRefusedDiagnosticsTableLeavesDonationsClear() {
+        // outboxWithRows("a" to DONATIONS, "x1" to DIAGNOSTICS); a
+        // RecordingPoster-style ConstantPoster cannot vary by URL, so use a
+        // poster that answers 503 for /diagnostic_events and 201 otherwise —
+        // the shape TelemetryUploaderTest.kt:256-259 uses.
+        // Assert: backoffUntilMsByTable has DIAGNOSTICS and not DONATIONS;
+        // consecutiveFailuresByTable likewise.
     }
 
     @Test
-    fun `a success clears its table in the same flush where a sibling fails`() {
-        // Seed both tables with failures and deadlines. Flush with donations
-        // succeeding and diagnostics failing.
-        // Assert: donations absent from both maps, diagnostics incremented.
-    }
-
-    /**
-     * Failure wins. A table with rows that did not send is not healthy, and
-     * treating it as healthy retries them on every flush — a tight loop against
-     * a broken link.
-     */
-    @Test
-    fun `a table in both sets backs off`() {
-        // Drive an UploadOutcome through the `upload` seam with the diagnostics
-        // table in retryableTables AND succeededTables.
-        // Assert: diagnostics is backed off.
+    fun aSuccessClearsItsTableInTheSameFlushWhereASiblingFails() {
+        // Seed BOTH tables with consecutiveFailuresByTable = 2 and NO deadlines
+        // (see the seeding rule above). Flush with donations 201 and
+        // diagnostics 503.
+        // Assert: DONATIONS absent from both maps; DIAGNOSTICS at 3.
     }
 
     @Test
-    fun `a throw backs off every table in the batch and no other`() {
-        // Batch holds donations and diagnostics only; upload seam throws.
-        // Assert: both are backed off, and the activations table is absent from
-        // both maps.
+    fun aTableInBothSetsBacksOff() {
+        // Drive the `upload` seam directly (manager(..., upload = { _, batch -> ... }))
+        // with DIAGNOSTICS in retryableTables AND succeededTables.
+        // Assert: DIAGNOSTICS is in backoffUntilMsByTable.
+        // Mutation check: change `succeededTables - failedTables` to
+        // `succeededTables` and confirm this fails.
     }
 
     @Test
-    fun `per-table counts drive per-table delays independently`() {
-        // Seed diagnostics with 4 consecutive failures and donations with 1,
-        // fail both in one flush.
-        // Assert: the diagnostics deadline is strictly further out than the
-        // donations deadline.
+    fun aThrowBacksOffEveryTableInTheBatchAndNoOther() {
+        // outboxWithRows("a" to DONATIONS, "x1" to DIAGNOSTICS); upload seam
+        // throws.
+        // Assert: both are backed off; ACTIVATIONS is in neither map.
     }
 
     @Test
-    fun `activate clears every table`() {
-        // Seed all three tables with failures and deadlines, then activate().
+    fun perTableCountsDrivePerTableDelaysIndependently() {
+        // Seed consecutiveFailuresByTable = mapOf(DIAGNOSTICS to 4, DONATIONS to 1),
+        // no deadlines. Fail both in one flush.
+        // Assert: the DIAGNOSTICS deadline is strictly further out than the
+        // DONATIONS one. (backoffDelayMs(5) = 960s vs backoffDelayMs(2) = 120s.)
+    }
+
+    @Test
+    fun activateClearsEveryTable() {
+        // Seed all three tables with counts and deadlines, then activate().
         // Assert: both maps are empty.
     }
 
-    /**
-     * A healthy donations table must not erase the schema error that explains
-     * why diagnostics are stuck — it is the only evidence an operator has.
-     */
     @Test
-    fun `a sibling success does not clear lastError while a table is backed off`() {
-        // Donations succeed, diagnostics fail with an error, in one flush.
-        // Assert: lastError is the diagnostics error, not null.
-    }
-
-    @Test
-    fun `lastError clears once no table is backed off`() {
-        // Seed a lastError and a diagnostics deadline. Flush with everything
-        // succeeding.
-        // Assert: lastError is null and both maps are empty.
-    }
-
-    @Test
-    fun `a flush that neither uploaded nor rejected anything leaves status alone`() {
-        // Drive an all-empty UploadOutcome through the seam, with a seeded
-        // lastError and a seeded deadline.
-        // Assert: status is byte-identical to what was seeded.
+    fun aFlushThatNeitherUploadedNorRejectedAnythingLeavesStatusAlone() {
+        // Drive the seam with all four sets empty, against a seeded lastError
+        // and a seeded (past) deadline.
+        // Assert: the status is unchanged, field for field.
     }
 ```
 
-Write each out in full. The comments state the setup and the assertion; they do not stand in for code.
+And the one the spec's `lastError` rule actually rests on, which needs **two** flushes:
 
-- [ ] **Step 2: Run them and watch them fail**
+```kotlin
+    /**
+     * A healthy donations table must not erase the schema error that explains
+     * why diagnostics are stuck — it is the only evidence an operator has.
+     *
+     * Two flushes, deliberately. In a single flush where diagnostics fails, the
+     * error arrives as `errorText` and the first arm of recordOutcome's `when`
+     * returns it regardless — so the retention rule is never exercised and
+     * deleting it changes nothing. The rule only fires on a LATER flush, where
+     * the healthy table succeeds and the broken one contributes no error
+     * because it is excluded and never attempted.
+     *
+     * Mutation check: delete the `anyBackedOff -> fresh.lastError` arm and this
+     * test must fail.
+     */
+    @Test
+    fun aSiblingSuccessDoesNotClearLastErrorWhileATableIsBackedOff() {
+        // Flush 1: diagnostics 503, donations 201 — records the error and the
+        // diagnostics deadline.
+        // Flush 2 (same `now`, so the deadline is still live): queue only a
+        // donation, everything 201.
+        // Assert: lastError is still the diagnostics error.
+    }
+
+    @Test
+    fun lastErrorClearsOnceNoTableIsBackedOff() {
+        // As above, then advance `now` past the diagnostics deadline and flush
+        // a donation successfully.
+        // Assert: lastError is null.
+    }
+```
+
+- [ ] **Step 3: Run and watch them fail**
 
 Run: `./gradlew :app:testDebugUnitTest --tests '*TelemetryManagerTest*'`
-Expected: FAIL — global accounting backs off every table together.
+Expected: FAIL — Task 1's lockstep accounting backs off every table together.
 
-- [ ] **Step 3: Factor one recording function**
-
-Both the throw path and the outcome path record the same shape, so write it once. Add to `TelemetryManager`:
+- [ ] **Step 4: Factor one recording function**
 
 ```kotlin
     /**
      * The one place per-table failure state is written.
      *
-     * Shared by the throw path and the outcome path because they differ only in
-     * where the two table sets come from — a transport-level throw has no table
+     * Shared by the throw path and the outcome path, which differ only in where
+     * the table sets come from — a transport-level throw has no table
      * attribution, so it names every table in the batch.
      */
     private fun recordOutcome(
         failedTables: Set<String>,
         succeededTables: Set<String>,
+        /** Whether the uploader named any row as settled — sent or permanently
+         *  refused. Kept separate from [succeededTables] because the existing
+         *  success branch guarded on `uploadedIds.isNotEmpty() ||
+         *  rejectedIds.isNotEmpty()` and documented a refusal to assume the
+         *  uploader cannot produce rejections without uploads. That refusal is
+         *  preserved here. What per-table state such an outcome would clear is
+         *  a question it cannot answer — it names no tables — so it clears
+         *  none, and only the global fields move. */
+        anyRowsSettled: Boolean,
         errorText: String?,
         finishedAt: Long
     ) {
-        // Nothing to record. Deliberately not folded into the loops below: with
-        // both sets empty they would run zero times and then the lastError rule
-        // would still evaluate, clearing an error no flush disproved. An outcome
-        // that uploaded and rejected nothing is not evidence of anything.
-        if (failedTables.isEmpty() && succeededTables.isEmpty()) return
+        // Nothing happened, so nothing is recorded. Deliberately not folded into
+        // the loops below: with both sets empty they run zero times, and the
+        // lastError rule would still evaluate and clear an error no flush
+        // disproved.
+        if (failedTables.isEmpty() && succeededTables.isEmpty() && !anyRowsSettled) return
 
         // FIX (I4): transform the value the store hands back, not a snapshot
         // taken before the network call — anything written during the upload (an
@@ -845,14 +1086,15 @@ Both the throw path and the outcome path record the same shape, so write it once
                 deadlines[table] = finishedAt + TelemetryGate.backoffDelayMs(failures)
             }
             // Failure wins: a table in both sets has rows that did not send, and
-            // clearing it here would retry them on the very next flush.
+            // clearing it here would retry them on the very next flush — a tight
+            // loop against a broken link.
             for (table in succeededTables - failedTables) {
                 counts.remove(table)
                 deadlines.remove(table)
             }
 
-            // Judged on the state this write produces, not the one it replaced:
-            // that is the state the operator will actually be looking at.
+            // Judged on the state this write produces, not the one it replaces:
+            // that is the state the operator will be looking at.
             val anyBackedOff = deadlines.any { TelemetryGate.isTableBackedOff(it.value, finishedAt) }
 
             fresh.copy(
@@ -870,15 +1112,16 @@ Both the throw path and the outcome path record the same shape, so write it once
                 lastErrorAtMs = if (errorText != null) finishedAt else fresh.lastErrorAtMs,
                 // "Something reached the backend" is true, and it is what the
                 // field means.
-                lastSuccessMs = if (succeededTables.isEmpty()) fresh.lastSuccessMs else finishedAt
+                lastSuccessMs =
+                    if (succeededTables.isEmpty() && !anyRowsSettled) fresh.lastSuccessMs else finishedAt
             )
         }
     }
 ```
 
-- [ ] **Step 4: Call it from both paths**
+- [ ] **Step 5: Call it from both paths**
 
-The throw branch's whole `statusStore.update { ... }` block becomes:
+The throw branch's whole `statusStore.update { ... }` becomes:
 
 ```kotlin
             recordOutcome(
@@ -886,6 +1129,7 @@ The throw branch's whole `statusStore.update { ... }` block becomes:
                 // tables actually attempted rather than all three.
                 failedTables = batch.map { it.table }.toSet(),
                 succeededTables = emptySet(),
+                anyRowsSettled = false,
                 // Never the exception's message: it could carry a row value (a
                 // donation amount, a stack trace fragment) that never went
                 // through the redactor.
@@ -901,21 +1145,21 @@ The entire `when { ... }` after `outbox.remove(...)` becomes:
         recordOutcome(
             failedTables = outcome.retryableTables,
             succeededTables = outcome.succeededTables,
+            anyRowsSettled = outcome.uploadedIds.isNotEmpty() || outcome.rejectedIds.isNotEmpty(),
             errorText = outcome.lastError,
             finishedAt = finishedAt
         )
 ```
 
-Keep the `val finishedAt = clock()` line above it and its "read fresh" comment — the reason is unchanged.
+Keep `val finishedAt = clock()` and its "read fresh" comment — the reason is unchanged.
 
-- [ ] **Step 5: Run the tests**
+- [ ] **Step 6: Run the tests, then the two mutations**
 
-Run: `./gradlew :app:testDebugUnitTest --tests '*TelemetryManagerTest*'`
-Expected: PASS, except the still-`@Ignore`d `BACKING_OFF` case.
+Run: `./gradlew :app:testDebugUnitTest --tests '*TelemetryManagerTest*'` — expected PASS.
 
-- [ ] **Step 6: Build and run the whole suite, then commit**
+Then run both mutations the tests name — `succeededTables - failedTables` → `succeededTables`, and deleting the `anyBackedOff -> fresh.lastError` arm — confirming the named test fails each time, and restore. Record both in your report; a test that passes under its own named mutation is a finding, not a pass.
 
-Run: `./gradlew :app:compileDebugKotlin && ./gradlew :app:testDebugUnitTest`
+- [ ] **Step 7: Build, run the whole suite, commit**
 
 ```bash
 git add -A
@@ -924,252 +1168,82 @@ git commit -m "Back off one table at a time"
 
 ---
 
-## Task 4: Exclude backed-off tables inside the read
+## Task 4: What the screen sees
 
-The Critical this phase exists to avoid. Filtering *after* `peek` would take the first hundred rows and then drop them, so a hundred backed-off rows at the head produce an empty batch forever and the rows behind them never send at all — strictly worse than the one-hour ceiling being fixed.
-
-**Files:**
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryOutbox.kt:61-63`
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryManager.kt`
-- Test: `app/src/test/java/com/sadaqah/kiosk/telemetry/TelemetryOutboxTest.kt`, `TelemetryManagerTest.kt`
-
-**Interfaces:**
-- Consumes: `TelemetryStatus.backoffUntilMsByTable`, `TelemetryGate.isTableBackedOff` (Task 1).
-- Produces: `TelemetryOutbox.peek(limit: Int = DEFAULT_BATCH, excludeTables: Set<String> = emptySet()): List<QueuedEvent>`.
-
-- [ ] **Step 1: Write the failing outbox tests**
-
-Add to `TelemetryOutboxTest.kt`, using its existing temp-file setup:
-
-```kotlin
-    /**
-     * The defect this phase exists to avoid, and the reason exclusion lives
-     * inside the read. Filtering a batch already truncated to its first `limit`
-     * rows yields nothing at all while the head is backed off — and because
-     * nothing is removed, the head never advances. A delay would have become
-     * permanent starvation.
-     *
-     * Mutation check: move the filter after `take` and this test must fail.
-     */
-    @Test
-    fun `excluded rows at the head do not crowd out the rows behind them`() {
-        repeat(5) { outbox.append("d$it", TelemetryTables.DIAGNOSTICS, "{}") }
-        outbox.append("donation", TelemetryTables.DONATIONS, "{}")
-
-        val batch = outbox.peek(limit = 3, excludeTables = setOf(TelemetryTables.DIAGNOSTICS))
-
-        assertEquals(listOf("donation"), batch.map { it.id })
-    }
-
-    @Test
-    fun `excluded rows stay queued`() {
-        outbox.append("d1", TelemetryTables.DIAGNOSTICS, "{}")
-        outbox.peek(excludeTables = setOf(TelemetryTables.DIAGNOSTICS))
-        assertEquals(1, outbox.size())
-    }
-
-    @Test
-    fun `exclusion preserves queue order`() {
-        outbox.append("a", TelemetryTables.DONATIONS, "{}")
-        outbox.append("d", TelemetryTables.DIAGNOSTICS, "{}")
-        outbox.append("b", TelemetryTables.DONATIONS, "{}")
-
-        val batch = outbox.peek(excludeTables = setOf(TelemetryTables.DIAGNOSTICS))
-
-        assertEquals(listOf("a", "b"), batch.map { it.id })
-    }
-
-    @Test
-    fun `peek with no exclusions behaves exactly as before`() {
-        outbox.append("a", TelemetryTables.DONATIONS, "{}")
-        outbox.append("d", TelemetryTables.DIAGNOSTICS, "{}")
-        assertEquals(listOf("a", "d"), outbox.peek().map { it.id })
-    }
-```
-
-Adjust the `outbox` construction to whatever the file's existing fixture provides.
-
-- [ ] **Step 2: Run them and watch them fail**
-
-Run: `./gradlew :app:testDebugUnitTest --tests '*TelemetryOutboxTest*'`
-Expected: FAIL — `peek` takes no `excludeTables`.
-
-- [ ] **Step 3: Add the parameter**
-
-```kotlin
-    /**
-     * The head of the queue, minus any row belonging to [excludeTables].
-     *
-     * Filtering happens **before** [limit] is applied, and that ordering is the
-     * whole point: taking the first [limit] rows and then dropping the excluded
-     * ones would return nothing at all while the head is backed off, and since
-     * nothing is removed the head would never advance. Rows behind an excluded
-     * run would stop sending entirely.
-     *
-     * Default-empty so every existing caller is unaffected. Queue order is
-     * preserved; nothing here groups or sorts by table.
-     */
-    fun peek(limit: Int = DEFAULT_BATCH, excludeTables: Set<String> = emptySet()): List<QueuedEvent> =
-        synchronized(lock) {
-            readAll().asSequence()
-                .filterNot { it.table in excludeTables }
-                .take(limit)
-                .toList()
-        }
-```
-
-- [ ] **Step 4: Run the outbox tests**
-
-Run: `./gradlew :app:testDebugUnitTest --tests '*TelemetryOutboxTest*'`
-Expected: PASS.
-
-- [ ] **Step 5: Write the failing flush tests**
-
-Remove the `@Ignore` from the `BACKING_OFF` case added in Task 1 Step 15, port it to seed `backoffUntilMsByTable` for every table, and add:
-
-```kotlin
-    @Test
-    fun `a donation still uploads while diagnostics are backed off`() {
-        // Seed a diagnostics deadline, queue diagnostics rows at the head and a
-        // donation behind them, then flush.
-        // Assert: the donation's id is in the uploaded set and the diagnostics
-        // rows are still queued.
-    }
-
-    @Test
-    fun `a batch emptied by exclusion reports BACKING_OFF`() {
-        // Queue only diagnostics rows, seed a diagnostics deadline, flush.
-        // Assert: FlushBlock.BACKING_OFF.
-    }
-
-    @Test
-    fun `a genuinely empty queue still reports EMPTY_QUEUE`() {
-        // Nothing queued, nothing backed off.
-        // Assert: FlushBlock.EMPTY_QUEUE.
-    }
-
-    @Test
-    fun `lastAttemptedIds holds only rows that were actually sent`() {
-        // Queue both tables, back off diagnostics, flush, then activate() a row
-        // behind the excluded ones — the existing tests around lastAttemptedIds
-        // show the shape to follow.
-    }
-```
-
-- [ ] **Step 6: Exclude in the flush**
-
-In `TelemetryManager.flush`, after the gate check and the `cfg` line:
-
-```kotlin
-        val fresh = statusStore.read()
-        val backedOffTables = fresh.backoffUntilMsByTable
-            .filterValues { TelemetryGate.isTableBackedOff(it, now) }
-            .keys
-
-        val batch = outbox.peek(excludeTables = backedOffTables)
-        // Recorded regardless of what happens next, so activate() can tell a row
-        // this page never reached (FIX 3) apart from one it sent but could not
-        // confirm. Automatically correct under exclusion: an excluded row was
-        // never in the batch to begin with.
-        lastAttemptedIds = batch.map { it.id }.toSet()
-        if (batch.isEmpty()) {
-            // The gate already reported EMPTY_QUEUE if the queue itself was
-            // empty, so an empty batch here means exclusion emptied it — unless
-            // the queue drained between the two reads, which is the guard below.
-            // This costs one extra readAll on a flush that does no network work
-            // at all.
-            return if (backedOffTables.isEmpty()) FlushBlock.EMPTY_QUEUE else FlushBlock.BACKING_OFF
-        }
-```
-
-If Task 1 Step 13 deleted `val before`, this `fresh` read replaces it; if it did not, reuse that value rather than reading twice.
-
-- [ ] **Step 7: Run the tests, build, commit**
-
-Run: `./gradlew :app:compileDebugKotlin && ./gradlew :app:testDebugUnitTest`
-Expected: PASS, no `@Ignore` remaining.
-
-```bash
-git add -A
-git commit -m "Skip backed-off tables when taking a batch"
-```
-
----
-
-## Task 5: What the screen sees
-
-Keeping the error in the store is not enough. The presenter suppresses a stale error with `takeIf { lastSuccessMs <= lastErrorAtMs }`, and now that a sibling's success advances `lastSuccessMs` past a retained `lastErrorAtMs`, the screen would render nothing beside a non-zero failure count. A store-level assertion passes while the screen is blank, so this task's test asserts on `AnalyticsView.error`.
+Keeping the error in the store is not enough. The presenter suppresses a stale error with `takeIf { lastSuccessMs <= lastErrorAtMs }` (`AnalyticsPresenter.kt:111`), and now that a sibling's success advances `lastSuccessMs` past a retained `lastErrorAtMs`, the screen would render nothing beside a non-zero failure count. A store-level assertion passes while the screen is blank, so this task's tests assert on `AnalyticsView.error`.
 
 **Files:**
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/AnalyticsPresenter.kt:111`
-- Test: `app/src/test/java/com/sadaqah/kiosk/telemetry/AnalyticsPresenterTest.kt`
+- Modify: `telemetry/AnalyticsPresenter.kt:111`
+- Test: `AnalyticsPresenterTest.kt`
 
 **Interfaces:**
-- Consumes: `TelemetryStatus.effectiveBackoffUntilMs` (Task 1), the retained-`lastError` rule (Task 3).
-- Produces: nothing new.
+- Consumes: `effectiveBackoffUntilMs` and the `now` parameter on the test helper (Task 1), the retained-`lastError` rule (Task 3).
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Reconnaissance**
+
+Read `AnalyticsPresenterTest.kt`. Task 1 Step 19 added `now: Long = this.now` to the `view(...)` helper — confirm it is there before writing tests that pass it.
+
+- [ ] **Step 2: Write the failing tests**
 
 ```kotlin
     /**
      * The store keeps a live error while a table is backed off, but the screen
-     * is what the operator reads — and "Failed attempts: 3" beside a blank error
-     * line is the outcome the retention rule exists to prevent. Asserting on the
-     * store instead would pass with the screen empty.
+     * is what the operator reads — and "Failed attempts: 3" beside a blank
+     * error line is the outcome the retention rule exists to prevent. An
+     * assertion on the store would pass with the screen empty.
      */
     @Test
-    fun `an error stays on screen while a table is backed off even after a sibling succeeds`() {
-        val now = 10_000L
-        val view = view(
+    fun anErrorStaysOnScreenWhileATableIsBackedOffEvenAfterASiblingSucceeds() {
+        val at = 10_000L
+        val result = view(
             status = TelemetryStatus(
                 lastError = "HTTP 400 bad column",
-                lastErrorAtMs = now - 5_000,
-                // The sibling's success, later than the error.
-                lastSuccessMs = now - 1_000,
-                backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to now + 30_000)
+                lastErrorAtMs = at - 5_000,
+                lastSuccessMs = at - 1_000,   // the sibling's success, later than the error
+                backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to at + 30_000)
             ),
-            now = now
+            now = at
         )
-        assertEquals("HTTP 400 bad column", view.error)
+        assertEquals("HTTP 400 bad column", result.error)
     }
 
     @Test
-    fun `an error is suppressed once no table is backed off and a success followed it`() {
-        val now = 10_000L
-        val view = view(
+    fun anErrorIsSuppressedOnceNoTableIsBackedOffAndASuccessFollowedIt() {
+        val at = 10_000L
+        val result = view(
             status = TelemetryStatus(
                 lastError = "HTTP 400 bad column",
-                lastErrorAtMs = now - 5_000,
-                lastSuccessMs = now - 1_000
+                lastErrorAtMs = at - 5_000,
+                lastSuccessMs = at - 1_000
             ),
-            now = now
+            now = at
         )
-        assertNull(view.error)
+        assertNull(result.error)
     }
 
     @Test
-    fun `a fresh error with no success since is still shown`() {
-        val now = 10_000L
-        val view = view(
+    fun aFreshErrorWithNoSuccessSinceIsStillShown() {
+        val at = 10_000L
+        val result = view(
             status = TelemetryStatus(
                 lastError = "HTTP 503 down",
-                lastErrorAtMs = now - 1_000,
-                lastSuccessMs = now - 5_000
+                lastErrorAtMs = at - 1_000,
+                lastSuccessMs = at - 5_000
             ),
-            now = now
+            now = at
         )
-        assertEquals("HTTP 503 down", view.error)
+        assertEquals("HTTP 503 down", result.error)
     }
 ```
 
-Use the file's existing `view(...)` helper at `:17`, extending its defaults if it does not already take a `status`.
+`assertNull` must be imported — the file currently imports only `assertEquals`, `assertFalse` and `assertTrue`.
 
-- [ ] **Step 2: Run and watch the first test fail**
+- [ ] **Step 3: Run and watch the first one fail**
 
 Run: `./gradlew :app:testDebugUnitTest --tests '*AnalyticsPresenterTest*'`
-Expected: the backed-off case FAILS with `expected:<HTTP 400 bad column> but was:<null>`.
+Expected: `anErrorStaysOnScreen...` FAILS with `expected:<HTTP 400 bad column> but was:<null>`.
 
-- [ ] **Step 3: Change the rule**
+- [ ] **Step 4: Change the rule**
 
 ```kotlin
             // Shown while any table is backed off, whatever the timestamps say:
@@ -1187,9 +1261,7 @@ Expected: the backed-off case FAILS with `expected:<HTTP 400 bad column> but was
             },
 ```
 
-- [ ] **Step 4: Run, build, commit**
-
-Run: `./gradlew :app:compileDebugKotlin && ./gradlew :app:testDebugUnitTest`
+- [ ] **Step 5: Build, run the whole suite, commit**
 
 ```bash
 git add -A
@@ -1198,26 +1270,20 @@ git commit -m "Keep a live error on screen while a table is backed off"
 
 ---
 
-## Task 6: The carried items on this path
+## Task 5: The carried items on this path
 
-Five small changes that share the send path. Batched into one task because each is a contained edit with its own small test, and splitting them would buy five review seats for one diff.
+Six contained changes sharing the send path, batched because each is small and splitting them would buy six review seats for one diff.
 
 **Files:**
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryRedactor.kt:33-40`
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/DiagnosticEvents.kt:214`
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/AnalyticsPresenter.kt`
-- Modify: `app/src/main/java/com/sadaqah/kiosk/screens/AnalyticsSettingsScreen.kt:290,427-428`
-- Modify: `app/src/main/java/com/sadaqah/kiosk/MainActivity.kt:607-609,1072-1079`
-- Modify: `app/src/main/java/com/sadaqah/kiosk/telemetry/TelemetryManager.kt` (two comments)
-- Modify: `app/src/main/java/com/sadaqah/kiosk/recovery/RestartManager.kt` (KDoc only)
-- Test: `AnalyticsPresenterTest.kt`, `TelemetryRedactorTest.kt`, `DiagnosticEventsTest.kt`
+- Modify: `telemetry/TelemetryRedactor.kt:33-40`, `telemetry/DiagnosticEvents.kt:214`, `telemetry/AnalyticsPresenter.kt`, `telemetry/TelemetryManager.kt` (comments), `recovery/RestartManager.kt:87-88` (comment), `MainActivity.kt`, `screens/AnalyticsSettingsScreen.kt`
+- Test: `AnalyticsPresenterTest.kt`, `TelemetryRedactorTest.kt`
 
 **Interfaces:**
 - Produces: `AnalyticsView.lastSuccessText: String`; `AnalyticsPresenter.view(..., zone: ZoneId, locale: Locale)`; `TelemetryRedactor.TRUNCATION_SUFFIX`.
 
 - [ ] **Step 1: Clear the watchdog slot before each login launch**
 
-In `MainActivity.authenticate`, immediately before `SumUpAPI.openLoginActivity(this@MainActivity, sumupLogin, 1)`:
+In `MainActivity.authenticate`, immediately before `SumUpAPI.openLoginActivity(this@MainActivity, sumupLogin, 1)` (`:1079`):
 
 ```kotlin
         // If openLoginActivity ever returns without launching, the watchdog
@@ -1235,13 +1301,13 @@ In `MainActivity.authenticate`, immediately before `SumUpAPI.openLoginActivity(t
         SumUpAPI.openLoginActivity(this@MainActivity, sumupLogin, 1)
 ```
 
-Then trim the watchdog's long comment at `:1096-1106`: the paragraph beginning "What that ordering does not cover" describes the gap this line closes. Replace it with one sentence pointing at the clear above.
+Then trim the watchdog comment at `:1096-1106`: the paragraph from "What that ordering does not cover" describes the gap this closes. Replace it with one sentence pointing at the clear above.
 
-Not unit-testable — `MainActivity` is unreachable from JVM tests. Say so in the commit, not in a test that asserts nothing.
+Not unit-testable — `MainActivity` is unreachable from JVM tests. Say so in your report, not in a test that asserts nothing.
 
 - [ ] **Step 2: One definition of the truncation suffix**
 
-In `TelemetryRedactor`, promote the literal and drop the unused parameter:
+In `TelemetryRedactor`:
 
 ```kotlin
     /** One definition, because [DiagnosticEvents] measures this string's
@@ -1259,30 +1325,41 @@ In `TelemetryRedactor`, promote the literal and drop the unused parameter:
     }
 ```
 
-In `DiagnosticEvents.kt:214`, delete the private `TRUNCATION_SUFFIX` and use `TelemetryRedactor.TRUNCATION_SUFFIX` at both `:233` and `:240`. The two truncation *functions* stay as they are — they cut different things for different reasons.
+In `DiagnosticEvents.kt`, delete the private `TRUNCATION_SUFFIX` at `:214` and use `TelemetryRedactor.TRUNCATION_SUFFIX` at `:233` and `:240`. The two truncation *functions* stay — they cut different things for different reasons.
 
-Check `TelemetryRedactorTest.kt` for any call passing an explicit `maxBytes`; rewrite such a case to build an oversized input against `MAX_TEXT_BYTES` rather than shrinking the limit.
+The two callers of `truncate` (`TelemetryEvent.kt:120`, `TelemetryUploader.kt:192`) already use the default. Check `TelemetryRedactorTest.kt` for a case passing an explicit `maxBytes`; rewrite it to build an oversized input against `MAX_TEXT_BYTES` rather than shrinking the limit.
+
+"The suffix literal has one definition" is a grep property, not a test: `grep -rn '… truncated' app/src/main` must return exactly one line. Record the output.
 
 - [ ] **Step 3: Write the failing presenter timestamp test**
 
+Assert the *dependence*, not a literal. `FormatStyle.SHORT` output is CLDR-data dependent and its exact shape has changed across JDK releases; pinning `"14/11/2023, 22:13"` would make this a JDK-upgrade tripwire, and the property the move behind the presenter exists to establish is that zone and locale are injected rather than read from the platform.
+
 ```kotlin
     @Test
-    fun `the last upload timestamp is formatted with the injected zone and locale`() {
-        val view = view(
-            status = TelemetryStatus(lastSuccessMs = 1_700_000_000_000L),
-            now = 1_700_000_001_000L,
-            zone = ZoneId.of("UTC"),
-            locale = Locale.UK
+    fun theLastUploadTimestampUsesTheInjectedZone() {
+        val status = TelemetryStatus(lastSuccessMs = 1_700_000_000_000L)
+        assertNotEquals(
+            view(status = status, zone = ZoneId.of("UTC"), locale = Locale.UK).lastSuccessText,
+            view(status = status, zone = ZoneId.of("Asia/Tokyo"), locale = Locale.UK).lastSuccessText
         )
-        assertEquals("14/11/2023, 22:13", view.lastSuccessText)
+    }
+
+    @Test
+    fun theLastUploadTimestampUsesTheInjectedLocale() {
+        val status = TelemetryStatus(lastSuccessMs = 1_700_000_000_000L)
+        assertNotEquals(
+            view(status = status, zone = ZoneId.of("UTC"), locale = Locale.UK).lastSuccessText,
+            view(status = status, zone = ZoneId.of("UTC"), locale = Locale.JAPAN).lastSuccessText
+        )
     }
 ```
 
-Run it once to read the actual formatted string off the failure message, then pin that exact value — do not guess it. Reading platform defaults inside the presenter instead of taking parameters would make this test machine-dependent, which is the whole reason the formatting is moving.
+Add `zone` and `locale` parameters to the `view(...)` helper with fixed defaults (`ZoneId.of("UTC")`, `Locale.UK`) so no existing test changes. Import `assertNotEquals`, `java.time.ZoneId`, `java.util.Locale`.
 
 - [ ] **Step 4: Move the formatting behind the presenter**
 
-Add `val lastSuccessText: String` to `AnalyticsView`, beside `lastSuccessMs`. `view` takes two new required parameters — no defaults, since a default reading `ZoneId.systemDefault()` would put the machine dependence straight back:
+Add `val lastSuccessText: String` to `AnalyticsView`, beside `lastSuccessMs`. `view` takes two new **required** parameters — a default reading `ZoneId.systemDefault()` would put the machine dependence straight back inside the presenter:
 
 ```kotlin
     fun view(
@@ -1310,7 +1387,7 @@ Add `val lastSuccessText: String` to `AnalyticsView`, beside `lastSuccessMs`. `v
         DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT)
 ```
 
-Imports: `java.time.Instant`, `java.time.ZoneId`, `java.time.format.DateTimeFormatter`, `java.time.format.FormatStyle`, `java.util.Locale`. `java.time` is available unguarded at minSdk 30.
+Imports for `AnalyticsPresenter.kt`: `java.time.Instant`, `java.time.ZoneId`, `java.time.format.DateTimeFormatter`, `java.time.format.FormatStyle`, `java.util.Locale`. `java.time` is available unguarded at minSdk 30.
 
 - [ ] **Step 5: Delete the screen's copy**
 
@@ -1320,7 +1397,7 @@ In `AnalyticsSettingsScreen.kt`, delete `formatTimestamp` at `:427-428` and its 
                             if (view.neverUploaded) strings.analyticsNeverUploaded else view.lastSuccessText,
 ```
 
-In `MainActivity.kt:607-609`, pass the two new arguments:
+In `MainActivity.kt:607-609`, pass the two new arguments — and **add `java.time.ZoneId` and `java.util.Locale` to `MainActivity`'s imports**, which has neither today:
 
 ```kotlin
                     analyticsView = AnalyticsPresenter.view(
@@ -1333,22 +1410,23 @@ In `MainActivity.kt:607-609`, pass the two new arguments:
                     ),
 ```
 
-Verify the screen holds no arithmetic or formatting left: `grep -nE "DateFormat|SimpleDateFormat|/ 1000|\* 1000" app/src/main/java/com/sadaqah/kiosk/screens/AnalyticsSettingsScreen.kt` must return nothing.
+Verify no formatting or arithmetic is left on the screen: `grep -nE "DateFormat|SimpleDateFormat|/ 1000|\* 1000" app/src/main/java/com/sadaqah/kiosk/screens/AnalyticsSettingsScreen.kt` must return nothing. Record the output.
 
-- [ ] **Step 6: Correct the two comments this phase made untrue**
+- [ ] **Step 6: Correct the three comments this phase made untrue**
 
-`TelemetryManager.kt:91-92` and the block at `:107-115` describe backoff as one global deadline, and `:107-115` explains the `backoffUntilMs = 0L` line this phase deleted. Rewrite both to describe what `activate()` now does: it clears every table's failure state, so an operator who has just corrected the URL can retest immediately rather than waiting out a deadline. A comment describing removed code is worse than none.
+- `TelemetryManager.kt:91-92` and `:107-115` describe backoff as one global deadline, and `:107-115` explains the `backoffUntilMs = 0L` line this phase deleted. Rewrite both around what `activate()` now does: it clears every table's failure state, so a corrected destination is testable on the next press rather than up to an hour later.
+- `MainActivity.kt:2056-2058` says `activate()` evaluates the gate "against inputs that force `activated = true`, `backoffUntilMs = 0` and a queue depth…". `GateInputs.backoffUntilMs` no longer exists. The conclusion survives — `activate()` still cannot produce `BACKING_OFF`, because its reset clears both maps before `flush` reads them for the exclusion set — so correct the justification in place.
 
-Also check `MainActivity.kt:2055-2068` — the spec assigns that one to 3d-ii, so leave it.
+  **This deviates from the spec**, which defers that comment to 3d-ii on the grounds that it "describes backoff as a single global deadline". The spec did not anticipate that this phase would make it name a deleted symbol. Fixing it here rather than shipping a comment that references nothing; note the deviation in your report.
 
 - [ ] **Step 7: Keep the `RestartManager` getters and say why**
 
-`cardReaderFailures` and `reinitFailures` were listed for removal on a wrong count: six tests read them and two assert counter *isolation*, which `RestartResult` alone cannot express. Add a KDoc so the next reader does not retry this:
+`cardReaderFailures` and `reinitFailures` were listed for removal on a wrong count: nine reads across `RestartManagerTest.kt`, two of them asserting counter *isolation*, which `RestartResult` alone cannot express. They are two properties on consecutive lines (`:87-88`), and a KDoc attaches to one declaration — so use a plain comment above the pair:
 
 ```kotlin
-    /** Read by tests only, and deliberately kept: two of them assert that a
-     *  card-reader failure does not move the reinit count, which is an
-     *  invariant RestartResult cannot express. */
+    // Read by tests only, and deliberately kept: two of them assert that a
+    // card-reader failure does not move the reinit count, an invariant
+    // RestartResult cannot express.
 ```
 
 - [ ] **Step 8: Build, run the whole suite, commit**
@@ -1364,10 +1442,34 @@ git commit -m "Clear the login watchdog slot, and move timestamp formatting behi
 
 ## Self-review against the spec
 
-**Spec coverage.** `UploadOutcome` two sets → Task 2. Failure-wins → Task 3 Step 3. `TelemetryStatus` maps and `effectiveBackoffUntilMs` → Task 1. Exclusion inside `peek` → Task 4. `GateInputs.backoffUntilMs` removed, `isTableBackedOff` added → Task 1 Step 5. Global-field rules → Task 3 Step 3. Throw backs off the batch's tables → Task 3 Step 4. `PrefsStatusStore` per-key totality, key scheme, legacy migration → Task 1 Steps 8-12. `activate()` clears every table → Task 1 Step 13, tested in Task 3. Presenter aggregation → Task 1 Step 14; the `error` rule → Task 5. Ticker → Task 1 Step 14. Part 2's five items → Task 6. `RestartManager` getters kept → Task 6 Step 7. Every device check in the spec is manual and stays in the spec.
+| Spec requirement | Task |
+|---|---|
+| `UploadOutcome` → two sets, both reported not derived | Task 2 Steps 4-5 |
+| Failure wins when a table is in both sets | Task 3 Step 4, with a named mutation check |
+| `TelemetryStatus` two maps | Task 1 Step 5 |
+| `effectiveBackoffUntilMs`, built on `isTableBackedOff` | Task 1 Steps 3, 5 |
+| `lastError` retained across a sibling's success; cleared when nothing is backed off | Task 3 Step 4, tested over two flushes |
+| `lastSuccessMs` advances when any table succeeds | Task 3 Step 4 |
+| Presenter `error` rule, asserted at view level | Task 4 |
+| A throw backs off the batch's tables, not all three | Task 3 Step 5 |
+| `peek(excludeTables)` filtering before `limit` | Task 1 Steps 13-14, with the head-of-line mutation check |
+| Flush computes the backed-off set; `lastAttemptedIds` narrows with it | Task 1 Step 17 |
+| `BACKING_OFF` from the flush; `EMPTY_QUEUE` still distinct | Task 1 Steps 16-17 |
+| `GateInputs.backoffUntilMs` removed; `isTableBackedOff` added | Task 1 Step 6 |
+| `activate()` clears every table | Task 1 Step 18, tested in Task 3 |
+| Per-table key scheme, per-key totality, legacy migration | Task 1 Steps 8-12 |
+| `TelemetryTables` gains a list; read and write enumerate it | Task 1 Step 2 |
+| Presenter aggregation; `MainActivity` ticker | Task 1 Step 18 |
+| Watchdog slot cleared before `openLoginActivity` | Task 5 Step 1 |
+| `truncate` loses `maxBytes`; one suffix definition | Task 5 Step 2 |
+| `formatTimestamp` behind the presenter, zone and locale injected | Task 5 Steps 3-5 |
+| Stale comments corrected | Task 5 Step 6 |
+| `RestartManager` getters kept with a reason | Task 5 Step 7 |
+| Device checks 1-5 | Manual; stay in the spec |
+| Nothing identified written when `analyticsEnabled` is off | Unchanged by this phase |
 
-**Two places the plan goes beyond the spec, both recorded above:** the `StatusCodec` extraction (the spec asks for tests the current design cannot support), and `@Ignore`-then-restore on the one `BACKING_OFF` test that spans Tasks 1 and 4 (the alternative is deleting a regression test and hoping it gets rewritten).
+**Deletion is still uploader-sourced** at the single site `outcome.uploadedIds + outcome.rejectedIds`, covered by the existing `aPartialOutcomeRemovesBothTheUploadedAndTheRejectedRow` (`TelemetryManagerTest.kt:394-412`) and `aThrowingUploadBacksOffRatherThanRetryingInATightLoop` (`:330-350`). No task changes it.
 
-**Type consistency.** `retryableTables` / `succeededTables`, `consecutiveFailuresByTable` / `backoffUntilMsByTable`, `effectiveBackoffUntilMs(nowMs)`, `isTableBackedOff(backoffUntilMs, nowMs)`, `peek(limit, excludeTables)`, `StatusCodec.decode` / `.encode` / `.keyFor`, `TelemetryTables.ALL`, `AnalyticsView.lastSuccessText`, `TelemetryRedactor.TRUNCATION_SUFFIX` — each is spelled the same in the task that defines it and every task that consumes it.
+**Two documented deviations from the spec:** `StatusCodec` exists because the spec's own tests are otherwise unwritable (stated above); `MainActivity.kt:2056-2058` is corrected here rather than in 3d-ii because this phase deletes the symbol it names (Task 5 Step 6).
 
-**Known incompleteness, by design.** Task 2's and Task 3's and Task 4's test bodies give setup and assertion in prose where the file's own fixtures decide the code. That is not a placeholder — the implementer reads the fixture and writes the test — but it is the one place this plan does not hand over finished code, and a reviewer should hold those tests to the same standard as the ones written out in full.
+**Three tests are deliberately absent** rather than overlooked: an `excluded rows stay queued` outbox test (passes under every mutation that matters — the property is asserted at flush level instead), and the two `TelemetryGateTest` cases whose bodies became duplicates once the gate stopped knowing about deadlines (Task 1 Step 7).
