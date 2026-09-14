@@ -200,7 +200,7 @@ object DiagnosticEvents {
     /** Reserved below [TelemetryRedactor.MAX_TEXT_BYTES] for the JSON wrapper
      *  [sumUpFailureDetail] and [checkoutNoReaderDetail] add around a message —
      *  braces, field names and quoting for the other fields (the longest
-     *  wrapper is under 60 bytes) — so a message whose *escaped* form is
+     *  wrapper is under 63 bytes) — so a message whose *escaped* form is
      *  truncated to this budget can never push the assembled detail over the
      *  cap and lose the whole row to [TelemetryEvent.Diagnostic]'s oversize
      *  drop. It does not need to budget for the message's own escaping —

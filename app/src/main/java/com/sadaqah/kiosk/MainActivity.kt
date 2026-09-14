@@ -1677,10 +1677,8 @@ class MainActivity : FragmentActivity() {
                 nowMs = now,
                 idFor = { java.util.UUID.randomUUID().toString() }
             )
-            // Skipped, not just a no-op write: a commit() to disk on every
-            // failure — this runs every five minutes on a broken reader — is
-            // cost with nothing behind it once the throttle leaves toMarker
-            // empty.
+            // toMarker is empty on arms that do not mark (everything except RESTART),
+            // so this guard skips a synchronous disk write on those.
             if (report.toMarker.isNotEmpty()) {
                 // Same prefs file drainUpdateDiagnostics() reads at startup —
                 // see PendingDiagnosticStore's own comment on why that file,
