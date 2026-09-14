@@ -79,7 +79,7 @@ The shape becomes per-table; the behaviour stays global, because every table mov
 - `BACKING_OFF` now comes from the flush rather than the gate. `activate()` cannot produce it either way, because its reset clears both maps before `flush` reads them.
 
 **Files:**
-- Modify: `telemetry/TelemetryEvent.kt:9-13`, `telemetry/TelemetryStatusStore.kt:16-24`, `telemetry/TelemetryGate.kt`, `telemetry/TelemetryOutbox.kt:61-63`, `telemetry/TelemetryManager.kt`, `telemetry/AnalyticsPresenter.kt`, `MainActivity.kt:2001,2008`
+- Modify: `telemetry/TelemetryEvent.kt:9-13`, `telemetry/TelemetryStatusStore.kt:16-24`, `telemetry/TelemetryGate.kt`, `telemetry/TelemetryOutbox.kt:61-63`, `telemetry/PrefsStatusStore.kt`, `telemetry/TelemetryManager.kt`, `telemetry/AnalyticsPresenter.kt`, `MainActivity.kt`
 - Create: `telemetry/StatusCodec.kt`, `test/.../StatusCodecTest.kt`
 - Test: `StatusCodecTest.kt`, `TelemetryGateTest.kt`, `TelemetryOutboxTest.kt`, `TelemetryManagerTest.kt`, `AnalyticsPresenterTest.kt`, `ClearCredentialsTest.kt`
 
@@ -729,7 +729,11 @@ Keep `val before = statusStore.read()` — it is now read for the exclusion set 
 `TelemetryManager.kt`:
 - `activate()`'s precheck drops `backoffUntilMs = 0L`. Its comment claims "backoff forced to 0 (the reset a few lines down always clears it for real, so a stale deadline genuinely cannot block this press)" — that simulation no longer exists; delete the clause, keep the rest.
 - `activate()`'s reset becomes `it.copy(consecutiveFailuresByTable = emptyMap(), backoffUntilMsByTable = emptyMap(), lastError = null)`.
-- The throw branch and the `when` still write the scalars. Rewrite both to write **every table in the batch**, which is today's global behaviour expressed per table: on failure, `for (table in batch.map { it.table }.toSet())` set count+1 and the derived deadline; on success, clear both maps entirely. Task 3 replaces this block; it exists here only so the suite stays green and the commit is behaviour-preserving.
+- The throw branch and the `when` still write the scalars. Rewrite both to write **every table in `TelemetryTables.ALL`** on failure — count+1 and the derived deadline for each — and to clear both maps entirely on success. **Leave every other field of each `copy(...)` exactly as it is**, including `lastError`, `lastErrorAtMs`, and `lastSuccessMs = if (outcome.uploadedIds.isEmpty()) fresh.lastSuccessMs else finishedAt`; dropping that last one would break `aPartialSuccessMovesLastSuccessMsWhileStillBackingOff` a commit early.
+
+  `ALL`, deliberately, and not `batch.map { it.table }`. The batch almost never holds all three tables, so attributing failure to it would mean a donations-only failure leaves diagnostics free to attempt — which is this phase's *intended* behaviour arriving three commits early, under a task that claims to change nothing. It would also make the exponential schedule climb more slowly than today (two failing flushes on different tables reaching 60 s each instead of 120 s once), and a reviewer of this commit would have no reason to expect either. Task 3 narrows failure to the batch's tables, and that is what makes its `aThrowBacksOffEveryTableInTheBatchAndNoOther` a genuine red-first test rather than a restatement of code already written here.
+
+  Task 3 replaces this block wholesale; it exists only so the suite stays green and this commit is genuinely behaviour-preserving.
 
 `AnalyticsPresenter.view` — add one local above the `return` and use it for both backoff fields. Leave `error` alone; Task 4 changes it, and changing it here would blur which task the behaviour came from.
 
@@ -753,14 +757,31 @@ Keep `val before = statusStore.read()` — it is now read for the exclusion set 
                     (analyticsSnapshot?.status?.effectiveBackoffUntilMs(analyticsNowMs) ?: 0L) > analyticsNowMs
 ```
 
-Tests. Seeds of the form `consecutiveFailures = N` / `backoffUntilMs = X` become `consecutiveFailuresByTable = TelemetryTables.ALL.associateWith { N }` / `backoffUntilMsByTable = TelemetryTables.ALL.associateWith { X }`; reads become `.values.maxOrNull() ?: 0` and `effectiveBackoffUntilMs(now)`. Known sites — **treat this as a cross-check against your Step 1 recon, not as the complete list**:
+Tests. The default port: seeds of the form `consecutiveFailures = N` / `backoffUntilMs = X` become `consecutiveFailuresByTable = TelemetryTables.ALL.associateWith { N }` / `backoffUntilMsByTable = TelemetryTables.ALL.associateWith { X }`; reads become `.values.maxOrNull() ?: 0` and `effectiveBackoffUntilMs(now)`.
+
+**Three sites where that default is wrong. Apply the stated port instead.**
+
+- **`:166` / `:168`, `aSuccessResetsTheFailureCount`.** Seed `consecutiveFailuresByTable = mapOf(TelemetryTables.DONATIONS to 4)`, not `ALL`. Its outbox is `outboxWith("a")`, which is donations-only (`:81`), so from Task 3 onward a success clears `succeededTables - failedTables` = `{DONATIONS}` alone — the other two tables would keep their seeded 4, `maxOrNull()` would return 4, and `assertEquals(0, …)` would fail. It passes either way under Task 1's lockstep clear, which is exactly why the wrong shape would survive this commit and fail in Task 3.
+- **`:325`, `statusReportsTheQueueDepth`.** This test is not about backoff: it seeds every stored field to a distinctive value and asserts `status()` carries each one through. Its seed `123_456L` is *earlier* than the test's `now` (`1_000_000L`), so `effectiveBackoffUntilMs(now)` filters it out and returns `0L`. Assert on `reported.backoffUntilMsByTable.values.maxOrNull()` instead.
+- **`:223`, `aBackoffDeadlineInTheFutureBlocksTheFlush`.** `ALL.associateWith { now + 30_000 }` is correct here — every table excluded, empty batch, `BACKING_OFF`. Listed so you do not "fix" it.
+
+Known sites — **treat this as a cross-check against your Step 1 recon, not as the complete list**:
 
 - `TelemetryManagerTest.kt` seeds: `:166`, `:214`, `:223`, `:316-317`, `:368`, `:550-551`, `:587`.
 - `TelemetryManagerTest.kt` reads: `:145`, `:146`, `:168`, `:217`, `:324-325`, `:342`, `:343`, `:383`, `:423`, `:465`, `:466`, `:598`.
 - `ClearCredentialsTest.kt:27` (seed) and `:35` (read). `TelemetryTeardown` itself needs no change — it writes `TelemetryStatus()`, whose new defaults are empty maps.
 - `AnalyticsPresenterTest.kt`: any case seeding either scalar.
 
-- [ ] **Step 19: Give `AnalyticsPresenterTest.view` a `now` parameter**
+- [ ] **Step 19: Correct the three comments this step made untrue**
+
+A comment is fixed in the commit that breaks it, or it ships broken in between — and all three break here.
+
+- **`TelemetryManager.kt:91-92`** (`activate()`'s KDoc) and **`:107-115`** (the precheck comment above `GateInputs`) describe backoff as one global deadline, and `:107-115` explains the `backoffUntilMs = 0L` simulation this step deletes. Rewrite both around what `activate()` now does: it clears **every table's** failure state, so a corrected destination is testable on the next press rather than up to an hour later. This supersedes the clause-deletion noted in Step 18 — do the rewrite once, here.
+- **`MainActivity.kt:2056-2058`** says `activate()` evaluates the gate "against inputs that force `activated = true`, `backoffUntilMs = 0` and a queue depth…". `GateInputs.backoffUntilMs` ceases to exist in Step 6. The comment's *conclusion* survives — `activate()` still cannot produce `BACKING_OFF`, because its reset clears both maps before `flush` re-reads them for the exclusion set — so correct the justification in place. You are already editing this file at `:2001`/`:2008`.
+
+  **This deviates from the spec**, which defers that comment to 3d-ii because it "describes backoff as a single global deadline". The spec did not anticipate that this phase would make it name a deleted symbol. Note the deviation in your report.
+
+- [ ] **Step 20: Give `AnalyticsPresenterTest.view` a `now` parameter**
 
 Task 4's tests need to vary `now`, and the helper at `:13-17` closes over the class field. Add the parameter now, defaulting to the field, so Task 4 changes nothing structural:
 
@@ -773,7 +794,7 @@ Task 4's tests need to vary `now`, and the helper at `:13-17` closes over the cl
     ) = AnalyticsPresenter.view(settings, config, status, now)
 ```
 
-- [ ] **Step 20: Build, run the whole suite, commit**
+- [ ] **Step 21: Build, run the whole suite, commit**
 
 Run: `./gradlew :app:compileDebugKotlin && ./gradlew :app:testDebugUnitTest`
 Expected: PASS, with no `@Ignore` anywhere.
@@ -792,12 +813,14 @@ git commit -m "Key backoff state by table"
 - Test: `TelemetryUploaderTest.kt`, `TelemetryManagerTest.kt`
 
 **Interfaces:**
-- Consumes: `TelemetryTables.ALL` (Task 1).
 - Produces: `UploadOutcome(uploadedIds: Set<String>, rejectedIds: Set<String>, retryableTables: Set<String>, succeededTables: Set<String>, lastError: String?)`.
+- Consumes: nothing from Task 1. This task uses `TelemetryTables.DONATIONS` / `.DIAGNOSTICS`, which exist at HEAD.
 
 - [ ] **Step 1: Reconnaissance**
 
-Read `TelemetryUploaderTest.kt` in full and list every line reading `retryableFailure`. There are 22, at `:107, 117, 142, 161, 173, 184, 228, 239, 250, 265, 290, 320, 349, 369, 389, 412, 431, 448, 546, 570, 592, 636`. All stop compiling in Step 4. If your list differs from this one, trust your list and say so in your report.
+Read `TelemetryUploaderTest.kt` in full and list every line reading `retryableFailure`. There are 22, at `:107, 117, 142, 161, 173, 184, 228, 239, 250, 265, 290, 320, 349, 369, 389, 412, 431, 448, 546, 570, 592, 636`. All stop compiling in Step 4. If your list differs, trust your list and say so in your report.
+
+Then widen the search, because the arity change reaches past that one file: `grep -rn 'UploadOutcome(' app/src`. Five hits — the declaration and two returns in `TelemetryUploader.kt`, and **two** constructions in `TelemetryManagerTest.kt`. Step 7 handles both; note that the recon for that file's *other* contents happens in Task 3, so this grep is the only thing standing between you and a task that does not compile.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -900,7 +923,9 @@ Mechanical, except where noted: `assertTrue(outcome.retryableFailure)` → `asse
 
 `outcome.retryableFailure` becomes `outcome.retryableTables.isNotEmpty()` — identical behaviour, since the boolean was true exactly when some table failed. Task 3 replaces the branch entirely.
 
-`TelemetryManagerTest.kt:518-525`, `aDropRecordedWhileAFlushIsInFlightSurvivesTheFlushsOwnStatusWrite`, drives the `upload` seam directly and must become:
+**Two** tests construct `UploadOutcome` directly, and they need opposite treatment.
+
+`aDropRecordedWhileAFlushIsInFlightSurvivesTheFlushsOwnStatusWrite` drives the seam with a *successful* outcome and must become:
 
 ```kotlin
                 UploadOutcome(
@@ -912,7 +937,13 @@ Mechanical, except where noted: `assertTrue(outcome.retryableFailure)` → `asse
                 )
 ```
 
-`succeededTables` must **not** be empty here. `outboxWith` appends to `DONATIONS` (`:81`), and Task 3's `recordOutcome` returns early when both table sets are empty — so an empty-both outcome would mean no status write at all, and this test's whole point is that a mid-flight `droppedCount` bump survives the flush's own write. With no write to clobber it, the test would pass with the I4 guard deleted.
+`succeededTables` must **not** be empty here: `outboxWith` is donations-only, so `{DONATIONS}` is what the real uploader would report for this batch, and this test exists to prove that a mid-flight `droppedCount` bump survives the flush's own status write. An outcome naming no table at all would make the flush's write clear nothing and touch less, weakening the very collision the test is built around.
+
+`anOutcomeThatUploadedAndRejectedNothingIsNotRecordedAsASuccess` is the opposite case and its sets must **stay empty** — that all-empty shape is precisely what it pins:
+
+```kotlin
+            upload = { _, _ -> UploadOutcome(emptySet(), emptySet(), emptySet(), emptySet(), null) }
+```
 
 - [ ] **Step 8: Build, run the whole suite, commit**
 
@@ -929,7 +960,9 @@ git commit -m "Report upload outcomes per table"
 
 The behaviour change. Everything before it was shape.
 
-**Seeding rule for every test in this task:** the flush now excludes any table whose deadline is live (Task 1 Step 17). Seed failure *counts* freely; seed *deadlines* in the past, or not at all, unless the test is specifically about exclusion. A live deadline on the table under test means its rows are never attempted and the assertion will be about the wrong thing.
+**Seeding rule for every test in this task:** the flush excludes any table whose deadline is live (Task 1 Step 17). Seed failure *counts* freely; seed *deadlines* in the past, or not at all, unless the test is specifically about exclusion. A live deadline on the table under test means its rows are never attempted and the assertion will be about the wrong thing.
+
+**The same trap arrives without a seed.** A flush that records a failure *produces* a deadline, so in any multi-flush test the failing table is excluded from the next flush — and un-excluded again the moment the clock passes that deadline, at which point its still-queued rows are retried. A retryable failure deletes nothing (`TelemetryManager.kt:241` removes only uploader-named ids), so those rows are always still there. Whenever a test advances the clock past a deadline it produced, decide deliberately what the poster answers on the retry.
 
 **Files:**
 - Modify: `telemetry/TelemetryManager.kt`
@@ -940,7 +973,9 @@ The behaviour change. Everything before it was shape.
 
 - [ ] **Step 1: Reconnaissance**
 
-Read `TelemetryManagerTest.kt` in full. Note `ScriptedPoster` (`:36`) returns one response per call by index and repeats the last — `:448-467` is the worked example of driving the per-row fallback. Note `outboxWithRows` from Task 1 Step 15. List the tests that assert on `lastError`, `lastSuccessMs` or the failure counts, since Step 4 changes when each is written.
+Read `TelemetryManagerTest.kt` in full. Note `ScriptedPoster` returns one response per call by index and repeats the last; `aPartialSuccessMovesLastSuccessMsWhileStillBackingOff` is the worked example of driving the per-row fallback. Note `outboxWithRows` from Task 1 Step 15.
+
+**Task 1 inserted a helper and several tests into this file, so every line number an earlier task quoted for it has moved.** Locate things by name here, not by line. List the tests that assert on `lastError`, `lastSuccessMs` or the failure counts, since Step 4 changes when each is written.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -1029,11 +1064,22 @@ And the one the spec's `lastError` rule actually rests on, which needs **two** f
         // Assert: lastError is still the diagnostics error.
     }
 
+    /**
+     * The other half of the rule. Note flush 3 must answer **201 for diagnostics
+     * too** — the operator fixed the backend.
+     *
+     * A 503 deletes nothing, so flush 1's diagnostics rows are still queued.
+     * Flush 2 does not see them because the deadline excludes them; advancing
+     * the clock past that deadline is exactly what stops excluding them, so a
+     * flush 3 that still answered 503 would re-attempt the same rows, set
+     * errorText again, and leave lastError non-null — asserting the opposite of
+     * what this test is named for.
+     */
     @Test
     fun lastErrorClearsOnceNoTableIsBackedOff() {
-        // As above, then advance `now` past the diagnostics deadline and flush
-        // a donation successfully.
-        // Assert: lastError is null.
+        // Flushes 1 and 2 as above, then advance `now` past the diagnostics
+        // deadline and flush with EVERYTHING answering 201.
+        // Assert: lastError is null, and both maps are empty.
     }
 ```
 
@@ -1062,7 +1108,10 @@ Expected: FAIL — Task 1's lockstep accounting backs off every table together.
          *  uploader cannot produce rejections without uploads. That refusal is
          *  preserved here. What per-table state such an outcome would clear is
          *  a question it cannot answer — it names no tables — so it clears
-         *  none, and only the global fields move. */
+         *  none, and only the global fields move. Note this does advance
+         *  [TelemetryStatus.lastSuccessMs], where the old retryable branch did
+         *  not — matching what the old *success* branch did on the same shape,
+         *  which is the branch this one stands in for. */
         anyRowsSettled: Boolean,
         errorText: String?,
         finishedAt: Long
@@ -1355,7 +1404,20 @@ Assert the *dependence*, not a literal. `FormatStyle.SHORT` output is CLDR-data 
     }
 ```
 
-Add `zone` and `locale` parameters to the `view(...)` helper with fixed defaults (`ZoneId.of("UTC")`, `Locale.UK`) so no existing test changes. Import `assertNotEquals`, `java.time.ZoneId`, `java.util.Locale`.
+Add `zone` and `locale` to the `view(...)` helper with fixed defaults so no existing test changes, and pass them through — Step 4 makes them required, so the existing four-argument call stops compiling:
+
+```kotlin
+    private fun view(
+        settings: Settings = Settings(analyticsEnabled = true, installId = "install-1"),
+        config: TelemetryConfig? = TelemetryConfig("https://abc.supabase.co", "publishable-key"),
+        status: TelemetryStatus = TelemetryStatus(),
+        now: Long = this.now,
+        zone: ZoneId = ZoneId.of("UTC"),
+        locale: Locale = Locale.UK
+    ) = AnalyticsPresenter.view(settings, config, status, now, zone, locale)
+```
+
+Import `assertNotEquals`, `java.time.ZoneId`, `java.util.Locale`.
 
 - [ ] **Step 4: Move the formatting behind the presenter**
 
@@ -1412,14 +1474,7 @@ In `MainActivity.kt:607-609`, pass the two new arguments — and **add `java.tim
 
 Verify no formatting or arithmetic is left on the screen: `grep -nE "DateFormat|SimpleDateFormat|/ 1000|\* 1000" app/src/main/java/com/sadaqah/kiosk/screens/AnalyticsSettingsScreen.kt` must return nothing. Record the output.
 
-- [ ] **Step 6: Correct the three comments this phase made untrue**
-
-- `TelemetryManager.kt:91-92` and `:107-115` describe backoff as one global deadline, and `:107-115` explains the `backoffUntilMs = 0L` line this phase deleted. Rewrite both around what `activate()` now does: it clears every table's failure state, so a corrected destination is testable on the next press rather than up to an hour later.
-- `MainActivity.kt:2056-2058` says `activate()` evaluates the gate "against inputs that force `activated = true`, `backoffUntilMs = 0` and a queue depth…". `GateInputs.backoffUntilMs` no longer exists. The conclusion survives — `activate()` still cannot produce `BACKING_OFF`, because its reset clears both maps before `flush` reads them for the exclusion set — so correct the justification in place.
-
-  **This deviates from the spec**, which defers that comment to 3d-ii on the grounds that it "describes backoff as a single global deadline". The spec did not anticipate that this phase would make it name a deleted symbol. Fixing it here rather than shipping a comment that references nothing; note the deviation in your report.
-
-- [ ] **Step 7: Keep the `RestartManager` getters and say why**
+- [ ] **Step 6: Keep the `RestartManager` getters and say why**
 
 `cardReaderFailures` and `reinitFailures` were listed for removal on a wrong count: nine reads across `RestartManagerTest.kt`, two of them asserting counter *isolation*, which `RestartResult` alone cannot express. They are two properties on consecutive lines (`:87-88`), and a KDoc attaches to one declaration — so use a plain comment above the pair:
 
@@ -1429,7 +1484,7 @@ Verify no formatting or arithmetic is left on the screen: `grep -nE "DateFormat|
     // RestartResult cannot express.
 ```
 
-- [ ] **Step 8: Build, run the whole suite, commit**
+- [ ] **Step 7: Build, run the whole suite, commit**
 
 Run: `./gradlew :app:compileDebugKotlin && ./gradlew :app:testDebugUnitTest`
 
@@ -1441,6 +1496,8 @@ git commit -m "Clear the login watchdog slot, and move timestamp formatting behi
 ---
 
 ## Self-review against the spec
+
+**A note on line numbers.** Citations into `TelemetryManagerTest.kt` and `MainActivity.kt` are accurate at HEAD and are consumed by Task 1, which then shifts them by adding a helper, several tests and one net line. Tasks 2, 3 and 5 therefore name tests, helpers and properties rather than lines in those two files. `TelemetryUploaderTest.kt`'s line citations stay valid — no earlier task touches it.
 
 | Spec requirement | Task |
 |---|---|
@@ -1463,13 +1520,13 @@ git commit -m "Clear the login watchdog slot, and move timestamp formatting behi
 | Watchdog slot cleared before `openLoginActivity` | Task 5 Step 1 |
 | `truncate` loses `maxBytes`; one suffix definition | Task 5 Step 2 |
 | `formatTimestamp` behind the presenter, zone and locale injected | Task 5 Steps 3-5 |
-| Stale comments corrected | Task 5 Step 6 |
-| `RestartManager` getters kept with a reason | Task 5 Step 7 |
+| Stale comments corrected | Task 1 Step 19 — the commit that breaks them |
+| `RestartManager` getters kept with a reason | Task 5 Step 6 |
 | Device checks 1-5 | Manual; stay in the spec |
 | Nothing identified written when `analyticsEnabled` is off | Unchanged by this phase |
 
 **Deletion is still uploader-sourced** at the single site `outcome.uploadedIds + outcome.rejectedIds`, covered by the existing `aPartialOutcomeRemovesBothTheUploadedAndTheRejectedRow` (`TelemetryManagerTest.kt:394-412`) and `aThrowingUploadBacksOffRatherThanRetryingInATightLoop` (`:330-350`). No task changes it.
 
-**Two documented deviations from the spec:** `StatusCodec` exists because the spec's own tests are otherwise unwritable (stated above); `MainActivity.kt:2056-2058` is corrected here rather than in 3d-ii because this phase deletes the symbol it names (Task 5 Step 6).
+**Two documented deviations from the spec:** `StatusCodec` exists because the spec's own tests are otherwise unwritable (stated above); `MainActivity.kt:2056-2058` is corrected here rather than in 3d-ii because this phase deletes the symbol it names (Task 1 Step 19).
 
 **Three tests are deliberately absent** rather than overlooked: an `excluded rows stay queued` outbox test (passes under every mutation that matters — the property is asserted at flush level instead), and the two `TelemetryGateTest` cases whose bodies became duplicates once the gate stopped knowing about deadlines (Task 1 Step 7).
