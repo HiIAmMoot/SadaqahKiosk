@@ -248,10 +248,12 @@ class TelemetryManagerTest {
     }
 
     /**
-     * The reason this phase exists. A refused diagnostics table must not hold
-     * up a donation queued behind it — and with more backed-off rows at the
-     * head than a batch holds, a filter applied after the batch was taken would
-     * send nothing at all.
+     * The reason this phase exists: a refused diagnostics table must not hold
+     * up a donation queued behind it. (The filter-before-`take` ordering itself
+     * is pinned at the outbox level, in
+     * [TelemetryOutboxTest.excludedRowsAtTheHeadDoNotCrowdOutTheRowsBehindThem]
+     * — this test's two excluded rows sit well inside `DEFAULT_BATCH`, so it
+     * would pass even with `take` and the filter swapped.)
      */
     @Test
     fun aDonationStillUploadsWhileDiagnosticsAreBackedOff() {
@@ -289,8 +291,15 @@ class TelemetryManagerTest {
         assertEquals("nothing may be sent while backing off", 0, poster.callCount)
     }
 
+    /**
+     * Pins the gate's own `queueDepth <= 0` check, not the post-exclusion
+     * EMPTY_QUEUE/BACKING_OFF branch below it: an outbox that starts empty
+     * never reaches `outbox.peek` at all, so this says nothing about that
+     * branch's own EMPTY_QUEUE arm — see the comment on that branch for why
+     * that arm has no test of its own.
+     */
     @Test
-    fun aGenuinelyEmptyQueueStillReportsEmptyQueue() {
+    fun theGateReportsEmptyQueueBeforeExclusionEverRuns() {
         val outbox = TelemetryOutbox(temp.newFile())
         assertEquals(
             FlushBlock.EMPTY_QUEUE,
@@ -666,8 +675,8 @@ class TelemetryManagerTest {
     // ── FIX (I2): a blocked press must change nothing ───────────────────────
 
     /**
-     * Before this fix, activate() reset lastError/consecutiveFailures/
-     * backoffUntilMs and appended the activation row *before* the gate was
+     * Before this fix, activate() reset lastError and every table's failure
+     * state and appended the activation row *before* the gate was
      * ever consulted, so an offline press destroyed the diagnostic the
      * operator opened the screen to read and left a row queued forever that
      * nothing would send until the next press. The gate must now be evaluated

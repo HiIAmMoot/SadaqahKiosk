@@ -219,6 +219,15 @@ class TelemetryManager(
             // a wrong logcat reason and a wrong Blocked payload, nothing more.
             // The cost of getting here at all is one extra readAll on a flush
             // that does no network work.
+            //
+            // The EMPTY_QUEUE arm below is kept for that reason alone, and is
+            // not unit-reachable: reaching it needs the queue to drain between
+            // `outbox.size()` above and this `peek`, a genuine race that a
+            // single-threaded suite against a concrete TelemetryOutbox (no
+            // injection seam for a draining one) cannot manufacture. Deleting
+            // the guard would make that drain report BACKING_OFF instead, which
+            // is the worse read for an operator watching logcat, so it stays
+            // despite having no test of its own.
             return if (backedOffTables.isEmpty()) FlushBlock.EMPTY_QUEUE else FlushBlock.BACKING_OFF
         }
 

@@ -87,7 +87,7 @@ object AnalyticsPresenter {
             configured = config != null,
             // Gated on `enabled`: TelemetryGate refuses a disabled kiosk before
             // anything else, so a live button here could not report anything —
-            // and activate() resets lastError/consecutiveFailures/backoffUntilMs
+            // and activate() resets lastError and every table's failure state
             // and appends an unsendable activation row *before* the gate is even
             // consulted, so a press on a disabled kiosk both erases the
             // diagnostic the operator opened this screen to read and leaves a
