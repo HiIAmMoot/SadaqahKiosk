@@ -26,23 +26,23 @@ object RestartReporting {
         result: RestartResult,
         causing: PendingDiagnostic,
         reason: String,
-        failureCount: Int,
         alreadyGaveUp: Boolean,
         nowMs: Long,
         idFor: () -> String
     ): RestartReport {
-        // The causing diagnostic earns its row only when it says something the
-        // last one didn't: the first failure of an episode, the failure that
-        // crossed the restart threshold, or the failure that triggers the
-        // give-up row. Failures 2..N of an episode repeat what failure 1 (or a
-        // prior give-up) already said — and on a kiosk whose reader never
-        // recovers, that repetition is what evicts real donation rows from a
-        // shared, capped outbox. clearCounters() ends an episode on any
-        // success, so a kiosk that recovers starts counting from 1 again.
-        val reportCausing = failureCount == 1 ||
-            result == RestartResult.RESTART ||
-            (result == RestartResult.MAX_RESTARTS && !alreadyGaveUp)
-        val causingRows = if (reportCausing) listOf(causing) else emptyList()
+        // The causing diagnostic is always reported. It used to be throttled
+        // to the first failure of an episode, but that broke the correlation
+        // this phase exists to create: card_reader_page_timeout is unthrottled
+        // while its paired card_reader_connect_failed — the row carrying
+        // closed_by — was dropped on every kiosk that had failed even once
+        // since the last clear. Worse, a synthetic close ticks the restart
+        // counter, so failure #1 of an episode could *be* the
+        // closed_by: screensaver row, leaving genuine failures silent and
+        // making a dead reader look self-inflicted. The give-up latch below
+        // is the throttle that actually matches a real repeat: MAX_RESTARTS
+        // fires on every failure once the cap is reached, forever, with
+        // nothing new to say.
+        val causingRows = listOf(causing)
 
         return when (result) {
             RestartResult.RESTART -> RestartReport(

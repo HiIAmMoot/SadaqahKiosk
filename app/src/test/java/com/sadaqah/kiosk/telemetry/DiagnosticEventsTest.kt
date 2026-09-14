@@ -464,13 +464,17 @@ class DiagnosticEventsTest {
         assertEquals("declined", d["message"].asString)
     }
 
-    /** A message truncated only against TelemetryRedactor's own cap, then
-     *  wrapped, would push the assembled detail over the cap and lose the
+    /** A message truncated only against TelemetryRedactor's own raw-byte cap,
+     *  then wrapped, would push the assembled detail over the cap and lose the
      *  whole row to TelemetryEvent.Diagnostic's oversize drop — the wrapper
-     *  overflow this reserve exists to prevent. */
+     *  overflow this reserve exists to prevent. Built from `"` rather than
+     *  `"x"`: every character here doubles under JSON escaping, so a fix that
+     *  merely widened the reserve constant (without measuring the escaped
+     *  length) would still fail this, where it passed on an all-`x` string
+     *  that has nothing to escape. */
     @Test
     fun truncateWrappedMessageLeavesRoomForTheJsonWrapper() {
-        val atCap = "x".repeat(TelemetryRedactor.MAX_TEXT_BYTES)
+        val atCap = "\"".repeat(TelemetryRedactor.MAX_TEXT_BYTES)
         val wrapped = DiagnosticEvents.sumUpFailureDetail(
             code = -1,
             message = DiagnosticEvents.truncateWrappedMessage(atCap),
@@ -489,6 +493,14 @@ class DiagnosticEventsTest {
             affiliateKey = null
         )
         assertTrue(payload(event).has("detail"))
+    }
+
+    /** A message already inside the escaped budget must pass through
+     *  untouched — the escape-aware truncation must not cut what didn't need
+     *  cutting. */
+    @Test
+    fun truncateWrappedMessageLeavesAShortMessageUntouched() {
+        assertEquals("declined", DiagnosticEvents.truncateWrappedMessage("declined"))
     }
 
     @Test

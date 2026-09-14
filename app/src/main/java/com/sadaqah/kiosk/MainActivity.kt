@@ -708,7 +708,6 @@ class MainActivity : FragmentActivity() {
                                 closedBy = closedBy
                             )
                         },
-                        restartManager.reinitFailures,
                         "reinit_failures"
                     )
                     handleRestartResult(result, "reinit_failures")
@@ -753,7 +752,6 @@ class MainActivity : FragmentActivity() {
                                 closedBy = closedBy
                             )
                         },
-                        restartManager.cardReaderFailures,
                         "card_reader_failures"
                     )
                     handleRestartResult(result, "card_reader_failures")
@@ -1094,7 +1092,18 @@ class MainActivity : FragmentActivity() {
                 // re-arm above (this function, silent branch) replaces this job
                 // with one that arms in its own right; onDestroy's cancel stops
                 // the job before it ever reaches here. Reaching this line
-                // uncancelled therefore still means the login is outstanding.
+                // uncancelled therefore still means the login is outstanding —
+                // and this job is only ever scheduled after openLoginActivity
+                // above returns, the same ordering that closed the analogous gap
+                // on the code-2 side (isConnectingCardReader moved past
+                // openCardReaderPage), so a throw from the call itself can never
+                // arm it. What that ordering does not cover, and what the code-2
+                // side does not need to worry about: it assumes a normal return
+                // from openLoginActivity always means an activity actually
+                // launched. isConnectingCardReader is a state flag the callback
+                // itself clears, so it can't go stale that way; a fixed-delay
+                // watchdog has no callback to lean on. Not verifiable from this
+                // repo — SumUp's SDK behaviour on that point is unknown.
                 syntheticCloseLogin = "login_watchdog"
                 finishActivity(1)
             }
@@ -1643,9 +1652,7 @@ class MainActivity : FragmentActivity() {
 
     /**
      * Executes [RestartReporting.restartReport]'s decision; makes none of its
-     * own. [failureCount] must be read after the `record…Failure()` call that
-     * produced [result], so it reflects the failure just recorded rather than
-     * the one before it.
+     * own.
      *
      * The whole body is wrapped, not just the marker write: this call sits
      * immediately before [handleRestartResult] may trigger [hardRestart], and
@@ -1658,7 +1665,6 @@ class MainActivity : FragmentActivity() {
         result: RestartResult,
         kind: DiagnosticKind,
         detail: () -> String,
-        failureCount: Int,
         reason: String
     ) {
         try {
@@ -1667,7 +1673,6 @@ class MainActivity : FragmentActivity() {
                 result = result,
                 causing = PendingDiagnostic(java.util.UUID.randomUUID().toString(), kind, now, detail()),
                 reason = reason,
-                failureCount = failureCount,
                 alreadyGaveUp = restartManager.gaveUpReported,
                 nowMs = now,
                 idFor = { java.util.UUID.randomUUID().toString() }
@@ -2236,7 +2241,11 @@ class MainActivity : FragmentActivity() {
                     // Unreached if the loop above throws — an append that fails
                     // leaves its entry (and every later one) behind, to be retried
                     // next startup, exactly like the update markers below.
-                    pendingStore.removeDrained(drainedIds)
+                    // Guarded the same way reportRestart guards its own write
+                    // (`if (report.toMarker.isNotEmpty())`): skipping an empty
+                    // drain avoids a commit() of "[]" on every single boot, which
+                    // is the overwhelmingly common case.
+                    if (drainedIds.isNotEmpty()) pendingStore.removeDrained(drainedIds)
 
                     val rollbackAt = prefs.getLong(UpdateWatchdogReceiver.KEY_ROLLBACK_AT, 0L)
                     val rollbackFrom =

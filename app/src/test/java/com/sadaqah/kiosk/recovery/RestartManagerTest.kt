@@ -175,7 +175,7 @@ class RestartManagerTest {
     }
 
     @Test
-    fun clearCardReaderFailures_onlyResetsCardReader() {
+    fun clearCardReaderFailures_leavesReinitFailuresAlone() {
         val mgr = createManager()
         mgr.recordCardReaderFailure()
         mgr.recordCardReaderFailure()
@@ -184,6 +184,19 @@ class RestartManagerTest {
         mgr.clearCardReaderFailures()
         assertEquals(0, mgr.cardReaderFailures)
         assertEquals(1, mgr.reinitFailures)
+    }
+
+    /** restartCount survives clearCardReaderFailures — only clearCounters()
+     *  resets it — so the give-up latch must come down here too, or a kiosk
+     *  that recovers and re-fails before restartCountResetSec elapses hits
+     *  MAX_RESTARTS again with the latch already up and gives up a second
+     *  time with no restart_triggered row. */
+    @Test
+    fun clearCardReaderFailures_alsoClearsTheGiveUpLatch() {
+        val mgr = createManager()
+        mgr.markGaveUpReported()
+        mgr.clearCardReaderFailures()
+        assertFalse(mgr.gaveUpReported)
     }
 
     @Test
@@ -244,5 +257,52 @@ class RestartManagerTest {
         val results = (1..3).map { m.recordCardReaderFailure() }
         assertEquals(RestartResult.RESTART, results.last())
         assertFalse(m.gaveUpReported)
+    }
+
+    /**
+     * The mechanism Important-2 of the independent review flagged as untested:
+     * tryRestart's MAX_RESTARTS return at line 85 happens *before* the latch
+     * reset at line 97, so a give-up that is already latched must stay latched
+     * through every failure that follows. Get this ordering wrong — move the
+     * reset above the early return — and gave_up would repeat forever, because
+     * reportRestart re-derives nothing; it trusts this getter. Reaches
+     * MAX_RESTARTS for real (three genuine restarts, each past its own
+     * cooldown) rather than asserting on a manually-set restartCount, so the
+     * test exercises the exact path a regression would break.
+     */
+    @Test
+    fun theGiveUpLatchSurvivesFailuresAfterMaxRestartsIsReached() {
+        val m = createManager()
+        repeat(3) {
+            repeat(3) { m.recordCardReaderFailure() }
+            now += 301_000L // past cooldown, so each group is a genuine restart
+        }
+        assertEquals(3, m.restartCount)
+
+        // The failure that first hits the cap — this is what reportRestart
+        // would see as the give-up edge, and what sets the latch for real.
+        val firstGiveUp = m.recordCardReaderFailure()
+        assertEquals(RestartResult.MAX_RESTARTS, firstGiveUp)
+        m.markGaveUpReported()
+
+        // Every failure after that must still see MAX_RESTARTS with the latch
+        // still up, or the give-up row reportRestart derives from it repeats.
+        val laterFailure = m.recordCardReaderFailure()
+        assertEquals(RestartResult.MAX_RESTARTS, laterFailure)
+        assertTrue(m.gaveUpReported)
+    }
+
+    /** Same guarantee on the other branch that returns without touching the
+     *  latch — COOLDOWN_ACTIVE must not clear it either. */
+    @Test
+    fun theGiveUpLatchSurvivesACooldownActiveResult() {
+        val m = createManager()
+        repeat(3) { m.recordCardReaderFailure() } // restart #1, sets lastRestart
+        m.markGaveUpReported()
+
+        now += 100_000L // still within the 300s cooldown
+        val result = m.recordCardReaderFailure() // over threshold again -> COOLDOWN_ACTIVE
+        assertEquals(RestartResult.COOLDOWN_ACTIVE, result)
+        assertTrue(m.gaveUpReported)
     }
 }

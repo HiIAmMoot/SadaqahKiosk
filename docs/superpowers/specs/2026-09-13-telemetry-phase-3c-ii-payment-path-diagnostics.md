@@ -264,10 +264,10 @@ No `DiagnosticKind` change, no `TelemetryOutbox` change, no `RestartManager` *de
 ## The inertness grep after this phase
 
 ```bash
-grep -rnE '[Oo]utbox\.append\(' app/src/main   # expect 5, unchanged
+grep -rnE '[Oo]utbox\.append\(' app/src/main   # expect 6: the 5 pre-existing sites plus this phase's own pending-drain append
 ```
 
-Every kind reaches the outbox through `reportDiagnostic` or the existing drain. `flush()` stays at **1**; `activate()` has **1** real caller plus KDoc mentions at `:1878` and `:1906`. A grep for `DiagnosticKind\.<NAME>` then finds constructions for **all eleven** kinds.
+Every kind reaches the outbox through `reportDiagnostic` or the new pending-drain append inside `drainUpdateDiagnostics` (`MainActivity.kt`, alongside the existing update-marker drain). `flush()` stays at **1**; `activate()` has **1** real caller plus KDoc mentions at `:1878` and `:1906`. A grep for `DiagnosticKind\.<NAME>` then finds constructions for **all eleven** kinds.
 
 ---
 
@@ -298,7 +298,7 @@ The call sites, `syntheticClose`, the marker write, and the drain's new branch. 
 3. Pairing page, walk away ten minutes: a `card_reader_page_timeout`, and a `card_reader_connect_failed` carrying `closed_by: pairing_timeout`.
 4. Dismiss the screensaver (`resetScreensaver`, `:1627`) repeatedly with **no** pairing page open, then fail a reader connection for real. The failure must carry **no** `closed_by` — this is the regression check for the stale-arm bug, and it is performable where "activate the screensaver while the pairing page is open" is not: the screensaver button lives in `MainActivity`'s own UI (`SettingsScreen.kt:332`), which cannot be foreground while the SumUp pairing activity is.
 5. Stall a silent re-auth past the watchdog: `sumup_reinit_failed` with `closed_by: login_watchdog`. A real interactive login failure produces one **without** `closed_by`.
-6. Exhaust `maxRestartsBeforeGiveUp`: one `restart_triggered` with `outcome: gave_up`. Keep failing: **no further rows** until a success clears the counters.
+6. Exhaust `maxRestartsBeforeGiveUp`: one `restart_triggered` with `outcome: gave_up`. Keep failing: the causing diagnostic keeps arriving on every failure (it is never throttled), but **no further `restart_triggered`** until a success clears the counters and the latch.
 7. Fail a checkout with the reader physically off: one `checkout_no_reader`. Decline a card with the reader connected: **none**.
 8. Take a normal donation with diagnostics queued: it completes normally.
 9. With `analyticsEnabled` off, force a restart. Queue depth is unchanged **and the marker store is empty afterwards** — the store is what this check measures, since with analytics off the queue never moves and proves nothing.

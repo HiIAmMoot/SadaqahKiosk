@@ -70,9 +70,17 @@ class RestartManager(
         return had
     }
 
-    /** Resets just the card reader failure counter (e.g. after a successful connection). */
+    /** Resets the card reader failure counter and the give-up latch (e.g.
+     *  after a successful connection). The latch has to come down here too:
+     *  restartCount is untouched by this call and only clearCounters() resets
+     *  it, so leaving the latch up lets a kiosk that recovers and re-fails
+     *  inside restartCountResetSec hit MAX_RESTARTS again with alreadyGaveUp
+     *  already true — a second give-up with no restart_triggered row, the
+     *  exact silent failure anActualRestartClearsTheGiveUpLatch prevents on
+     *  the RESTART path. */
     fun clearCardReaderFailures() {
         store.putInt(KEY_CARD_READER_FAILURES, 0)
+        store.putInt(KEY_GAVE_UP_REPORTED, 0)
     }
 
     val restartCount: Int get() = store.getInt(KEY_RESTART_COUNT)
