@@ -68,6 +68,10 @@ Without the guard here, a single corrupt deadline would dominate a "longest rema
 - **`lastError` / `lastErrorAtMs`** — written whenever any table fails retryably. Cleared **only when no table is backed off**. A donations success must not wipe the schema error that explains why diagnostics are stuck.
 - **`lastSuccessMs`** — advanced whenever any table succeeds. "Something reached the backend" is true, and it is what the field means.
 
+**Keeping the error in the store is not enough, and this is the trap.** `AnalyticsPresenter` suppresses a stale error with `takeIf { lastSuccessMs <= lastErrorAtMs }` (`:111`). Today a global backoff freezes `lastSuccessMs`, so the suppression never fires while a failure stands. This phase removes that freeze — a sibling's success now advances `lastSuccessMs` past the retained `lastErrorAtMs`, and the screen renders **nothing** beside a non-zero failure count. The store would be right and the operator would see a blank.
+
+So the presenter's rule changes too: the error is shown while **any table is backed off**, and the timestamp comparison only decides the case where none is. `AnalyticsView.error` is therefore a **fourth** changed presenter field, and its test asserts on the view, not on the store — a store-level assertion passes while the screen is blank.
+
 ### The flush's accounting
 
 Each table in `retryableTables` gets its own count incremented and its own deadline computed from it. Each table in `succeededTables` **and not in `retryableTables`** has its count and deadline cleared — including in a flush where a sibling failed. The current exclusive `when` cannot express that; outcome handling becomes a per-table pass.
@@ -98,7 +102,7 @@ The gate gains one pure predicate:
     fun isTableBackedOff(backoffUntilMs: Long, nowMs: Long): Boolean
 ```
 
-carrying the fail-open guard. `BACKING_OFF` now originates from the flush finding every candidate excluded rather than from the gate's own branch.
+carrying the fail-open guard. **`TelemetryStatus.effectiveBackoffUntilMs` is built on this predicate** rather than repeating the comparison — a second copy of the guard is the duplication the Decisions section warns about. `BACKING_OFF` now originates from the flush finding every candidate excluded rather than from the gate's own branch.
 
 ### `activate()` clears every table
 
@@ -106,7 +110,7 @@ carrying the fail-open guard. `BACKING_OFF` now originates from the flush findin
 
 ### `PrefsStatusStore`
 
-One flat key per table, named by a stated scheme: the existing key plus `.` plus the table name — `backoff_until_ms.donation_events`. Tables are a closed set in code; a flat key needs no parser.
+One flat key per table, named by a stated scheme: the existing key plus `.` plus the table name — `backoff_until_ms.donation_events`. Tables are a closed set in code; a flat key needs no parser. `TelemetryTables` currently declares three constants but exposes no list, so it gains one — `read()` and `write()` both enumerate from it, and a fourth table added later cannot be persisted by one and forgotten by the other.
 
 **`read()` becomes total per key, not per status.** Today one `ClassCastException` anywhere yields a wholly default `TelemetryStatus`, which silently zeroes `droppedCount`. Going from six keys to ten multiplies the ways that happens. Each key is read defensively so a corrupt key costs its own field and nothing else.
 
@@ -114,7 +118,7 @@ One flat key per table, named by a stated scheme: the existing key plus `.` plus
 
 ### What the screen sees
 
-`AnalyticsPresenter`'s output shape does not change. Three fields aggregate, all through `effectiveBackoffUntilMs`:
+`AnalyticsPresenter`'s output shape does not change. Four fields change how they are derived — the two backoff fields through `effectiveBackoffUntilMs`, `consecutiveFailures` by taking the maximum directly, and `error` by the rule above:
 
 - `backingOff` — any table is backed off.
 - `backoffRemainingSeconds` — longest remaining, so the countdown ends when the kiosk is fully unblocked.
@@ -135,6 +139,8 @@ One flat key per table, named by a stated scheme: the existing key plus `.` plus
 - **A truncation-suffix literal is duplicated** between `DiagnosticEvents` and `TelemetryRedactor`. One source. The literal only — the two truncation *functions* are different and both stay.
 
 - **`formatTimestamp` in `AnalyticsSettingsScreen`** is the one computation in a file no unit test reaches. Move the formatting behind the presenter, which adds an `AnalyticsView` field rather than a `Strings` member. Two constraints: the presenter must take the zone and locale as parameters rather than reading platform defaults, or its test is machine-dependent; and the `neverUploaded` branch stays a screen concern, since rendering it needs a `Strings` member the presenter must not reach for.
+
+- **Two comments this phase makes untrue.** `TelemetryManager.kt:91-92` and `:107-115` describe backoff as one global deadline, and `:107-115` explains a line this phase deletes. Both are corrected here, not deferred — a comment describing removed code is worse than none.
 
 **Dropped from this phase, and why.** `RestartManager.cardReaderFailures` and `reinitFailures` were listed as dead getters to remove. They are not: **six** tests read them, and **two** assert counter *isolation* — that a reader failure does not move the reinit count — which `RestartResult` alone cannot express. Removing them nets zero deletions and costs real coverage. They stay, with a KDoc saying they exist for isolation assertions so the next reader does not retry this.
 
@@ -216,4 +222,4 @@ The watchdog clear, and the ticker's move to the shared helper.
 - **The crash handler's bounded write**, with the four traps three earlier reviews named: `synchronized(aReentrantLock)` compiles and guards nothing, so the lock field is renamed and every site must use `withLock` — including `lockFor` and the path-keyed map, typed `Any` today; the byte ceiling was not derivable and must not return in another form, **including as an unjustified lock timeout**; the heal must be neither slack-gated nor **lifecycle-gated** — `drainUpdateDiagnostics` launches after `onCreate` returns, so a crash inside `onCreate` never reaches it; and compaction stays off the main thread. **`compactNow` should skip `writeAll` when nothing is droppable**, or every boot rewrites the whole queue — and state whether it calls `onDropped`.
 - **`tryLock(timeout)` clears the interrupt flag when it throws**, so restoring it needs `Thread.currentThread().interrupt()`. A test pinning only the return value will not catch its absence.
 - **`CrashContext.onOutboxDropped` retains one live Activity.** Moving the status store to process scope needs a named holder; this app has no `Application` subclass, and a drop before the holder is initialised loses `droppedCount` silently.
-- **Stale comments** left by this phase family: `MainActivity.kt:2055-2068` and `TelemetryManager.kt:91-92`, `:107-115` describe backoff as a single global deadline.
+- **Stale comments** left by this phase family: `MainActivity.kt:2055-2068` describes backoff as a single global deadline.
