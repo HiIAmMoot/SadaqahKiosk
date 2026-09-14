@@ -2,38 +2,36 @@
 
 **Goal:** A diagnostics table the backend refuses stops delaying donations that would upload fine.
 
-Plus five small carried items that live on the same send path. No new events, no new kinds, no new screen copy.
+Plus four small carried items on the same send path. No new events, no new kinds, no new screen copy.
 
 ## Why this is split from the queue work
 
 A single 3d covering the send path and the queue failed review with two Criticals, one in each half:
 
-- **Filtering backed-off rows after `peek` causes permanent head-of-line blocking.** `peek` is `readAll().take(100)` (`TelemetryOutbox.kt:61-63`). A hundred backed-off rows at the head produce an empty batch, the flush reports `BACKING_OFF`, and because nothing is removed the head never advances. Donations behind them would never send **at all** — strictly worse than today's one-hour ceiling. Fixed here by excluding inside the read.
-- **Table-aware eviction that prefers the largest table deletes donations while older diagnostics survive.** That belongs to the queue half and is redesigned there, not here.
+- **Filtering backed-off rows after `peek` causes permanent head-of-line blocking.** `peek` is `readAll().take(100)` (`TelemetryOutbox.kt:61-63`). A hundred backed-off rows at the head produce an empty batch, and because nothing is removed the head never advances — donations behind them would never send **at all**, strictly worse than today's one-hour ceiling. Fixed here by excluding inside the read.
+- **Table-aware eviction preferring the largest table deletes donations while older diagnostics survive.** That belongs to the queue half and is redesigned there.
 
-Putting them in one phase would have let a queue redesign hold up a send-path fix that is ready. The seam is `TelemetryOutbox`: this phase does not change it except to let a reader exclude tables.
-
-**3d-ii** covers the queue: eviction that cannot starve donations, the crash handler's bounded write, and the retained-Activity item. Its requirements are recorded at the end.
+The seam is `TelemetryOutbox`: this phase touches it only to add one defaulted parameter to the read path. **3d-ii** covers eviction, the crash handler's bounded write, and the retained-Activity item; its requirements are recorded at the end.
 
 ---
 
 ## Non-negotiables
 
-1. **A donation is never delayed indefinitely by another table's failure.** That is the entire point of this phase, and the first design got it backwards.
+1. **A donation is never delayed indefinitely by another table's failure.** The first design inverted this; the bound stays what it is today — at most one backoff ceiling.
 2. **The donation flow is not altered.** No change to `makePayment` or any path a payment travels.
 3. **No new `Strings` member**, and therefore no copy in eight languages.
 4. **A kiosk with `analyticsEnabled` off writes nothing identified to disk.**
 5. **Every deletion decision still comes from the uploader**, never re-derived. `TelemetryManager` deletes exactly the ids the uploader names.
+6. **One corrupt prefs key costs one field, not the whole status.** `droppedCount` is an operator's only view of telemetry loss; it must not be zeroed by an unrelated key going bad.
 
 ---
 
 ## What already exists and is NOT rebuilt
 
-- `TelemetryUploader` sends **one request per table** already (`groupBy { it.table }`, `:63`), so `retryableTables` narrows information the uploader already has rather than adding machinery.
+- `TelemetryUploader` sends **one request per table** already (`groupBy { it.table }`, `:63`), so `retryableTables` narrows information it already has.
 - `TelemetryTables` is a closed set of three.
-- `PrefsStatusStore.read()` is already total against a malformed store.
-- `TelemetryGate`'s precedence order and its fail-open guard for a deadline beyond the ceiling.
-- `TelemetryOutbox`'s caps, eviction, lock and `append` — **untouched by this phase** beyond adding an exclusion parameter to the read path.
+- `TelemetryGate`'s precedence order, and its fail-open guard for a deadline beyond the ceiling.
+- `TelemetryOutbox`'s caps, eviction, lock and `append` — untouched beyond the read-path parameter.
 
 ---
 
@@ -41,76 +39,104 @@ Putting them in one phase would have let a queue redesign hold up a send-path fi
 
 ### `UploadOutcome`
 
-`retryableFailure: Boolean` becomes **`retryableTables: Set<String>`**.
+`retryableFailure: Boolean` becomes **`retryableTables: Set<String>`**, and the outcome also carries **`succeededTables: Set<String>`**. The success side needs the same treatment: `uploadedIds` is flat, so attributing a success to a table means re-deriving it from the batch, which non-negotiable #5 forbids.
 
-The success side needs the same treatment, and the first draft missed it: `uploadedIds` is flat, so a success cannot be attributed to a table without re-deriving it from the batch — and re-deriving the uploader's judgement is what non-negotiable #5 forbids. `UploadOutcome` therefore also carries **`succeededTables: Set<String>`**.
+**A table can legitimately appear in both.** In the per-row fallback (`TelemetryUploader.kt:118-126`) some rows can upload and the network can then drop mid-sweep, setting `retryable` while `uploadedHere` is non-empty. So the manager states precedence explicitly:
+
+> **Failure wins.** A table in both sets backs off. It has rows that did not send, and treating it as healthy would retry them on every flush — a tight loop against a broken link.
 
 ### `TelemetryStatus`
 
 - `backoffUntilMs: Long` → `backoffUntilMsByTable: Map<String, Long>`
 - `consecutiveFailures: Int` → `consecutiveFailuresByTable: Map<String, Int>`
 
-`PrefsStatusStore` persists one flat key per table, derived from the table name — not a serialised map. Tables are a closed set in code, a flat key needs no parser, and this phase must not add a structure that has to be total against corruption. An unreadable key yields an absent entry, never a throw.
+`TelemetryStatus` also gains one **pure helper**, because three call sites need the same aggregate and two of them are outside the presenter:
+
+```kotlin
+    /** The latest deadline any table is waiting on, with the gate's fail-open
+     *  guard applied: a deadline further out than the ceiling cannot have come
+     *  from backoffDelayMs, so it is ignored rather than trusted. */
+    fun effectiveBackoffUntilMs(nowMs: Long): Long
+```
+
+Without the guard here, a single corrupt deadline would dominate a "longest remaining" aggregate and freeze the screen indefinitely — the guard exists in the gate precisely to stop that, and an aggregate that skips it reintroduces the bug one layer up.
+
+### The global fields, which are not per-table
+
+`lastError`, `lastErrorAtMs`, `lastSuccessMs` and `droppedCount` stay global, and the per-table pass needs an explicit rule or a healthy sibling erases the only signal an operator has that a table is broken:
+
+- **`lastError` / `lastErrorAtMs`** — written whenever any table fails retryably. Cleared **only when no table is backed off**. A donations success must not wipe the schema error that explains why diagnostics are stuck.
+- **`lastSuccessMs`** — advanced whenever any table succeeds. "Something reached the backend" is true, and it is what the field means.
 
 ### The flush's accounting
 
-Each table named in `retryableTables` has its own count incremented and its own deadline computed from it. **Each table named in `succeededTables` has its count and deadline cleared** — including a healthy table succeeding in the same flush where a sibling failed. The current `when` is exclusive and cannot express that; the outcome handling becomes per-table rather than one branch for the whole flush.
+Each table in `retryableTables` gets its own count incremented and its own deadline computed from it. Each table in `succeededTables` **and not in `retryableTables`** has its count and deadline cleared — including in a flush where a sibling failed. The current exclusive `when` cannot express that; outcome handling becomes a per-table pass.
 
-`lastError`, `lastErrorAtMs`, `lastSuccessMs` and `droppedCount` stay global. They describe the subsystem, not a table, and nothing reads them per table.
+**A throw from `upload` has no table attribution.** The existing catch converts an exception into a retryable failure (`TelemetryManager.kt:207-235`). A transport-level throw is table-agnostic, so it backs off **every table in the batch** — the tables actually attempted, not all three.
 
 ### Excluding backed-off tables — inside the read
-
-`TelemetryOutbox` gains one parameter on its read path:
 
 ```kotlin
     fun peek(limit: Int = DEFAULT_BATCH, excludeTables: Set<String> = emptySet()): List<QueuedEvent>
 ```
 
-It filters **before** taking `limit`, so a hundred backed-off rows at the head can never crowd out the rows behind them. Default-empty, so no existing caller changes.
+Filters **before** taking `limit`, so backed-off rows at the head can never crowd out the rows behind them. Default-empty, so no existing caller changes and every existing `TelemetryOutboxTest` passes unmodified. Queue order is preserved; nothing groups or sorts by table.
 
-`TelemetryManager.flush` computes the backed-off set from status and the clock, passes it to `peek`, and **derives `lastAttemptedIds` from the returned batch** — which it already does, and which is now automatically correct, because the excluded rows were never in the batch. Getting that wrong would make `activate()` report a working destination as `Failed`.
+`TelemetryManager.flush` computes the backed-off set from status and the clock, passes it to `peek`, and derives `lastAttemptedIds` from the returned batch — which it already does, and which is now automatically correct because excluded rows were never in the batch.
 
-Row ordering within the file is unchanged: `peek` still returns rows in queue order, merely skipping some. Nothing groups or sorts the queue by table.
+If every queued row belongs to a backed-off table the batch is empty and the flush reports **`BACKING_OFF`**; a genuinely empty queue still reports `EMPTY_QUEUE`. Note this distinction reaches logcat and the flush's return value, not the screen — the screen shows backoff through `backingOff`.
 
-If every row in the queue belongs to a backed-off table, the batch is empty and the flush reports **`BACKING_OFF`**, not `EMPTY_QUEUE` — the operator-visible outcome for "everything is waiting" is what it is today. A genuinely empty queue still reports `EMPTY_QUEUE`.
+This costs one extra `readAll` on a flush that ends up fully excluded. Acceptable: that flush does no network work at all.
 
 ### The gate
 
-`TelemetryGate` keeps its global checks and its precedence unchanged. `GateInputs.backoffUntilMs` is **removed** — with per-table state there is no single global deadline, and leaving the field would invite a caller to feed it something arbitrary.
+`TelemetryGate` keeps its global checks and precedence. `GateInputs.backoffUntilMs` is **removed** — it has exactly two suppliers (`TelemetryManager.kt:123`, `:190`), both in this phase's scope, and with per-table state there is no single correct value to feed it.
 
-The gate gains one pure function answering whether a given table is backed off at a given clock, carrying the existing fail-open guard: a deadline further out than the ceiling cannot have come from `backoffDelayMs`, so it is ignored rather than trusted.
+The gate gains one pure predicate:
 
-`BACKING_OFF` now comes from the flush finding every candidate row excluded, rather than from the gate.
+```kotlin
+    fun isTableBackedOff(backoffUntilMs: Long, nowMs: Long): Boolean
+```
+
+carrying the fail-open guard. `BACKING_OFF` now originates from the flush finding every candidate excluded rather than from the gate's own branch.
 
 ### `activate()` clears every table
 
-`activate()` resets failure state so a corrected destination is testable on the very next press. With per-table state that reset must clear **all** tables. Clearing only one would leave a kiosk whose operator has just fixed the URL still backing off donations for up to an hour.
+`activate()` resets failure state so a corrected destination is testable on the next press. That reset must clear **all** tables; clearing one would leave an operator who has just fixed the URL still backing off donations for up to an hour.
+
+### `PrefsStatusStore`
+
+One flat key per table, named by a stated scheme: the existing key plus `.` plus the table name — `backoff_until_ms.donation_events`. Tables are a closed set in code; a flat key needs no parser.
+
+**`read()` becomes total per key, not per status.** Today one `ClassCastException` anywhere yields a wholly default `TelemetryStatus`, which silently zeroes `droppedCount`. Going from six keys to ten multiplies the ways that happens. Each key is read defensively so a corrupt key costs its own field and nothing else.
+
+**Existing installs carry `consecutive_failures` and `backoff_until_ms`.** They are read once as the value for every table, then superseded by the per-table keys on the next write. A kiosk mid-backoff at upgrade keeps backing off rather than resetting to zero.
 
 ### What the screen sees
 
-`AnalyticsPresenter`'s output shape does not change. Three fields aggregate:
+`AnalyticsPresenter`'s output shape does not change. Three fields aggregate, all through `effectiveBackoffUntilMs`:
 
 - `backingOff` — any table is backed off.
-- `backoffRemainingSeconds` — the **longest** remaining, so the countdown ends when the kiosk is fully unblocked.
-- `consecutiveFailures` — the **highest** across tables, which is what drives the operator's sense of "how bad is this".
+- `backoffRemainingSeconds` — longest remaining, so the countdown ends when the kiosk is fully unblocked.
+- `consecutiveFailures` — the highest across tables, which is what drives an operator's sense of how bad it is.
 
-Per-table detail on the kiosk screen would need new copy in eight languages for a distinction an operator cannot act on. The dashboard has the per-table view.
+**`MainActivity.startAnalyticsBackoffTickerIfNeeded` reads `status.backoffUntilMs` directly** (`:2001`, `:2008`), outside the presenter. It moves to the same helper. Missing it would leave the countdown frozen or the ticker never starting.
 
 ---
 
-## Part 2: five carried items on this path
+## Part 2: four carried items on this path
 
-- **The silent-login watchdog can arm a stale label.** If `openLoginActivity` ever returns without launching, the watchdog arms `syntheticCloseLogin`, `finishActivity` is a no-op, and the next genuine login failure consumes the stale label and reports as self-inflicted. Whether the SDK can do that is unknowable from this repo, and the fix does not need to know: **clear the slot immediately before `openLoginActivity`**. Any genuine code-1 result comes from a launch, and every launch then clears first.
+- **The silent-login watchdog can arm a stale label.** If `openLoginActivity` ever returns without launching, the watchdog arms `syntheticCloseLogin`, `finishActivity` is a no-op, and the next genuine login failure reports as self-inflicted. Unknowable from this repo, and the fix does not need to know: **clear the slot immediately before `openLoginActivity`**. Any genuine code-1 result comes from a launch, and every launch then clears first.
 
-  One case the clear does not cover, stated rather than claimed away: a re-entrant `authenticate` while a login is still outstanding erases a label that was legitimately armed, so a synthetic close reads as genuine. That is the safe direction — a missing discriminator, not a false one.
-
-- **`RestartManager.cardReaderFailures` and `reinitFailures`** have no main-source readers since 3c-ii removed the throttle. Removing them is larger than "delete two getters": three tests read them, and one asserts counter *isolation* — that a reader failure does not move the reinit count — which `RestartResult` alone cannot express. Keep whichever accessor that test genuinely needs and remove the rest, saying which and why. `restartCount` stays; it has a real reader.
+  One case it does not cover: a re-entrant `authenticate` while a login is still outstanding erases a legitimately armed label, so a synthetic close reads as genuine. The safe direction — a missing discriminator, not a false one.
 
 - **`TelemetryRedactor.truncate`'s `maxBytes` parameter** has no non-default caller anywhere. Remove the parameter.
 
-- **A truncation-suffix literal is duplicated** between `DiagnosticEvents` and `TelemetryRedactor`. One source. This is the literal only — the two truncation *functions* are different and both stay.
+- **A truncation-suffix literal is duplicated** between `DiagnosticEvents` and `TelemetryRedactor`. One source. The literal only — the two truncation *functions* are different and both stay.
 
-- **`formatTimestamp` in `AnalyticsSettingsScreen`** is the one computation left in a file no unit test can reach, and phase 2c's design is that the screen computes nothing. Move the formatting behind the presenter. This adds an `AnalyticsView` field, not a `Strings` member, so non-negotiable #3 holds.
+- **`formatTimestamp` in `AnalyticsSettingsScreen`** is the one computation in a file no unit test reaches. Move the formatting behind the presenter, which adds an `AnalyticsView` field rather than a `Strings` member. Two constraints: the presenter must take the zone and locale as parameters rather than reading platform defaults, or its test is machine-dependent; and the `neverUploaded` branch stays a screen concern, since rendering it needs a `Strings` member the presenter must not reach for.
+
+**Dropped from this phase, and why.** `RestartManager.cardReaderFailures` and `reinitFailures` were listed as dead getters to remove. They are not: **six** tests read them, and **two** assert counter *isolation* — that a reader failure does not move the reinit count — which `RestartResult` alone cannot express. Removing them nets zero deletions and costs real coverage. They stay, with a KDoc saying they exist for isolation assertions so the next reader does not retry this.
 
 ---
 
@@ -120,64 +146,74 @@ Per-table detail on the kiosk screen would need new copy in eight languages for 
 
 **Per-table backoff:**
 - A retryable failure on one table backs off that table and leaves the others clear.
-- A success on one table clears its count and deadline **in the same flush** where a sibling fails.
+- A success on one table clears its state **in the same flush** where a sibling fails.
+- A table in **both** sets backs off — failure wins.
+- A throw from `upload` backs off every table in the batch, and no table absent from it.
 - Per-table counts drive per-table delays independently.
-- `activate()` clears every table's backoff, not just one.
-- The fail-open guard applies per table: a deadline beyond the ceiling does not block.
-- `PrefsStatusStore` round-trips per-table state and `read()` stays total when one table's key is corrupt.
+- `activate()` clears every table.
+- `effectiveBackoffUntilMs` ignores a deadline beyond the ceiling — **mutation-check**: drop the guard and confirm the test fails, since without it a corrupt deadline freezes the screen.
+
+**`lastError` lifetime:**
+- A sibling's success does **not** clear `lastError` while another table is backed off.
+- It clears once no table is backed off.
 
 **Exclusion inside `peek` — the Critical this phase exists to avoid:**
-- With more than `limit` backed-off rows at the head of the queue, `peek` still returns the rows behind them. **Mutation-check it**: filter after `take` instead of before, and confirm this test fails. That mutation is the original defect.
-- Excluded rows stay in the queue.
-- `peek` with no exclusions behaves exactly as today; every existing `TelemetryOutboxTest` passes unmodified.
-- Queue order is preserved across an exclusion.
+- With more than `limit` backed-off rows at the head, `peek` still returns the rows behind them. **Mutation-check**: filter after `take` instead of before, and confirm this test fails. That mutation is the original defect.
+- Excluded rows stay queued; order is preserved; `peek` with no exclusions behaves exactly as today.
 
-**The flush:**
-- A batch emptied entirely by exclusion reports `BACKING_OFF`; a genuinely empty queue reports `EMPTY_QUEUE`.
-- `lastAttemptedIds` contains only rows actually sent, so `activate()` does not report a working destination as `Failed`.
-- Deletion still uses only uploader-named ids.
+**The flush:** a batch emptied by exclusion reports `BACKING_OFF`, a genuinely empty queue reports `EMPTY_QUEUE`; `lastAttemptedIds` contains only rows actually sent; deletion still uses only uploader-named ids.
 
-**Part 2:** the suffix literal has one definition; `truncate` has one arity; the presenter formats the timestamp and the screen's logic grep stays empty.
+**`PrefsStatusStore`:** per-table round trip; **one corrupt key costs one field** and `droppedCount` survives; legacy single-value keys are read as the value for every table on first upgrade.
+
+**Part 2:** the suffix literal has one definition; `truncate` has one arity; the presenter formats the timestamp with an injected zone and locale, and the screen's logic grep stays empty.
+
+**Tests that must be updated, not deleted:** `TelemetryGateTest` cases covering the removed `GateInputs` field, and `TelemetryManagerTest`'s global-backoff cases. Each has a per-table equivalent; porting them is part of the work.
 
 ### Not unit-testable, and labelled as such
 
-The watchdog clear. Wiring over a decision tested elsewhere.
+The watchdog clear, and the ticker's move to the shared helper.
 
 ### Device checks
 
 1. Break one table at the backend (rename a column) and take a donation: the donation arrives, the broken table's rows stay queued, the screen shows a backoff.
-2. Let the broken table's rows exceed a batch and sit at the head of the queue, then take a donation: **the donation still uploads.** This is the head-of-line check and the reason this phase exists.
-3. Fix the backend and press Test connection: the backoff clears for every table at once.
-4. Carried and unverified: status survives a restart with `droppedCount` intact (2c); a donation appends exactly one row (3a); the disk-full rollback check (3b); the Bluetooth once-per-outage check (3c-i, **without rotating the device**); 3c-ii's restart, synthetic-close and checkout checks.
+2. Let the broken table's rows exceed a batch and sit at the head, then take a donation: **the donation still uploads.** The head-of-line check, and the reason this phase exists.
+3. Fix the backend and press Test connection: backoff clears for every table at once.
+4. Upgrade a kiosk that is mid-backoff: it keeps backing off rather than resetting.
+5. Carried and unverified: status survives a restart with `droppedCount` intact (2c); a donation appends exactly one row (3a); the disk-full rollback check (3b); the Bluetooth once-per-outage check (3c-i, **without rotating the device**); 3c-ii's restart, synthetic-close and checkout checks.
 
 ---
 
 ## Limitations, stated rather than buried
 
-**A uniformly refused table still accumulates rows that never delete.** This phase stops it delaying other tables; it does not stop it filling the queue. That is 3d-ii's, and until then the caps are what bound it.
+**A uniformly refused table still accumulates rows that never delete.** This phase stops it delaying other tables; it does not stop it filling the queue. That is 3d-ii's, and until then the caps bound it.
 
-**Per-table state makes the screen's numbers aggregates.** An operator reading "3 consecutive failures" is reading the worst table, not a total.
+**The screen's numbers are aggregates.** "3 consecutive failures" is the worst table, not a total.
 
 ---
 
 ## Decisions
 
-**Exclude inside `peek`, not after it.** Filtering a batch that was already truncated to its first hundred rows is how a fix for delay becomes a cause of permanent starvation.
+**Exclude inside `peek`, not after it.** Filtering a batch already truncated to its first hundred rows turns a fix for delay into permanent starvation.
 
-**`succeededTables`, not a derived success.** Attribution belongs to the uploader; re-deriving it in the manager is the thing this subsystem's charter forbids.
+**Failure wins when a table is in both sets.** Reachable in the per-row fallback, and treating such a table as healthy is a tight retry loop.
 
-**Remove `GateInputs.backoffUntilMs` rather than leave it.** A field with no single correct value is a field a caller will fill in wrongly.
+**A throw backs off the batch's tables, not all three.** The exception is table-agnostic; the batch is not.
 
-**Flat per-table keys.** A closed set of tables needs no parser, and a parser is one more thing that must be total against corruption.
+**`lastError` survives a sibling's success.** Otherwise a healthy donations table erases the only evidence that diagnostics are broken.
 
-**The screen aggregates.** Per-table detail costs eight languages and buys an operator nothing they can act on.
+**One helper for the aggregate.** Three call sites need it and two are outside the presenter; a second derivation is a second place to forget the fail-open guard.
+
+**Per-key totality.** `droppedCount` is an operator's only view of loss and must not be collateral damage from an unrelated key.
+
+**Keep the `RestartManager` getters.** The item was based on a wrong count; removing them costs isolation coverage and deletes nothing.
 
 ---
 
 ## Required of 3d-ii
 
-- **Eviction must not starve donations, and the obvious rule does not work.** Preferring the largest table evicts a donation while older diagnostics survive — 3,000 donations against 2,000 older diagnostics at a 5,000 cap drops the oldest donation, where today's `takeLast` drops the diagnostic. A realistic shape, since 3c-ii ships `checkout_no_reader` unthrottled. The rule must encode the invariant directly: nothing evicts a donation while a non-donation row is available to evict.
-- **`applyCaps` runs on every append, inside the lock, on the donation path.** Any new eviction rule must be a single pass over counts, not a loop that rescans.
-- **The crash handler's bounded write**, with the four traps three earlier reviews named: `synchronized(aReentrantLock)` compiles and guards nothing, so the lock field is renamed and every site must use `withLock` — including `lockFor` and the path-keyed map, which are typed `Any` today; the byte ceiling was not derivable and must not return in another form, including as an unjustified lock timeout; the heal must be neither slack-gated nor **lifecycle-gated** — `drainUpdateDiagnostics` launches after `onCreate` returns, so a crash inside `onCreate` never reaches it, which is the same unboundedness in a new gate; and compaction must stay off the main thread.
-- **`tryLock(timeout)` clears the interrupt flag when it throws**, so a handler that restores it must call `Thread.currentThread().interrupt()` — a test that only pins the return value will not catch its absence.
+- **Eviction must not starve donations, and the obvious rule does not work.** Preferring the largest table evicts a donation while older diagnostics survive — 3,000 donations against 2,000 older diagnostics at a 5,000 cap drops the oldest donation where today's `takeLast` drops the diagnostic. Realistic, since 3c-ii ships `checkout_no_reader` unthrottled. The rule must encode the invariant directly: nothing evicts a donation while a non-donation row is available to evict. **State the tie-break**, because under any balancing rule the tie is the steady state.
+- **`applyCaps` runs on every append, inside the lock, on the donation path.** Any new rule must be a single pass over counts, not a rescan.
+- **The crash handler's bounded write**, with the four traps three earlier reviews named: `synchronized(aReentrantLock)` compiles and guards nothing, so the lock field is renamed and every site must use `withLock` — including `lockFor` and the path-keyed map, typed `Any` today; the byte ceiling was not derivable and must not return in another form, **including as an unjustified lock timeout**; the heal must be neither slack-gated nor **lifecycle-gated** — `drainUpdateDiagnostics` launches after `onCreate` returns, so a crash inside `onCreate` never reaches it; and compaction stays off the main thread. **`compactNow` should skip `writeAll` when nothing is droppable**, or every boot rewrites the whole queue — and state whether it calls `onDropped`.
+- **`tryLock(timeout)` clears the interrupt flag when it throws**, so restoring it needs `Thread.currentThread().interrupt()`. A test pinning only the return value will not catch its absence.
 - **`CrashContext.onOutboxDropped` retains one live Activity.** Moving the status store to process scope needs a named holder; this app has no `Application` subclass, and a drop before the holder is initialised loses `droppedCount` silently.
+- **Stale comments** left by this phase family: `MainActivity.kt:2055-2068` and `TelemetryManager.kt:91-92`, `:107-115` describe backoff as a single global deadline.
