@@ -48,3 +48,6 @@ handoffs/
 
 # Session guidance for coding agents — working reference, not shipped source.
 CLAUDE.md
+
+# Subagent-driven-development scratch: ledgers, briefs, review packages.
+.superpowers/
