@@ -88,7 +88,7 @@ The shape becomes per-table; the behaviour stays global, because every table mov
 
 - [ ] **Step 1: Reconnaissance**
 
-Read, in full, before writing anything: `TelemetryGateTest.kt`, `TelemetryOutboxTest.kt`, `TelemetryManagerTest.kt`, `AnalyticsPresenterTest.kt`, `ClearCredentialsTest.kt`. Write down every assertion that reads `TelemetryStatus.consecutiveFailures` or `.backoffUntilMs`, or constructs `GateInputs`. The enumeration in Step 14 is your cross-check, not your source — if you find a site it does not list, port it and say so in your report.
+Read, in full, before writing anything: `TelemetryGateTest.kt`, `TelemetryOutboxTest.kt`, `TelemetryManagerTest.kt`, `AnalyticsPresenterTest.kt`, `ClearCredentialsTest.kt`. Write down every assertion that reads `TelemetryStatus.consecutiveFailures` or `.backoffUntilMs`, or constructs `GateInputs`. The enumeration in Step 18 is your cross-check, not your source — if you find a site it does not list, port it and say so in your report.
 
 - [ ] **Step 2: Add the table list**
 
@@ -210,7 +210,7 @@ In `TelemetryStatusStore.kt`, replace the two scalar fields and add the helper. 
 
 - [ ] **Step 6: Change `TelemetryGate`**
 
-Remove `backoffUntilMs` from `GateInputs`, drop the two backoff branches from `evaluate`, add the predicate. `FlushBlock.BACKING_OFF` stays in the enum — Step 12 makes the flush return it.
+Remove `backoffUntilMs` from `GateInputs`, drop the two backoff branches from `evaluate`, add the predicate. `FlushBlock.BACKING_OFF` stays in the enum — Step 17 makes the flush return it.
 
 ```kotlin
 data class GateInputs(
@@ -772,7 +772,7 @@ Known sites — **treat this as a cross-check against your Step 1 recon, not as 
 - `ClearCredentialsTest.kt:27` (seed) and `:35` (read). `TelemetryTeardown` itself needs no change — it writes `TelemetryStatus()`, whose new defaults are empty maps.
 - `AnalyticsPresenterTest.kt`: any case seeding either scalar.
 
-- [ ] **Step 19: Correct the three comments this step made untrue**
+- [ ] **Step 19: Correct the three comments this task made untrue**
 
 A comment is fixed in the commit that breaks it, or it ships broken in between — and all three break here.
 
@@ -1230,7 +1230,7 @@ Keeping the error in the store is not enough. The presenter suppresses a stale e
 
 - [ ] **Step 1: Reconnaissance**
 
-Read `AnalyticsPresenterTest.kt`. Task 1 Step 19 added `now: Long = this.now` to the `view(...)` helper — confirm it is there before writing tests that pass it.
+Read `AnalyticsPresenterTest.kt`. Task 1 Step 20 added `now: Long = this.now` to the `view(...)` helper — confirm it is there before writing tests that pass it.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -1324,7 +1324,8 @@ git commit -m "Keep a live error on screen while a table is backed off"
 Six contained changes sharing the send path, batched because each is small and splitting them would buy six review seats for one diff.
 
 **Files:**
-- Modify: `telemetry/TelemetryRedactor.kt:33-40`, `telemetry/DiagnosticEvents.kt:214`, `telemetry/AnalyticsPresenter.kt`, `telemetry/TelemetryManager.kt` (comments), `recovery/RestartManager.kt:87-88` (comment), `MainActivity.kt`, `screens/AnalyticsSettingsScreen.kt`
+- Modify: `telemetry/TelemetryRedactor.kt:33-40`, `telemetry/DiagnosticEvents.kt:214`, `telemetry/AnalyticsPresenter.kt`, `recovery/RestartManager.kt:87-88` (comment), `MainActivity.kt`, `screens/AnalyticsSettingsScreen.kt`
+- **Not** `telemetry/TelemetryManager.kt` — its stale comments are corrected in Task 1 Step 19, the commit that breaks them.
 - Test: `AnalyticsPresenterTest.kt`, `TelemetryRedactorTest.kt`
 
 **Interfaces:**
@@ -1497,7 +1498,7 @@ git commit -m "Clear the login watchdog slot, and move timestamp formatting behi
 
 ## Self-review against the spec
 
-**A note on line numbers.** Citations into `TelemetryManagerTest.kt` and `MainActivity.kt` are accurate at HEAD and are consumed by Task 1, which then shifts them by adding a helper, several tests and one net line. Tasks 2, 3 and 5 therefore name tests, helpers and properties rather than lines in those two files. `TelemetryUploaderTest.kt`'s line citations stay valid — no earlier task touches it.
+**A note on line numbers.** Citations into `TelemetryManagerTest.kt` and `MainActivity.kt` are accurate at HEAD and are consumed by Task 1, which then shifts them by adding a helper, several tests and one net line. The same goes for `TelemetryManager.kt`, which Tasks 1, 2 and 3 each edit in turn. Later tasks therefore name tests, helpers and properties rather than lines in those three files. `TelemetryUploaderTest.kt`'s line citations stay valid — no earlier task touches it.
 
 | Spec requirement | Task |
 |---|---|
