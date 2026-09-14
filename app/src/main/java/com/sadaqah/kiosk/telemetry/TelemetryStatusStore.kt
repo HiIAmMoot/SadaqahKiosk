@@ -19,8 +19,12 @@ data class TelemetryStatus(
     val lastSuccessMs: Long = 0L,
     val lastError: String? = null,
     val lastErrorAtMs: Long = 0L,
-    val consecutiveFailures: Int = 0,
-    val backoffUntilMs: Long = 0L,
+    /** Per table, because the uploader sends one request per table and a table
+     *  the backend refuses must not delay a table it accepts. A table absent
+     *  from either map has no failures and no deadline — absence is the healthy
+     *  state, so a fresh kiosk and a fully recovered one read identically. */
+    val consecutiveFailuresByTable: Map<String, Int> = emptyMap(),
+    val backoffUntilMsByTable: Map<String, Long> = emptyMap(),
     /** Rows lost locally and unrecoverable — never sent, never recoverable.
      *  Two sources, deliberately one number: the outbox's count/age caps
      *  discarding rows outright, and a donation that could not be appended at
@@ -36,7 +40,21 @@ data class TelemetryStatus(
      *  [com.sadaqah.kiosk.telemetry.TelemetryTeardown] when credentials are
      *  cleared, which is the one moment the whole history stops applying. */
     val droppedCount: Int = 0
-)
+) {
+    /**
+     * The latest deadline any table is still waiting on, or 0 if none is.
+     *
+     * Built on [TelemetryGate.isTableBackedOff] rather than repeating its
+     * comparison, because the fail-open guard matters more here than it does
+     * per table: this is a maximum, so a single deadline beyond the ceiling
+     * would dominate every healthy one and freeze the screen for as long as a
+     * corrected clock left behind.
+     */
+    fun effectiveBackoffUntilMs(nowMs: Long): Long =
+        backoffUntilMsByTable.values
+            .filter { TelemetryGate.isTableBackedOff(it, nowMs) }
+            .maxOrNull() ?: 0L
+}
 
 /**
  * A seam so the manager's bookkeeping is testable without SharedPreferences.

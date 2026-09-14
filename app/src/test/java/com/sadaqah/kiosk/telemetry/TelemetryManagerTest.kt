@@ -82,6 +82,15 @@ class TelemetryManagerTest {
         return outbox
     }
 
+    /** A queue whose rows name their own table, for the per-table backoff tests.
+     *  The existing [outboxWith] is donations-only and stays that way — the
+     *  tests built on it are about the flush, not about tables. */
+    private fun outboxWithRows(vararg rows: Pair<String, String>): TelemetryOutbox {
+        val outbox = TelemetryOutbox(temp.newFile())
+        rows.forEach { (id, table) -> outbox.append(id, table, """{"id":"$id"}""") }
+        return outbox
+    }
+
     @Test
     fun aSuccessfulFlushDeletesTheUploadedRows() {
         val outbox = outboxWith("a", "b")
@@ -142,8 +151,8 @@ class TelemetryManagerTest {
         val store = InMemoryStatusStore()
         manager(outboxWith("a"), ConstantPoster(HttpResponse(503, "down")), statusStore = store).flush()
         val status = store.read()
-        assertEquals(1, status.consecutiveFailures)
-        assertTrue("a failure must push the next attempt out", status.backoffUntilMs > now)
+        assertEquals(1, status.consecutiveFailuresByTable.values.maxOrNull() ?: 0)
+        assertTrue("a failure must push the next attempt out", status.effectiveBackoffUntilMs(now) > now)
     }
 
     /** FIX 1: a stale queue depth is not evidence an error is history — the
@@ -163,9 +172,17 @@ class TelemetryManagerTest {
         // assertion rather than one that would pass with the reset deleted —
         // the previous seed left lastError null already, which made
         // assertNull(lastError) vacuous.
-        store.write(store.read().copy(consecutiveFailures = 4, backoffUntilMs = 0L, lastError = "HTTP 503 down"))
+        // Seeded on DONATIONS only, not ALL: outboxWith("a") is donations-only,
+        // so from Task 3 onward a success clears only the tables it succeeded
+        // on. Seeding every table would pass under this task's lockstep clear
+        // and then fail under Task 3, which is exactly why the narrower seed
+        // belongs here now rather than being "fixed" later.
+        store.write(store.read().copy(
+            consecutiveFailuresByTable = mapOf(TelemetryTables.DONATIONS to 4),
+            lastError = "HTTP 503 down"
+        ))
         manager(outboxWith("a"), ConstantPoster(HttpResponse(201, null)), statusStore = store).flush()
-        assertEquals(0, store.read().consecutiveFailures)
+        assertEquals(0, store.read().consecutiveFailuresByTable.values.maxOrNull() ?: 0)
         assertEquals(now, store.read().lastSuccessMs)
         assertNull(store.read().lastError)
     }
@@ -211,21 +228,87 @@ class TelemetryManagerTest {
         // against a manager that writes no status at all, which proves nothing.
         // Seeding a distinctive value means the assertion below only passes if
         // an empty queue genuinely leaves status untouched.
-        store.write(store.read().copy(consecutiveFailures = 5))
+        store.write(store.read().copy(consecutiveFailuresByTable = TelemetryTables.ALL.associateWith { 5 }))
         val result = manager(TelemetryOutbox(temp.newFile()), ConstantPoster(HttpResponse(500, null)), statusStore = store).flush()
         assertEquals(FlushBlock.EMPTY_QUEUE, result)
-        assertEquals("nothing to send is not a failure", 5, store.read().consecutiveFailures)
+        assertEquals("nothing to send is not a failure", 5, store.read().consecutiveFailuresByTable.values.maxOrNull() ?: 0)
     }
 
     @Test
     fun aBackoffDeadlineInTheFutureBlocksTheFlush() {
         val store = InMemoryStatusStore()
-        store.write(store.read().copy(backoffUntilMs = now + 30_000))
+        store.write(store.read().copy(
+            backoffUntilMsByTable = TelemetryTables.ALL.associateWith { now + 30_000 }
+        ))
         val poster = ConstantPoster(HttpResponse(201, null))
         val outbox = outboxWith("a")
         assertEquals(FlushBlock.BACKING_OFF, manager(outbox, poster, statusStore = store).flush())
         assertEquals("a live backoff deadline must not be tested against the network", 0, poster.callCount)
         assertEquals(1, outbox.size())
+    }
+
+    /**
+     * The reason this phase exists. A refused diagnostics table must not hold
+     * up a donation queued behind it — and with more backed-off rows at the
+     * head than a batch holds, a filter applied after the batch was taken would
+     * send nothing at all.
+     */
+    @Test
+    fun aDonationStillUploadsWhileDiagnosticsAreBackedOff() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(
+            backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to now + 30_000)
+        ))
+        val outbox = outboxWithRows(
+            "x1" to TelemetryTables.DIAGNOSTICS,
+            "x2" to TelemetryTables.DIAGNOSTICS,
+            "a" to TelemetryTables.DONATIONS
+        )
+        val poster = ConstantPoster(HttpResponse(201, null))
+
+        val result = manager(outbox, poster, statusStore = store).flush()
+
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals("the excluded rows must still be queued", 2, outbox.size())
+        assertEquals(listOf("x1", "x2"), outbox.peek().map { it.id })
+    }
+
+    @Test
+    fun aBatchEmptiedByExclusionReportsBackingOff() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(
+            backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to now + 30_000)
+        ))
+        val outbox = outboxWithRows("x1" to TelemetryTables.DIAGNOSTICS)
+        val poster = ConstantPoster(HttpResponse(201, null))
+
+        assertEquals(
+            FlushBlock.BACKING_OFF,
+            manager(outbox, poster, statusStore = store).flush()
+        )
+        assertEquals("nothing may be sent while backing off", 0, poster.callCount)
+    }
+
+    @Test
+    fun aGenuinelyEmptyQueueStillReportsEmptyQueue() {
+        val outbox = TelemetryOutbox(temp.newFile())
+        assertEquals(
+            FlushBlock.EMPTY_QUEUE,
+            manager(outbox, ConstantPoster(HttpResponse(201, null))).flush()
+        )
+    }
+
+    @Test
+    fun anElapsedDeadlineDoesNotExcludeItsTable() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(
+            backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to now - 1)
+        ))
+        val outbox = outboxWithRows("x1" to TelemetryTables.DIAGNOSTICS)
+        val poster = ConstantPoster(HttpResponse(201, null))
+
+        assertEquals(FlushBlock.NONE, manager(outbox, poster, statusStore = store).flush())
+        assertEquals(0, outbox.size())
     }
 
     @Test
@@ -313,16 +396,20 @@ class TelemetryManagerTest {
                 queued = 999,
                 lastSuccessMs = 42L,
                 lastError = "HTTP 503 down",
-                consecutiveFailures = 7,
-                backoffUntilMs = 123_456L
+                consecutiveFailuresByTable = TelemetryTables.ALL.associateWith { 7 },
+                backoffUntilMsByTable = TelemetryTables.ALL.associateWith { 123_456L }
             )
         )
         val reported = manager(outbox, ConstantPoster(HttpResponse(201, null)), statusStore = store).status()
         assertEquals("queued must be recomputed from the outbox, not trusted from storage", 3, reported.queued)
         assertEquals(42L, reported.lastSuccessMs)
         assertEquals("HTTP 503 down", reported.lastError)
-        assertEquals(7, reported.consecutiveFailures)
-        assertEquals(123_456L, reported.backoffUntilMs)
+        assertEquals(7, reported.consecutiveFailuresByTable.values.maxOrNull() ?: 0)
+        // Not effectiveBackoffUntilMs: 123_456L is earlier than this test's
+        // `now` (1_000_000L), so the ceiling-aware helper would filter it out
+        // as an elapsed deadline and return 0. This assertion is about the raw
+        // per-table map surviving status()'s copy, not about live backoff.
+        assertEquals(123_456L, reported.backoffUntilMsByTable.values.maxOrNull() ?: 0L)
     }
 
     // ── FIX 2: flush() has no exception handling ───────────────────────────
@@ -339,8 +426,8 @@ class TelemetryManagerTest {
         ).flush()
         assertEquals(FlushBlock.NONE, result)
         assertEquals("a throw must not remove anything the uploader never named", 1, outbox.size())
-        assertEquals(1, store.read().consecutiveFailures)
-        assertTrue("a throwing flush must still back off", store.read().backoffUntilMs > now)
+        assertEquals(1, store.read().consecutiveFailuresByTable.values.maxOrNull() ?: 0)
+        assertTrue("a throwing flush must still back off", store.read().effectiveBackoffUntilMs(now) > now)
         assertEquals(
             "the error must be the exception's class name, never its message",
             "java.lang.IllegalStateException",
@@ -365,7 +452,10 @@ class TelemetryManagerTest {
     @Test
     fun anOutcomeThatUploadedAndRejectedNothingIsNotRecordedAsASuccess() {
         val store = InMemoryStatusStore()
-        store.write(store.read().copy(lastError = "HTTP 503 down", consecutiveFailures = 3))
+        store.write(store.read().copy(
+            lastError = "HTTP 503 down",
+            consecutiveFailuresByTable = TelemetryTables.ALL.associateWith { 3 }
+        ))
         val outbox = outboxWith("a")
         val result = manager(
             outbox,
@@ -380,7 +470,11 @@ class TelemetryManagerTest {
         assertEquals(FlushBlock.NONE, result)
         assertEquals("nothing named by the outcome must be removed", 1, outbox.size())
         assertEquals("no evidence of success must not clear a real error", "HTTP 503 down", store.read().lastError)
-        assertEquals("no evidence of success must not reset the failure count", 3, store.read().consecutiveFailures)
+        assertEquals(
+            "no evidence of success must not reset the failure count",
+            3,
+            store.read().consecutiveFailuresByTable.values.maxOrNull() ?: 0
+        )
     }
 
     // ── FIX 4: partial outcomes and transport failures, driven for real ─────
@@ -420,7 +514,7 @@ class TelemetryManagerTest {
         assertEquals(FlushBlock.NONE, result)
         assertEquals(1, poster.callCount)
         assertEquals("a transport failure must keep every row", 2, outbox.size())
-        assertEquals(1, store.read().consecutiveFailures)
+        assertEquals(1, store.read().consecutiveFailuresByTable.values.maxOrNull() ?: 0)
     }
 
     // ── FIX 5: missing coverage ──────────────────────────────────────────────
@@ -462,8 +556,8 @@ class TelemetryManagerTest {
         assertEquals(3, poster.callCount)
         assertEquals("the accepted row must be removed; the untried and unresolved rows must not", 2, outbox.size())
         assertEquals(now, store.read().lastSuccessMs)
-        assertTrue("a flush with a genuine failure must still back off", store.read().backoffUntilMs > now)
-        assertEquals(1, store.read().consecutiveFailures)
+        assertTrue("a flush with a genuine failure must still back off", store.read().effectiveBackoffUntilMs(now) > now)
+        assertEquals(1, store.read().consecutiveFailuresByTable.values.maxOrNull() ?: 0)
     }
 
     // ── FIX 3: activate() on a kiosk with a deep backlog ────────────────────
@@ -547,8 +641,8 @@ class TelemetryManagerTest {
         val store = InMemoryStatusStore()
         store.write(
             store.read().copy(
-                consecutiveFailures = 6,
-                backoffUntilMs = now + 55 * 60 * 1000,
+                consecutiveFailuresByTable = TelemetryTables.ALL.associateWith { 6 },
+                backoffUntilMsByTable = TelemetryTables.ALL.associateWith { now + 55 * 60 * 1000 },
                 lastError = "HTTP 000 old destination unreachable"
             )
         )
@@ -584,7 +678,10 @@ class TelemetryManagerTest {
     fun aTestConnectionPressWithNoNetworkLeavesTheQueueAndTheDiagnosticUntouched() {
         online = false
         val store = InMemoryStatusStore()
-        store.write(store.read().copy(lastError = "HTTP 000 old destination unreachable", consecutiveFailures = 3))
+        store.write(store.read().copy(
+            lastError = "HTTP 000 old destination unreachable",
+            consecutiveFailuresByTable = TelemetryTables.ALL.associateWith { 3 }
+        ))
         val outbox = TelemetryOutbox(temp.newFile())
         val poster = ConstantPoster(HttpResponse(201, null))
         val result = manager(outbox, poster, statusStore = store).activate()
@@ -595,7 +692,7 @@ class TelemetryManagerTest {
             "HTTP 000 old destination unreachable",
             store.read().lastError
         )
-        assertEquals(3, store.read().consecutiveFailures)
+        assertEquals(3, store.read().consecutiveFailuresByTable.values.maxOrNull() ?: 0)
         assertEquals(0, poster.callCount)
     }
 

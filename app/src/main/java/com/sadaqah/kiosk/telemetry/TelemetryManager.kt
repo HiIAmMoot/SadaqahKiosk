@@ -88,8 +88,10 @@ class TelemetryManager(
      * Activation bypasses the gate's own `activated` check — that flag is what
      * this method exists to earn, so gating on it would make activation
      * permanently impossible on a fresh kiosk. Every other gate check (enabled,
-     * configured, network, backoff) still applies, EXCEPT that a stale backoff
-     * is cleared first — see the comment above that line for why.
+     * configured, network) still applies. Backoff isn't among them any more:
+     * this call clears every table's failure state before it ever reaches the
+     * gate, so a corrected destination is testable on the very next press
+     * rather than up to an hour later — see the comment above that reset.
      */
     fun activate(): ActivationResult {
         val current = runtime()
@@ -105,22 +107,23 @@ class TelemetryManager(
         }
 
         // Evaluate the gate against the inputs this press will actually leave
-        // behind — activated forced true (this call is what earns it), backoff
-        // forced to 0 (the reset a few lines down always clears it for real, so
-        // a stale deadline genuinely cannot block this press), and the queue
-        // depth counting the row about to be appended below. Doing this before
-        // any mutation means a blocked press changes nothing: no reset, no
-        // append, no destroyed diagnostic. Reusing TelemetryGate.evaluate rather
-        // than re-deriving the precedence here is deliberate — a second copy of
-        // that order would drift from the real one.
+        // behind — activated forced true (this call is what earns it), and the
+        // queue depth counting the row about to be appended below. Backoff is no
+        // longer one of the gate's inputs at all, so there is nothing to force
+        // here for it: the reset a few lines down clears every table's deadline
+        // for real before flush() ever re-reads them, which is what makes this
+        // press succeed rather than a simulated zero. Doing the gate check
+        // before any mutation means a blocked press changes nothing: no reset,
+        // no append, no destroyed diagnostic. Reusing TelemetryGate.evaluate
+        // rather than re-deriving the precedence here is deliberate — a second
+        // copy of that order would drift from the real one.
         val precheck = TelemetryGate.evaluate(
             GateInputs(
                 enabled = current.enabled,
                 configured = credentials.isConfigured(),
                 activated = true,
                 networkAvailable = networkAvailable(),
-                queueDepth = queueDepthAfterAppend,
-                backoffUntilMs = 0L
+                queueDepth = queueDepthAfterAppend
             ),
             clock()
         )
@@ -136,7 +139,9 @@ class TelemetryManager(
         // opposed to a separate method the settings screen would have to remember
         // to call — means a corrected destination is testable on the very next
         // press of the button rather than possibly up to an hour later.
-        statusStore.update { it.copy(consecutiveFailures = 0, backoffUntilMs = 0L, lastError = null) }
+        statusStore.update {
+            it.copy(consecutiveFailuresByTable = emptyMap(), backoffUntilMsByTable = emptyMap(), lastError = null)
+        }
 
         val event = TelemetryEvent.Activation(
             identity = current.identity,
@@ -186,8 +191,7 @@ class TelemetryManager(
                 configured = config != null,
                 activated = current.activated || treatAsActivated,
                 networkAvailable = networkAvailable(),
-                queueDepth = outbox.size(),
-                backoffUntilMs = before.backoffUntilMs
+                queueDepth = outbox.size()
             ),
             now
         )
@@ -197,12 +201,26 @@ class TelemetryManager(
         // as a false NONE if that ever changes.
         val cfg = config ?: return FlushBlock.NOT_CONFIGURED
 
-        val batch = outbox.peek()
+        val backedOffTables = before.backoffUntilMsByTable
+            .filterValues { TelemetryGate.isTableBackedOff(it, now) }
+            .keys
+
+        val batch = outbox.peek(excludeTables = backedOffTables)
         // Recorded regardless of what happens next, so activate() can tell a row
         // this page never reached (FIX 3) apart from one it sent but could not
-        // confirm.
+        // confirm. Automatically correct under exclusion: an excluded row was
+        // never in the batch to begin with.
         lastAttemptedIds = batch.map { it.id }.toSet()
-        if (batch.isEmpty()) return FlushBlock.EMPTY_QUEUE
+        if (batch.isEmpty()) {
+            // The gate already reported EMPTY_QUEUE if the queue was empty, so
+            // an empty batch here almost always means exclusion emptied it. A
+            // queue that drained between the two reads while some table was
+            // backed off is reported as BACKING_OFF rather than EMPTY_QUEUE —
+            // a wrong logcat reason and a wrong Blocked payload, nothing more.
+            // The cost of getting here at all is one extra readAll on a flush
+            // that does no network work.
+            return if (backedOffTables.isEmpty()) FlushBlock.EMPTY_QUEUE else FlushBlock.BACKING_OFF
+        }
 
         val outcome = try {
             upload(cfg, batch)
@@ -211,8 +229,8 @@ class TelemetryManager(
             // future one could break that contract, and TelemetryOutbox.append
             // documents its own throw too. Either way: nothing was removed above
             // this line, so the queue is intact — but without this, a throwing
-            // flush would leave consecutiveFailures and backoffUntilMs untouched,
-            // and a failing kiosk would retry in a tight loop forever.
+            // flush would leave every table's failure state untouched, and a
+            // failing kiosk would retry in a tight loop forever.
             val finishedAt = clock()
             // FIX (I4): transform against the value the store hands it, not
             // `before` — anything written to the store during the upload above
@@ -220,15 +238,24 @@ class TelemetryManager(
             // write rather than being overwritten by a copy of a snapshot taken
             // before that write ever happened.
             statusStore.update { fresh ->
-                val failures = fresh.consecutiveFailures + 1
+                // Every table, not just the batch's: this task keeps the whole
+                // flush moving in lockstep (that changes in Task 3), and a batch
+                // almost never holds all three tables, so attributing failure to
+                // it alone would let backoff narrow to individual tables three
+                // commits early — under a task that claims to change nothing.
+                val failures = TelemetryTables.ALL.associateWith { table ->
+                    (fresh.consecutiveFailuresByTable[table] ?: 0) + 1
+                }
                 fresh.copy(
                     // Never the exception's message: it could carry a row value
                     // (a donation amount, a stack trace fragment) that never went
                     // through the redactor.
                     lastError = t::class.java.name,
                     lastErrorAtMs = finishedAt,
-                    consecutiveFailures = failures,
-                    backoffUntilMs = finishedAt + TelemetryGate.backoffDelayMs(failures)
+                    consecutiveFailuresByTable = failures,
+                    backoffUntilMsByTable = failures.mapValues { (_, count) ->
+                        finishedAt + TelemetryGate.backoffDelayMs(count)
+                    }
                 )
             }
             return FlushBlock.NONE
@@ -252,7 +279,13 @@ class TelemetryManager(
                 // discard a droppedCount bump (or anything else) written during
                 // the network round trip above.
                 statusStore.update { fresh ->
-                    val failures = fresh.consecutiveFailures + 1
+                    // Every table, not just the batch's — see the throw branch
+                    // above for why. Task 3 replaces this block wholesale; it
+                    // exists only so the suite stays green and this commit is
+                    // genuinely behaviour-preserving.
+                    val failures = TelemetryTables.ALL.associateWith { table ->
+                        (fresh.consecutiveFailuresByTable[table] ?: 0) + 1
+                    }
                     fresh.copy(
                         lastError = outcome.lastError,
                         // Only advanced when a non-null error is actually written —
@@ -260,8 +293,10 @@ class TelemetryManager(
                         // every reachable retryableFailure path in TelemetryUploader
                         // sets it alongside retryable = true.
                         lastErrorAtMs = if (outcome.lastError != null) finishedAt else fresh.lastErrorAtMs,
-                        consecutiveFailures = failures,
-                        backoffUntilMs = finishedAt + TelemetryGate.backoffDelayMs(failures),
+                        consecutiveFailuresByTable = failures,
+                        backoffUntilMsByTable = failures.mapValues { (_, count) ->
+                            finishedAt + TelemetryGate.backoffDelayMs(count)
+                        },
                         // A partial success still moves the marker: rows did land, and
                         // an operator reading "last upload: never" while data arrives
                         // would chase a problem that is not there.
@@ -279,8 +314,8 @@ class TelemetryManager(
                 statusStore.update { fresh ->
                     fresh.copy(
                         lastError = null,
-                        consecutiveFailures = 0,
-                        backoffUntilMs = 0L,
+                        consecutiveFailuresByTable = emptyMap(),
+                        backoffUntilMsByTable = emptyMap(),
                         lastSuccessMs = finishedAt
                     )
                 }

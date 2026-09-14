@@ -378,4 +378,46 @@ class TelemetryOutboxTest {
         box.appendDonation("a")
         assertEquals(0, dropped.sum())
     }
+
+    // ── Per-table exclusion ──────────────────────────────────────────────────
+
+    /**
+     * The defect this phase exists to avoid, and the reason exclusion lives
+     * inside the read. Filtering a batch already truncated to its first `limit`
+     * rows yields nothing at all while the head is excluded — and because peek
+     * removes nothing, the head never advances. A bounded delay would have
+     * become permanent starvation for every row behind it.
+     *
+     * Mutation check: move the filter after `take` and this test must fail.
+     */
+    @Test
+    fun excludedRowsAtTheHeadDoNotCrowdOutTheRowsBehindThem() {
+        val box = outbox()
+        repeat(5) { box.append("d$it", TelemetryTables.DIAGNOSTICS, """{"id":"d$it"}""") }
+        box.appendDonation("donation")
+
+        val batch = box.peek(limit = 3, excludeTables = setOf(TelemetryTables.DIAGNOSTICS))
+
+        assertEquals(listOf("donation"), batch.map { it.id })
+    }
+
+    @Test
+    fun exclusionPreservesQueueOrder() {
+        val box = outbox()
+        box.appendDonation("a")
+        box.append("d", TelemetryTables.DIAGNOSTICS, """{"id":"d"}""")
+        box.appendDonation("b")
+
+        val batch = box.peek(excludeTables = setOf(TelemetryTables.DIAGNOSTICS))
+
+        assertEquals(listOf("a", "b"), batch.map { it.id })
+    }
+
+    @Test
+    fun peekWithNoExclusionsBehavesExactlyAsBefore() {
+        val box = outbox()
+        box.appendDonation("a")
+        box.append("d", TelemetryTables.DIAGNOSTICS, """{"id":"d"}""")
+        assertEquals(listOf("a", "d"), box.peek().map { it.id })
+    }
 }

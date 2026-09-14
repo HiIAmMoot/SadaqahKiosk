@@ -75,6 +75,7 @@ object AnalyticsPresenter {
         nowMs: Long
     ): AnalyticsView {
         val neverUploaded = status.lastSuccessMs == 0L
+        val effectiveBackoffUntilMs = status.effectiveBackoffUntilMs(nowMs)
         val testUnavailable = when {
             config == null -> TestUnavailable.NOT_CONFIGURED
             !settings.analyticsEnabled -> TestUnavailable.ANALYTICS_OFF
@@ -109,10 +110,10 @@ object AnalyticsPresenter {
             // an empty queue beside a fresh error is exactly the case that must
             // still be shown, not the case this used to suppress.
             error = status.lastError?.takeIf { status.lastSuccessMs <= status.lastErrorAtMs },
-            backingOff = status.backoffUntilMs > nowMs,
+            backingOff = effectiveBackoffUntilMs > nowMs,
             backoffRemainingSeconds =
-                (status.backoffUntilMs - nowMs).coerceAtLeast(0L).let { (it + 999) / 1000 },
-            consecutiveFailures = status.consecutiveFailures,
+                (effectiveBackoffUntilMs - nowMs).coerceAtLeast(0L).let { (it + 999) / 1000 },
+            consecutiveFailures = status.consecutiveFailuresByTable.values.maxOrNull() ?: 0,
             dropped = status.droppedCount,
             privacyPolicyUrl = settings.analyticsPrivacyPolicyUrl,
             termsUrl = settings.analyticsTermsUrl,

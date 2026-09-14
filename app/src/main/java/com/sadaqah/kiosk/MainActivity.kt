@@ -1998,14 +1998,15 @@ class MainActivity : FragmentActivity() {
      * moment the backoff elapses.
      */
     private fun startAnalyticsBackoffTickerIfNeeded() {
-        val backoffUntilMs = analyticsSnapshot?.status?.backoffUntilMs ?: 0L
+        val backoffUntilMs = analyticsSnapshot?.status?.effectiveBackoffUntilMs(analyticsNowMs) ?: 0L
         if (!showAnalyticsSettings || backoffUntilMs <= analyticsNowMs) return
         if (analyticsBackoffTickerJob?.isActive == true) return
         analyticsBackoffTickerJob = lifecycleScope.launch {
             while (true) {
                 delay(1000L)
                 analyticsNowMs = System.currentTimeMillis()
-                val stillBackingOff = (analyticsSnapshot?.status?.backoffUntilMs ?: 0L) > analyticsNowMs
+                val stillBackingOff =
+                    (analyticsSnapshot?.status?.effectiveBackoffUntilMs(analyticsNowMs) ?: 0L) > analyticsNowMs
                 if (!stillBackingOff) break
             }
         }
@@ -2053,19 +2054,24 @@ class MainActivity : FragmentActivity() {
      *  the press via [AnalyticsView.testUnavailable].
      *
      *  FIX (I2): `TelemetryManager.activate()` now evaluates the gate *before*
-     *  mutating anything, against inputs that force `activated = true`,
-     *  `backoffUntilMs = 0` and a queue depth that already counts the row about
-     *  to be appended. That pre-check is the only source of a `Blocked` result
-     *  today, and it can only ever produce `DISABLED`, `NOT_CONFIGURED` or
-     *  `NO_NETWORK` — the other three inputs can't fail. So `BACKING_OFF`,
-     *  `NOT_ACTIVATED`, `EMPTY_QUEUE` and `NONE` are all unreachable out of
-     *  `activate()`: the internal `flush()` call that follows a passing
-     *  pre-check sees the same forced-true/zeroed inputs (`TelemetryManager` is
-     *  documented as not meant for concurrent callers, so nothing else can
-     *  change them in between) and cannot itself return a non-`NONE` block for
-     *  this call to wrap. They still get one honest, destination-agnostic
-     *  message rather than being treated as unreachable `when` branches that
-     *  might one day silently start firing. */
+     *  mutating anything, against inputs that force `activated = true` and a
+     *  queue depth that already counts the row about to be appended.
+     *  `GateInputs` no longer carries a backoff field at all — the gate stopped
+     *  knowing about backoff in phase 3d-i — so there is nothing to force there;
+     *  what stands in for it is `activate()`'s reset, which clears every
+     *  table's failure state before the internal `flush()` call ever re-reads
+     *  them for its exclusion set. That pre-check is the only source of a
+     *  `Blocked` result today, and it can only ever produce `DISABLED`,
+     *  `NOT_CONFIGURED` or `NO_NETWORK` — the other inputs can't fail. So
+     *  `BACKING_OFF`, `NOT_ACTIVATED`, `EMPTY_QUEUE` and `NONE` are all
+     *  unreachable out of `activate()`: the internal `flush()` call that
+     *  follows a passing pre-check sees the same forced-true inputs and a
+     *  freshly-cleared backoff state (`TelemetryManager` is documented as not
+     *  meant for concurrent callers, so nothing else can change them in
+     *  between) and cannot itself return a non-`NONE` block for this call to
+     *  wrap. They still get one honest, destination-agnostic message rather
+     *  than being treated as unreachable `when` branches that might one day
+     *  silently start firing. */
     private fun analyticsBlockedMessage(reason: FlushBlock, strings: Strings): String = when (reason) {
         FlushBlock.NO_NETWORK -> strings.noInternetConnection
         FlushBlock.NOT_CONFIGURED -> strings.analyticsTestUnavailableNotConfigured

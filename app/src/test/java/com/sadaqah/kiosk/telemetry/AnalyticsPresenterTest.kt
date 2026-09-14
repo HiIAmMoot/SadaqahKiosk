@@ -13,7 +13,8 @@ class AnalyticsPresenterTest {
     private fun view(
         settings: Settings = Settings(analyticsEnabled = true, installId = "install-1"),
         config: TelemetryConfig? = TelemetryConfig("https://abc.supabase.co", "publishable-key"),
-        status: TelemetryStatus = TelemetryStatus()
+        status: TelemetryStatus = TelemetryStatus(),
+        now: Long = this.now
     ) = AnalyticsPresenter.view(settings, config, status, now)
 
     @Test
@@ -220,8 +221,12 @@ class AnalyticsPresenterTest {
 
     @Test
     fun backoffIsReportedOnlyWhileItIsInTheFuture() {
-        assertTrue(view(status = TelemetryStatus(backoffUntilMs = now + 30_000)).backingOff)
-        assertFalse(view(status = TelemetryStatus(backoffUntilMs = now - 30_000)).backingOff)
+        assertTrue(view(status = TelemetryStatus(
+            backoffUntilMsByTable = TelemetryTables.ALL.associateWith { now + 30_000 }
+        )).backingOff)
+        assertFalse(view(status = TelemetryStatus(
+            backoffUntilMsByTable = TelemetryTables.ALL.associateWith { now - 30_000 }
+        )).backingOff)
     }
 
     @Test
@@ -261,22 +266,30 @@ class AnalyticsPresenterTest {
 
     @Test
     fun backoffRemainingSecondsIsZeroWhenNotBackingOff() {
-        assertEquals(0L, view(status = TelemetryStatus(backoffUntilMs = now - 30_000)).backoffRemainingSeconds)
+        assertEquals(0L, view(status = TelemetryStatus(
+            backoffUntilMsByTable = TelemetryTables.ALL.associateWith { now - 30_000 }
+        )).backoffRemainingSeconds)
     }
 
     @Test
     fun aPartialSecondOfBackoffRoundsUpRatherThanDisplayingZero() {
-        assertEquals(1L, view(status = TelemetryStatus(backoffUntilMs = now + 900)).backoffRemainingSeconds)
+        assertEquals(1L, view(status = TelemetryStatus(
+            backoffUntilMsByTable = TelemetryTables.ALL.associateWith { now + 900 }
+        )).backoffRemainingSeconds)
     }
 
     @Test
     fun backoffRemainingSecondsIsTheTimeUntilTheDeadline() {
-        assertEquals(45L, view(status = TelemetryStatus(backoffUntilMs = now + 45_000)).backoffRemainingSeconds)
+        assertEquals(45L, view(status = TelemetryStatus(
+            backoffUntilMsByTable = TelemetryTables.ALL.associateWith { now + 45_000 }
+        )).backoffRemainingSeconds)
     }
 
     @Test
     fun consecutiveFailuresIsCarriedThrough() {
-        assertEquals(7, view(status = TelemetryStatus(consecutiveFailures = 7)).consecutiveFailures)
+        assertEquals(7, view(status = TelemetryStatus(
+            consecutiveFailuresByTable = TelemetryTables.ALL.associateWith { 7 }
+        )).consecutiveFailures)
     }
 
     @Test

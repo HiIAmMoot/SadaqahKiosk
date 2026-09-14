@@ -58,9 +58,25 @@ class TelemetryOutbox(
         compactIfNeeded(now)
     }
 
-    fun peek(limit: Int = DEFAULT_BATCH): List<QueuedEvent> = synchronized(lock) {
-        readAll().take(limit)
-    }
+    /**
+     * The head of the queue, minus any row belonging to [excludeTables].
+     *
+     * Filtering happens **before** [limit] is applied, and that ordering is the
+     * whole point: taking the first [limit] rows and then dropping the excluded
+     * ones would return nothing at all while the head is excluded, and since
+     * peek removes nothing the head would never advance. Rows behind an
+     * excluded run would stop sending entirely.
+     *
+     * Default-empty, so no existing caller changes. Queue order is preserved;
+     * nothing here groups or sorts by table.
+     */
+    fun peek(limit: Int = DEFAULT_BATCH, excludeTables: Set<String> = emptySet()): List<QueuedEvent> =
+        synchronized(lock) {
+            readAll().asSequence()
+                .filterNot { it.table in excludeTables }
+                .take(limit)
+                .toList()
+        }
 
     fun remove(ids: Set<String>): Unit = synchronized(lock) {
         if (ids.isEmpty()) return@synchronized

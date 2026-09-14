@@ -12,8 +12,7 @@ class TelemetryGateTest {
         configured = true,
         activated = true,
         networkAvailable = true,
-        queueDepth = 5,
-        backoffUntilMs = 0L
+        queueDepth = 5
     )
 
     // ── Blocking conditions ──────────────────────────────────────────────────
@@ -53,44 +52,13 @@ class TelemetryGateTest {
             TelemetryGate.evaluate(ready().copy(queueDepth = 0), now))
     }
 
-    @Test
-    fun withinBackoffWindow_blocks() {
-        assertEquals(FlushBlock.BACKING_OFF,
-            TelemetryGate.evaluate(ready().copy(backoffUntilMs = now + 1), now))
-    }
-
-    @Test
-    fun backoffDeadlinePassed_allowsFlush() {
-        assertEquals(FlushBlock.NONE,
-            TelemetryGate.evaluate(ready().copy(backoffUntilMs = now), now))
-    }
-
-    @Test
-    fun aDeadlineBeyondTheCeilingIsTreatedAsStaleAndAllowsFlush() {
-        val stale = ready().copy(backoffUntilMs = now + TelemetryGate.MAX_BACKOFF_MS + 1)
-        assertEquals(FlushBlock.NONE, TelemetryGate.evaluate(stale, now))
-    }
-
-    @Test
-    fun aDeadlineExactlyAtTheCeilingStillBlocks() {
-        val atCeiling = ready().copy(backoffUntilMs = now + TelemetryGate.MAX_BACKOFF_MS)
-        assertEquals(FlushBlock.BACKING_OFF, TelemetryGate.evaluate(atCeiling, now))
-    }
-
-    @Test
-    fun aStaleDeadlineDoesNotOutrankTheOtherBlocks() {
-        val disabledWithStaleDeadline = ready().copy(
-            enabled = false, backoffUntilMs = now + TelemetryGate.MAX_BACKOFF_MS + 1)
-        assertEquals(FlushBlock.DISABLED, TelemetryGate.evaluate(disabledWithStaleDeadline, now))
-    }
-
     /** Reported reasons are for logs; the most fundamental one should win so a
      *  log line says "disabled" rather than "no network" on a disabled kiosk. */
     @Test
     fun disabledOutranksEveryOtherBlock() {
         val everythingWrong = GateInputs(
             enabled = false, configured = false, activated = false,
-            networkAvailable = false, queueDepth = 0, backoffUntilMs = now + 10_000
+            networkAvailable = false, queueDepth = 0
         )
         assertEquals(FlushBlock.DISABLED, TelemetryGate.evaluate(everythingWrong, now))
     }
@@ -130,5 +98,70 @@ class TelemetryGateTest {
     fun backoff_zeroOrNegativeFailuresMeansNoDelay() {
         assertEquals(0L, TelemetryGate.backoffDelayMs(0))
         assertEquals(0L, TelemetryGate.backoffDelayMs(-1))
+    }
+
+    // ── Per-table status helper ──────────────────────────────────────────────
+
+    @Test
+    fun `effectiveBackoffUntilMs takes the latest live deadline`() {
+        val now = 10_000L
+        val status = TelemetryStatus(
+            backoffUntilMsByTable = mapOf(
+                TelemetryTables.DONATIONS to now + 5_000,
+                TelemetryTables.DIAGNOSTICS to now + 30_000
+            )
+        )
+        assertEquals(now + 30_000, status.effectiveBackoffUntilMs(now))
+    }
+
+    @Test
+    fun `effectiveBackoffUntilMs ignores an elapsed deadline`() {
+        val now = 10_000L
+        val status = TelemetryStatus(
+            backoffUntilMsByTable = mapOf(TelemetryTables.DONATIONS to now - 1)
+        )
+        assertEquals(0L, status.effectiveBackoffUntilMs(now))
+    }
+
+    /**
+     * The aggregate is what makes a corrupt deadline dangerous: taking a
+     * maximum, one entry beyond the ceiling dominates every healthy one and
+     * freezes the screen for as long as the bad value says.
+     *
+     * Mutation check: delete the isTableBackedOff filter from
+     * effectiveBackoffUntilMs and this test must fail.
+     */
+    @Test
+    fun `effectiveBackoffUntilMs ignores a deadline beyond the ceiling`() {
+        val now = 10_000L
+        val status = TelemetryStatus(
+            backoffUntilMsByTable = mapOf(
+                TelemetryTables.DONATIONS to now + 5_000,
+                TelemetryTables.DIAGNOSTICS to now + TelemetryGate.MAX_BACKOFF_MS + 1
+            )
+        )
+        assertEquals(now + 5_000, status.effectiveBackoffUntilMs(now))
+    }
+
+    @Test
+    fun `isTableBackedOff is false at the instant the deadline is reached`() {
+        val now = 10_000L
+        assertFalse(TelemetryGate.isTableBackedOff(now, now))
+        assertTrue(TelemetryGate.isTableBackedOff(now + 1, now))
+    }
+
+    @Test
+    fun `a deadline exactly at the ceiling still counts`() {
+        val now = 10_000L
+        assertTrue(TelemetryGate.isTableBackedOff(now + TelemetryGate.MAX_BACKOFF_MS, now))
+    }
+
+    @Test
+    fun `a deadline past the ceiling fails open`() {
+        val now = 10_000L
+        assertFalse(
+            "a corrected clock must not silence a kiosk for years",
+            TelemetryGate.isTableBackedOff(now + TelemetryGate.MAX_BACKOFF_MS + 1, now)
+        )
     }
 }

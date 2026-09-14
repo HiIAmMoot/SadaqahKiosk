@@ -10,6 +10,11 @@ object TelemetryTables {
     const val DONATIONS = "donation_events"
     const val DIAGNOSTICS = "diagnostic_events"
     const val ACTIVATIONS = "telemetry_activations"
+
+    /** Enumerated so per-table persistence reads and writes the same set. A
+     *  fourth table added above and forgotten here would be written by one and
+     *  never read back by the other, which no test would fail on. */
+    val ALL = listOf(DONATIONS, DIAGNOSTICS, ACTIVATIONS)
 }
 
 /**
