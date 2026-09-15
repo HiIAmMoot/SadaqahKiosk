@@ -52,4 +52,13 @@ class DisclosurePresenterTest {
         assertEquals("https://abc.supabase.co", view.destinationUrl)
     }
 
+    /** Pins the present case: a set terms URL must reach the view, not just be
+     *  nulled out when absent. Without this, hardcoding `termsUrl = null` in
+     *  the presenter still passed every other test here. */
+    @Test
+    fun `a set terms url reaches the view`() {
+        val view = DisclosurePresenter.view(settings(), "https://abc.supabase.co")!!
+        assertEquals("https://example.org/terms", view.termsUrl)
+    }
+
 }
