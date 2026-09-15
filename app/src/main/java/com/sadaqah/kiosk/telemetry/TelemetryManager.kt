@@ -282,7 +282,7 @@ class TelemetryManager(
         // computed from it.
         val finishedAt = clock()
         when {
-            outcome.retryableFailure -> {
+            outcome.retryableTables.isNotEmpty() -> {
                 // FIX (I4): as above — transform the fresh value the store hands
                 // back, not `before`. A `before.copy(...)` here would silently
                 // discard a droppedCount bump (or anything else) written during
@@ -299,8 +299,8 @@ class TelemetryManager(
                         lastError = outcome.lastError,
                         // Only advanced when a non-null error is actually written —
                         // outcome.lastError is nullable in principle even though
-                        // every reachable retryableFailure path in TelemetryUploader
-                        // sets it alongside retryable = true.
+                        // every reachable path in TelemetryUploader that adds to
+                        // retryableTables also sets it.
                         lastErrorAtMs = if (outcome.lastError != null) finishedAt else fresh.lastErrorAtMs,
                         consecutiveFailuresByTable = failures,
                         backoffUntilMsByTable = failures.mapValues { (_, count) ->
@@ -315,7 +315,7 @@ class TelemetryManager(
             }
             // Evidence of a real outcome, not just the absence of a retryable one:
             // an outcome that uploaded or rejected nothing is not proof of success,
-            // whatever the uploader says about retryableFailure. This is currently
+            // whatever the uploader says about retryableTables. This is currently
             // unreachable for a non-empty batch (see UploadOutcome's own contract
             // note), but this class's whole charter is to never re-derive the
             // uploader's judgement, so it does not assume that shape either.

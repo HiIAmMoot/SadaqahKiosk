@@ -25,11 +25,23 @@ package com.sadaqah.kiosk.telemetry
  * this row" from "the server is refusing everything right now", and without it
  * the row stays queued. Anything not proven dead is retried; the outbox's age
  * cap, not this class, is what finally retires a row nobody will ever accept.
+ *
+ * A table can legitimately appear in both [retryableTables] and
+ * [succeededTables] — the per-row fallback can upload some rows and then lose
+ * the network. Which one wins is the caller's rule, not this class's.
  */
 data class UploadOutcome(
     val uploadedIds: Set<String>,
     val rejectedIds: Set<String>,
-    val retryableFailure: Boolean,
+    /** Tables with at least one row that did not send and may yet. Narrower
+     *  than the boolean it replaces: one refused table used to back off the
+     *  healthy ones with it. */
+    val retryableTables: Set<String>,
+    /** Tables with at least one row named in [uploadedIds]. Reported rather
+     *  than re-derived from the batch: attributing a success by matching ids
+     *  back to rows would be the caller second-guessing this class, which the
+     *  manager's charter forbids. */
+    val succeededTables: Set<String>,
     val lastError: String?
 )
 
@@ -51,11 +63,12 @@ class TelemetryUploader(
     private val restRoot = baseUrl.trimEnd('/') + "/rest/v1/"
 
     fun upload(events: List<QueuedEvent>): UploadOutcome {
-        if (events.isEmpty()) return UploadOutcome(emptySet(), emptySet(), false, null)
+        if (events.isEmpty()) return UploadOutcome(emptySet(), emptySet(), emptySet(), emptySet(), null)
 
         val uploaded = mutableSetOf<String>()
         val rejected = mutableSetOf<String>()
-        var retryable = false
+        val retryableTables = mutableSetOf<String>()
+        val succeededTables = mutableSetOf<String>()
         var lastError: String? = null
 
         // One request per table: a mixed batch cannot go to a single endpoint,
@@ -120,7 +133,7 @@ class TelemetryUploader(
                                 // remaining row would burn a full connect-plus-read
                                 // timeout and stay queued regardless, so stop and
                                 // let the next flush retry them.
-                                retryable = true
+                                retryableTables += table
                                 lastError = describe(single)
                                 break
                             }
@@ -139,7 +152,7 @@ class TelemetryUploader(
                         // the next flush ask again. A group that stalled partway
                         // has no success either, so its earlier rejections are
                         // discarded on the same reasoning.
-                        retryable = true
+                        retryableTables += table
                     } else {
                         rejected += rejectedHere
                     }
@@ -153,13 +166,15 @@ class TelemetryUploader(
                 // request per flush until the outbox's age cap retires it; getting
                 // it wrong costs the only record of someone's donation.
                 else -> {
-                    retryable = true
+                    retryableTables += table
                     lastError = describe(response)
                 }
             }
+
+            if (forTable.any { it.id in uploaded }) succeededTables += table
         }
 
-        return UploadOutcome(uploaded, rejected, retryable, lastError)
+        return UploadOutcome(uploaded, rejected, retryableTables, succeededTables, lastError)
     }
 
     private fun send(table: String, events: List<QueuedEvent>): HttpResponse =

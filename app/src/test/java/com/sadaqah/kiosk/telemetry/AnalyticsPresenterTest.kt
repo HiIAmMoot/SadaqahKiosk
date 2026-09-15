@@ -203,7 +203,7 @@ class AnalyticsPresenterTest {
     /**
      * A partial success and a retryable failure in the same flush stamp
      * lastSuccessMs and lastErrorAtMs from one clock() read (TelemetryManager
-     * flush's retryableFailure branch), so they land equal, not ordered. `<=`
+     * flush's retryable-tables branch), so they land equal, not ordered. `<=`
      * must still show the error here — mutating it to `<` passes every other
      * test in this file (all three use strictly-ordered timestamps) while
      * silently suppressing exactly the failure Ruling AR exists to surface.

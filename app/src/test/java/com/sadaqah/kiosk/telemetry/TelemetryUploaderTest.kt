@@ -104,7 +104,7 @@ class TelemetryUploaderTest {
         val outcome = uploader(poster).upload(emptyList())
         assertEquals(0, poster.calls.size)
         assertTrue(outcome.uploadedIds.isEmpty())
-        assertFalse(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isEmpty())
     }
 
     // ── Success ──────────────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ class TelemetryUploaderTest {
         val outcome = uploader(RecordingPoster()).upload(listOf(event("e1"), event("e2")))
         assertEquals(setOf("e1", "e2"), outcome.uploadedIds)
         assertTrue(outcome.rejectedIds.isEmpty())
-        assertFalse(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isEmpty())
         assertNull(outcome.lastError)
     }
 
@@ -139,7 +139,7 @@ class TelemetryUploaderTest {
         assertEquals(setOf("already-there"), outcome.uploadedIds)
         assertTrue("a stored duplicate must not be counted as rejected",
             outcome.rejectedIds.isEmpty())
-        assertFalse(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isEmpty())
     }
 
     /**
@@ -158,7 +158,7 @@ class TelemetryUploaderTest {
 
         assertTrue("an unconfirmed 409 must not be credited as uploaded", outcome.uploadedIds.isEmpty())
         assertTrue("an unconfirmed 409 must not be treated as a rejection either", outcome.rejectedIds.isEmpty())
-        assertTrue("the row stays queued and the flush is retryable", outcome.retryableFailure)
+        assertTrue("the row stays queued and the flush is retryable", outcome.retryableTables.isNotEmpty())
     }
 
     /** A null body — PostgREST should always send one, but the code must not
@@ -170,7 +170,7 @@ class TelemetryUploaderTest {
 
         assertTrue(outcome.uploadedIds.isEmpty())
         assertTrue(outcome.rejectedIds.isEmpty())
-        assertTrue(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isNotEmpty())
     }
 
     /** A body that names no SQLSTATE at all must be treated the same way. */
@@ -181,7 +181,7 @@ class TelemetryUploaderTest {
 
         assertTrue(outcome.uploadedIds.isEmpty())
         assertTrue(outcome.rejectedIds.isEmpty())
-        assertTrue(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isNotEmpty())
     }
 
     /**
@@ -225,7 +225,7 @@ class TelemetryUploaderTest {
 
         assertEquals(setOf("already-there", "fresh"), outcome.uploadedIds)
         assertTrue(outcome.rejectedIds.isEmpty())
-        assertFalse(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isEmpty())
     }
 
     // ── Retryable failures ───────────────────────────────────────────────────
@@ -236,7 +236,7 @@ class TelemetryUploaderTest {
         val outcome = uploader(poster).upload(listOf(event("e1")))
         assertTrue(outcome.uploadedIds.isEmpty())
         assertTrue(outcome.rejectedIds.isEmpty())
-        assertTrue(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isNotEmpty())
         assertNotNull(outcome.lastError)
     }
 
@@ -247,7 +247,7 @@ class TelemetryUploaderTest {
         }
         val outcome = uploader(poster).upload(listOf(event("e1")))
         assertTrue(outcome.uploadedIds.isEmpty())
-        assertTrue(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isNotEmpty())
     }
 
     /** One table failing must not discard another table's successful upload. */
@@ -262,7 +262,48 @@ class TelemetryUploaderTest {
             event("x1", TelemetryTables.DIAGNOSTICS)
         ))
         assertEquals(setOf("d1"), outcome.uploadedIds)
-        assertTrue(outcome.retryableFailure)
+        assertEquals(setOf(TelemetryTables.DIAGNOSTICS), outcome.retryableTables)
+        assertEquals(setOf(TelemetryTables.DONATIONS), outcome.succeededTables)
+    }
+
+    /**
+     * The precedence rule the spec names: **failure wins**. Reachable only in
+     * the per-row fallback, which needs a batch-level refusal first — a
+     * multi-row group whose first response is a plain failure takes the else
+     * arm and never retries rows individually.
+     */
+    @Test
+    fun aTableThatPartlyUploadedAndThenFailedAppearsInBothSets() {
+        var call = 0
+        val poster = RecordingPoster { _, _ ->
+            when (call++) {
+                0 -> HttpResponse(400, "batch refused")               // the 2-row batch
+                1 -> HttpResponse(201, null)                          // row x1 alone: accepted
+                else -> HttpResponse(HttpResponse.TRANSPORT_FAILURE, null)  // row x2: network dies
+            }
+        }
+        val outcome = uploader(poster).upload(listOf(
+            event("x1", TelemetryTables.DIAGNOSTICS),
+            event("x2", TelemetryTables.DIAGNOSTICS)
+        ))
+
+        assertEquals(setOf("x1"), outcome.uploadedIds)
+        assertTrue(outcome.succeededTables.contains(TelemetryTables.DIAGNOSTICS))
+        assertTrue(outcome.retryableTables.contains(TelemetryTables.DIAGNOSTICS))
+    }
+
+    @Test
+    fun succeededTablesNamesATableWhoseRowWasAbsorbedAsAlreadyStored() {
+        // A single-row 409 confirmed as 23505 counts as uploaded, so its table
+        // counts as succeeded. Same fixture shape as the existing already-stored
+        // tests above (see aSingleRow409IsReportedAsUploadedNotRejected).
+        val poster = RecordingPoster { _, _ ->
+            HttpResponse(409, "duplicate key value violates unique constraint (SQLSTATE 23505)")
+        }
+        val outcome = uploader(poster).upload(listOf(event("already-there")))
+
+        assertEquals(setOf("already-there"), outcome.uploadedIds)
+        assertEquals(setOf(TelemetryTables.DONATIONS), outcome.succeededTables)
     }
 
     // ── Poison rows ──────────────────────────────────────────────────────────
@@ -287,7 +328,7 @@ class TelemetryUploaderTest {
         ))
         assertEquals(setOf("good1", "good2"), outcome.uploadedIds)
         assertEquals(setOf("poison"), outcome.rejectedIds)
-        assertFalse("a poison row is permanent, not retryable", outcome.retryableFailure)
+        assertTrue("a poison row is permanent, not retryable", outcome.retryableTables.isEmpty())
         assertTrue("every request, batch or fallback, carries the same Prefer header",
             poster.calls.all { it.second["Prefer"] == "return=minimal" })
     }
@@ -317,7 +358,7 @@ class TelemetryUploaderTest {
             outcome.rejectedIds.isEmpty()
         )
         assertTrue(outcome.uploadedIds.isEmpty())
-        assertTrue("the row stays queued for the next flush", outcome.retryableFailure)
+        assertTrue("the row stays queued for the next flush", outcome.retryableTables.isNotEmpty())
         assertTrue("the operator still sees why", outcome.lastError!!.contains("400"))
     }
 
@@ -345,8 +386,8 @@ class TelemetryUploaderTest {
                 setOf("good1"), outcome.uploadedIds)
             assertEquals("HTTP $code: a corroborated refusal is still honoured",
                 setOf("poison"), outcome.rejectedIds)
-            assertFalse("HTTP $code: a row-level refusal is permanent, not retryable",
-                outcome.retryableFailure)
+            assertTrue("HTTP $code: a row-level refusal is permanent, not retryable",
+                outcome.retryableTables.isEmpty())
         }
     }
 
@@ -366,7 +407,7 @@ class TelemetryUploaderTest {
 
         assertTrue("no row may be deleted on a fleet-wide refusal", outcome.rejectedIds.isEmpty())
         assertTrue(outcome.uploadedIds.isEmpty())
-        assertTrue("the batch must stay queued for the next flush", outcome.retryableFailure)
+        assertTrue("the batch must stay queued for the next flush", outcome.retryableTables.isNotEmpty())
         assertNotNull("the operator still needs the reason", outcome.lastError)
     }
 
@@ -386,7 +427,7 @@ class TelemetryUploaderTest {
 
         assertEquals(setOf("good1"), outcome.uploadedIds)
         assertEquals(setOf("poison"), outcome.rejectedIds)
-        assertFalse("a poison row is permanent, not retryable", outcome.retryableFailure)
+        assertTrue("a poison row is permanent, not retryable", outcome.retryableTables.isEmpty())
     }
 
     /**
@@ -409,7 +450,7 @@ class TelemetryUploaderTest {
         assertEquals("the batch plus one row, then stop", 2, poster.calls.size)
         assertTrue(outcome.uploadedIds.isEmpty())
         assertTrue(outcome.rejectedIds.isEmpty())
-        assertTrue(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isNotEmpty())
     }
 
     /** Rejections found mid-fallback are dropped too when the group stalls before
@@ -428,7 +469,7 @@ class TelemetryUploaderTest {
 
         assertTrue(outcome.rejectedIds.isEmpty())
         assertTrue(outcome.uploadedIds.isEmpty())
-        assertTrue(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isNotEmpty())
     }
 
     /** A 5xx during the per-row fallback is still retryable for that row. */
@@ -445,7 +486,7 @@ class TelemetryUploaderTest {
         val outcome = uploader(poster).upload(listOf(event("good1"), event("flaky")))
         assertEquals(setOf("good1"), outcome.uploadedIds)
         assertTrue(outcome.rejectedIds.isEmpty())
-        assertTrue(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isNotEmpty())
     }
 
     @Test
@@ -543,7 +584,7 @@ class TelemetryUploaderTest {
         assertEquals("one batch attempt plus ten single rows", 11, poster.calls.size)
         assertTrue("no row may be deleted on a fleet-wide refusal", outcome.rejectedIds.isEmpty())
         assertTrue(outcome.uploadedIds.isEmpty())
-        assertTrue("the batch must stay queued for the next flush", outcome.retryableFailure)
+        assertTrue("the batch must stay queued for the next flush", outcome.retryableTables.isNotEmpty())
     }
 
     /**
@@ -567,7 +608,7 @@ class TelemetryUploaderTest {
         assertEquals(11, poster.calls.size)
         assertTrue("e11 is never reached, and that is the documented cost", outcome.uploadedIds.isEmpty())
         assertTrue(outcome.rejectedIds.isEmpty())
-        assertTrue(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isNotEmpty())
     }
 
     /**
@@ -589,7 +630,7 @@ class TelemetryUploaderTest {
         assertEquals("one batch attempt plus all thirty single rows", 31, poster.calls.size)
         assertEquals(setOf("e01"), outcome.uploadedIds)
         assertEquals(29, outcome.rejectedIds.size)
-        assertFalse("a corroborated refusal is permanent, not retryable", outcome.retryableFailure)
+        assertTrue("a corroborated refusal is permanent, not retryable", outcome.retryableTables.isEmpty())
     }
 
     /**
@@ -633,6 +674,6 @@ class TelemetryUploaderTest {
 
         assertEquals("one batch attempt plus exactly one row", 2, poster.calls.size)
         assertTrue(outcome.rejectedIds.isEmpty())
-        assertTrue(outcome.retryableFailure)
+        assertTrue(outcome.retryableTables.isNotEmpty())
     }
 }

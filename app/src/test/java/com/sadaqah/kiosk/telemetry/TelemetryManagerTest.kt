@@ -474,7 +474,7 @@ class TelemetryManagerTest {
             // for a non-empty batch (see UploadOutcome's contract note) — which
             // is exactly why it needs an explicit test rather than a trust in
             // that reachability argument holding forever.
-            upload = { _, _ -> UploadOutcome(emptySet(), emptySet(), false, null) }
+            upload = { _, _ -> UploadOutcome(emptySet(), emptySet(), emptySet(), emptySet(), null) }
         ).flush()
         assertEquals(FlushBlock.NONE, result)
         assertEquals("nothing named by the outcome must be removed", 1, outbox.size())
@@ -624,7 +624,8 @@ class TelemetryManagerTest {
                 UploadOutcome(
                     uploadedIds = batch.map { it.id }.toSet(),
                     rejectedIds = emptySet(),
-                    retryableFailure = false,
+                    retryableTables = emptySet(),
+                    succeededTables = setOf(TelemetryTables.DONATIONS),
                     lastError = null
                 )
             }
