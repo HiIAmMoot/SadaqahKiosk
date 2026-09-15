@@ -10,7 +10,7 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
  * Encodes a URL to a QR matrix the screen draws itself.
  *
  * A QR code is the only way an operator reaches a link from this kiosk: lock
- * task mode ([MainActivity] calls `startLockTask`) means no browser can be
+ * task mode (`MainActivity` calls `startLockTask`) means no browser can be
  * launched, so a tappable link is inert and the operator's own phone is the
  * only reader.
  */
@@ -31,8 +31,14 @@ object QrEncoder {
     )
 
     /**
-     * Returns the symbol at **module resolution** — roughly 25x25 to 60x60 —
-     * not at pixel size. The caller scales it when drawing.
+     * Returns the symbol at **module resolution** — roughly 33x33 to 65x65
+     * once the four-module quiet zone on each side is included — not at pixel
+     * size. The caller scales it when drawing.
+     *
+     * The quiet zone is already baked into the returned matrix: the outer
+     * four modules on every side are light. The screen must draw the matrix
+     * as-is — adding its own margin would double the border, and cropping it
+     * would strip the zone a camera needs to find the symbol.
      *
      * Asking ZXing for 512x512 would return a 512x512 matrix, and a Canvas
      * drawing one rect per dark module would then issue ~130,000 draw calls

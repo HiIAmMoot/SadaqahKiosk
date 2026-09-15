@@ -6,7 +6,9 @@ import com.google.zxing.common.BitMatrix
 import com.google.zxing.common.HybridBinarizer
 import com.google.zxing.qrcode.QRCodeReader
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class QrEncoderTest {
@@ -41,8 +43,9 @@ class QrEncoderTest {
      *
      * core only: the usual bridge to a BinaryBitmap is
      * BufferedImageLuminanceSource, which lives in zxing's javase artifact — a
-     * second dependency this phase does not take. core can back a BinaryBitmap
-     * from the BitMatrix directly.
+     * second dependency this phase does not take. `decode` above rebuilds the
+     * bridge from `core` alone: RGBLuminanceSource wraps a pixel array, and
+     * HybridBinarizer turns that into the BinaryBitmap a reader needs.
      */
     @Test
     fun `an encoded url decodes back to itself`() {
@@ -62,5 +65,33 @@ class QrEncoderTest {
     @Test
     fun `an empty url encodes to null`() {
         assertNull(QrEncoder.encode(""))
+    }
+
+    // A round trip alone stays green even if the encoder regresses to pixel
+    // resolution or drops the quiet zone — decode() only checks the text comes
+    // back out. These two pin the properties a round trip cannot see.
+
+    @Test
+    fun `matrix stays at module resolution, not pixel size`() {
+        val matrix = QrEncoder.encode("https://example.org/privacy?v=2")!!
+        // Real QR symbols top out at 177 modules per side (version 40); asking
+        // for 512x512 pixel output instead would blow past this by orders of
+        // magnitude.
+        assertTrue(matrix.width < 100)
+        assertTrue(matrix.height < 100)
+    }
+
+    @Test
+    fun `quiet zone is baked into the matrix border`() {
+        val matrix = QrEncoder.encode("https://example.org/privacy?v=2")!!
+        val size = matrix.width
+        for (i in 0 until size) {
+            for (offset in 0 until 4) {
+                assertFalse("column $offset, row $i should be light", matrix.get(offset, i))
+                assertFalse("column ${size - 1 - offset}, row $i should be light", matrix.get(size - 1 - offset, i))
+                assertFalse("row $offset, column $i should be light", matrix.get(i, offset))
+                assertFalse("row ${size - 1 - offset}, column $i should be light", matrix.get(i, size - 1 - offset))
+            }
+        }
     }
 }
