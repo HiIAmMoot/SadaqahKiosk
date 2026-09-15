@@ -192,10 +192,24 @@ private fun DisclosureUrlBlock(label: String, url: String, color: Color) {
         // URLs are never validated, so silently drawing nothing beside the text
         // is the correct behaviour here, not a fallback for an error case.
         if (matrix != null) {
-            DisclosureQrCode(matrix = matrix, edge = responsiveDp(88.dp), color = color)
+            DisclosureQrCode(matrix = matrix, edge = responsiveDp(88.dp))
         }
     }
 }
+
+// Fixed regardless of kiosk branding — deliberately not derived from `settings`.
+// Light modules (including the whole quiet zone) are painted, not left
+// transparent: on a dark-branded kiosk, transparent light modules would show
+// through as the kiosk's own dark background and patterned image, producing an
+// inverted symbol with texture running through the quiet zone. Most phone
+// cameras — the iOS one included — do not read an inverted code, and pattern
+// detail in the quiet zone can stop a scanner finding the symbol at all. Both
+// are camera-only failures no unit test here can catch. Scannability outranks
+// matching the kiosk's palette for the one element on this screen that has to
+// work against a lens; the panel around the code stays branded, the code itself
+// does not.
+private val QrLight = Color(0xFFFFFFFF)
+private val QrDark = Color(0xFF000000)
 
 /**
  * Draws [matrix] with one filled rect per dark module, scaled to [edge] — never
@@ -205,15 +219,19 @@ private fun DisclosureUrlBlock(label: String, url: String, color: Color) {
  * reproduces that margin instead of adding a second one on top of it.
  */
 @Composable
-private fun DisclosureQrCode(matrix: BitMatrix, edge: Dp, color: Color) {
+private fun DisclosureQrCode(matrix: BitMatrix, edge: Dp) {
     Canvas(modifier = Modifier.size(edge)) {
+        // The opaque light card: without it, every light module — the quiet
+        // zone included — is transparent and shows whatever is behind this
+        // Canvas instead of a clean white margin.
+        drawRect(color = QrLight, size = size)
         val moduleWidth = size.width / matrix.width
         val moduleHeight = size.height / matrix.height
         for (row in 0 until matrix.height) {
             for (col in 0 until matrix.width) {
                 if (matrix.get(col, row)) {
                     drawRect(
-                        color = color,
+                        color = QrDark,
                         topLeft = Offset(col * moduleWidth, row * moduleHeight),
                         size = Size(moduleWidth, moduleHeight)
                     )
