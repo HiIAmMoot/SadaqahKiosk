@@ -686,5 +686,30 @@ class TelemetryOutboxTest {
 
         assertEquals("peek alone must retire the aged row",
             emptyList<String>(), box.peek().map { it.id })
+        // An in-memory filter would satisfy the assertion above without ever
+        // touching disk; the row must actually be gone from the file too.
+        assertEquals("the sweep must rewrite the file, not just filter the result",
+            0, file.readLines().count { it.isNotBlank() })
+    }
+
+    /**
+     * The failure mode a naive fix invites: putting `ensureLoaded()` before
+     * `compactIfDue` in `peek` makes the very first peek of a process — with
+     * rows already on disk from a prior run — read the queue twice, once to
+     * load the count and once inside the compaction it then triggers. That is
+     * the exact call this task exists to serve, so doubling its cost is the
+     * wrong trade.
+     */
+    @Test
+    fun peekReadsTheQueueOnlyOnceWhenSweepingAFreshProcess() {
+        outbox().appendDonation("e1")
+        TelemetryOutbox.resetStateForTests() // simulate a fresh process re-attaching to the file on disk
+
+        var reads = 0
+        val box = TelemetryOutbox(file, clock = { now }, readLines = { reads++; it.readLines() })
+        box.peek()
+
+        assertEquals("the boot sweep must read the queue once, not once to load and once to compact",
+            1, reads)
     }
 }

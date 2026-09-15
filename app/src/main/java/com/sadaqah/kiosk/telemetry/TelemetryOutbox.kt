@@ -88,19 +88,22 @@ class TelemetryOutbox(
     fun peek(limit: Int = DEFAULT_BATCH, excludeTables: Set<String> = emptySet()): List<QueuedEvent> =
         synchronized(lock) {
             val now = clock()
-            ensureLoaded()
             // The second trigger site, and the one that makes the interval a
             // real bound. append alone only fires under load, and the stall this
             // clears — a poison row at the head that the uploader refuses —
             // happens on a quiet kiosk that is still flushing and still being
             // refused. peek already reads the whole queue, so applying the caps
             // in the same pass costs a filter and a conditional write.
-            // Uses the list the compaction already read, when one ran, so peek
-            // never reads the file twice on a sweep.
             //
-            // ensureLoaded() above is a pure read and never compacts: the
-            // compaction happens here, on a path that is allowed to write.
-            val rows = compactIfDue(now) ?: readAll()
+            // No separate ensureLoaded() here: compactIfDue reads `state.rows`
+            // itself, and on the very first call of a process rows is UNKNOWN
+            // with lastCompactionMs null, which alone forces `overdue` true —
+            // so the first peek still sweeps without a load in front of it.
+            // Calling ensureLoaded() first would cost that boot sweep a second
+            // full read of the queue, on the exact path this task exists to
+            // bound. When no sweep is due, `.also` below is a refresh of an
+            // already-known count, not a load.
+            val rows = compactIfDue(now) ?: readAll().also { state.rows = it.size }
             rows.asSequence()
                 .filterNot { it.table in excludeTables }
                 .take(limit)
@@ -219,8 +222,9 @@ class TelemetryOutbox(
                 // append throw as a lost event and bumps droppedCount — so a
                 // failed *reclaim* would be reported to the operator as a
                 // destroyed donation that is in fact safely on disk. It would
-                // also make peek and size, pure reads today, able to throw into
-                // a flush that does not wrap them (TelemetryManager.kt:270, :283).
+                // also make peek — which now sweeps on this same path — and
+                // size able to throw into a flush that does not wrap them
+                // (TelemetryManager.kt:270, :283).
                 //
                 // The queue is unharmed: writeAll stages through a temp file and
                 // moves atomically, so a failure leaves the previous contents in
