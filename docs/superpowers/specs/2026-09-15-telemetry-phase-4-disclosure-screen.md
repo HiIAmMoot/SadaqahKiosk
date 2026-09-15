@@ -8,13 +8,13 @@ That distinction sets the standard for everything below. The screen's copy is or
 
 ## What recon changed
 
-### The field the original design planned to use is taken
+### No new persisted field, because the trigger is a save and not a visit
 
-`docs/superpowers/specs/2026-09-02-kiosk-telemetry-design.md:503` says "Showing it writes `analyticsActivatedAtMs` so it is not repeated on every visit." That was written before phase 3a shipped. The field now has an owner and a meaning: `MainActivity.kt:2061-2063` stamps it on the first **successful activation**, and the comment there is explicit that it "names when this kiosk began reporting" and must not drift forward.
+The original design says "Showing it writes `analyticsActivatedAtMs` so it is not repeated on every visit" (`2026-09-02-kiosk-telemetry-design.md:503`). That field is now taken: `MainActivity.kt:2061-2063` stamps it on the first **successful activation**, and the comment there is explicit that it names when the kiosk began reporting and must not drift.
 
-Overloading it would break both jobs. A kiosk that activates before the disclosure is dismissed would never show the disclosure; a kiosk that sees the disclosure first would report a reporting-start time from before it ever reported.
+A first draft of this spec added `analyticsDisclosureShownAtMs` to replace it. **That was over-built.** The concern the original design was solving is repetition on every *visit* to the settings screen. This spec triggers on a successful **destination save**, which is a rare, deliberate act — so nothing needs remembering, and the screen showing again after a re-save is correct rather than annoying: the operator just changed where data goes.
 
-**So the disclosure gets its own field, `analyticsDisclosureShownAtMs`.** Same shape, same persistence, different question.
+Deleting the field removes two failure modes with it. A new `Settings` field must be handled in `SettingsImport.merge` or a fleet import silently stamps every kiosk and none ever shows the disclosure; and a stamp that nothing clears means an operator who changes the destination is never told the new one. Both dissolve.
 
 ### There is no QR capability in this codebase
 
@@ -48,15 +48,24 @@ Eight blocks of copy, each a `Strings` member so it translates:
 | Member | Content |
 |---|---|
 | `disclosureTitle` | What this kiosk reports |
-| `disclosureIntro` | That a destination has been configured, and that reporting is now on. |
+| `disclosureIntro` | That a destination has been configured, and what will be sent to it **once reporting is switched on and tested**. |
 | `disclosureSendsHeading` | What is sent |
-| `disclosureSendsBody` | Donation amount, currency and time; the kiosk code and install id; app version; diagnostic events about the kiosk's own health. |
+| `disclosureSendsAmount` | Donation amount, currency and time. |
+| `disclosureSendsIdentity` | The kiosk's install id, and its kiosk code where one is set. |
+| `disclosureSendsHealth` | App version, and diagnostic events about the kiosk's own health. |
+| `disclosureIdentified` | That these reports identify **this kiosk**, and are not anonymous. |
 | `disclosureNeverHeading` | What is never sent |
 | `disclosureNeverBody` | Donor names, card numbers or any card data, and SumUp transaction identifiers. |
 | `disclosureDestinationHeading` | Where it goes |
 | `disclosureOffBody` | That clearing the endpoint turns reporting off. |
 
-Plus `disclosurePrivacyLabel`, `disclosureTermsLabel` for the two URL blocks, and `disclosureDismiss` for the button. **Eleven members across eight languages — 88 strings.**
+Plus `disclosurePrivacyLabel`, `disclosureTermsLabel`, `disclosureDismiss`, and `disclosureReopen` for the settings row. **Fourteen members across eight languages — 112 strings.**
+
+**`disclosureIntro` must not claim reporting is on.** At save time it is not: `Settings.analyticsEnabled` defaults to `false` (`:41`) and the gate blocks an unactivated kiosk outright (`TelemetryGate.kt:39`). A first draft of this spec had the intro say "reporting is now on", which would have been false on every fresh kiosk — the screen's one job is being accurate about the code, and that line contradicted it.
+
+**The what-is-sent copy is split by item rather than delivered as one paragraph**, for the same reason: `disclosureSendsIdentity` can be phrased so it stays true when `kioskCode` is blank, which a single blob claiming "the kiosk code" cannot.
+
+**`disclosureIdentified` restores a requirement from the original design** (`2026-09-02-kiosk-telemetry-design.md:64`) that the first draft dropped without noticing: the screen must say these reports identify the kiosk and are not anonymous. That is the single most consequential sentence on the screen, and it was missing.
 
 The destination URL, the privacy URL and the terms URL are rendered from settings, not from copy, so they are never translated and never stale.
 
@@ -64,19 +73,37 @@ The destination URL, the privacy URL and the terms URL are rendered from setting
 
 Each renders as: the label, the URL as selectable text, and a QR code beside it. The QR encodes the URL exactly as stored — no shortening, no tracking parameters, nothing added.
 
-If a URL is blank, its block is omitted entirely rather than rendering an empty QR. `AnalyticsPresenter` already computes `policyUrlsMissing` (`:154`) for the settings screen; the same condition governs here.
+**Nothing to point at means no screen.** Founder ruling, 2026-09-15: if no privacy-policy URL is set, the disclosure is skipped entirely rather than rendered with a hole in it. The screen exists to point at a published document; with no document there is nothing to point at, and a screen that renders the rest while quietly omitting the policy section would read as complete when it is not.
 
-**A known gap, put to the founder on 2026-09-15 and deliberately left as it is.** Nothing gates reporting on those URLs existing. `policyUrlsMissing`'s only consumer is a warning line at `AnalyticsSettingsScreen.kt:352-354`; `TelemetryGate` has no check on it and neither does `TelemetryManager`. So a kiosk configured with a destination and no privacy URL collects and sends donation data with no published disclosure anywhere. Options offered were: say so on this screen, gate the flush, block the save, or keep the warning line. **The founder chose the warning line** — gating would silently stop reporting on any already-deployed kiosk in that state the moment it updated. Recorded here so it is not rediscovered as a defect, and carried to `docs/known-debt.md`.
+This is self-correcting, which is why it needs no field: nothing is remembered, so if the operator later adds a policy URL and saves, the screen appears then.
+
+`AnalyticsPresenter.policyUrlsMissing` (`:154`) cannot govern this — it is an **OR over both URLs**, so one blank terms URL would suppress a perfectly good privacy URL. The disclosure decides on the privacy URL alone, and renders the terms block only if that URL is non-blank.
+
+**The gap this leaves, knowingly.** Nothing gates reporting on those URLs existing: `policyUrlsMissing`'s only consumer is a warning line at `AnalyticsSettingsScreen.kt:352-354`, and neither `TelemetryGate` nor `TelemetryManager` checks it. A kiosk with a destination and no privacy URL still collects and sends, and now simply shows no disclosure screen either. Gating the flush was offered and declined: it would silently stop reporting on any already-deployed kiosk in that state the moment it updated. Carried to `docs/known-debt.md` so it is not rediscovered as a defect.
 
 ---
 
 ## Where it appears
 
-After a destination is saved — `onAnalyticsSaveDestination` in `MainActivity.kt:634-638` — and only when `analyticsDisclosureShownAtMs == 0L`. Dismissing it stamps the field.
+After a destination is saved — `onAnalyticsSaveDestination`, `MainActivity.kt:627-631` — **and only when that save returned `UrlVerdict.Valid`**. A save the credentials layer rejected has configured nothing, so disclosing a destination that was not stored would be worse than showing nothing.
 
-**Not on activation.** The design's original wording tied it to configuring a destination, and saving the endpoint is that moment. Tying it to activation would mean an operator who saves a destination and never presses "Test connection" is never told what the kiosk reports — and that kiosk still reports, because the flush gate does not require activation for donation rows.
+### Every decision lives in a presenter, not in the composable
 
-**It is reachable again afterwards.** A one-time screen an operator dismissed six months ago is not a disclosure they can consult. The analytics settings screen gets a row that reopens it, which costs one more `Strings` member (`disclosureReopen`) and makes the total **twelve members, 96 strings**.
+`MainActivity` and Compose screens are unreachable from JVM tests here. The first draft of this spec put the trigger in a composable lambda and then asked for JVM tests of behaviour that would have lived inside it — three of the five proposed tests were unbuildable as written.
+
+So the phase adds `DisclosurePresenter`, in the shape `AnalyticsPresenter` already uses:
+
+```kotlin
+    fun view(settings: Settings, config: TelemetryConfig?): DisclosureView?
+```
+
+Null means *do not show* — no privacy URL, or no destination. The composable renders a non-null view and decides nothing. Whether to show, which blocks appear, and what each says are then all testable without a device.
+
+**Not on activation, and the first draft of this spec justified that with a false claim.** It asserted that "the flush gate does not require activation for donation rows". `TelemetryGate.kt:39` is `!inputs.activated -> FlushBlock.NOT_ACTIVATED`, with no per-table carve-out: an unactivated kiosk sends nothing at all. The claim was written without reading the gate.
+
+The true reason is better. `DonationEvents.eventFor` gates only on `analyticsEnabled` (`:48`), not on activation — so a kiosk with analytics on and a destination saved **queues donation rows locally straight away**, and that backlog uploads in bulk the moment someone first presses "Test connection". Telling the operator at save time means telling them before the rows exist. Telling them at activation means telling them as the backlog is already leaving.
+
+**It is reachable again afterwards.** A screen an operator dismissed six months ago is not a disclosure they can consult. The analytics settings screen gets a row that reopens it — one more `Strings` member (`disclosureReopen`).
 
 ---
 
@@ -94,13 +121,21 @@ The one thing translation must not do is change meaning in the exclusions list. 
 
 - **Every `Strings` implementation defines all twelve members.** The interface makes this a compile error, which is the real test — but a test that enumerates `Language.entries` and asserts no member is blank catches the copy-paste failure where a member is present and empty.
 - **No translated member contains a URL.** URLs come from settings; a hardcoded one in copy would be wrong in every fork. A test that scans all eight implementations for `http` catches it.
-- **The QR encoder round-trips.** Encode a URL, decode the bit matrix, get the same string back. ZXing ships a decoder, so this is a real round-trip rather than a golden-image comparison that breaks on any rendering change.
+- **The QR encoder round-trips.** Encode a URL, decode the bit matrix, get the same string back.
+
+  **This must use `core` only.** ZXing's `QRCodeReader` decodes from a `BinaryBitmap`, and the usual bridge to one is `BufferedImageLuminanceSource` — which lives in the `javase` artifact and would be a **second** new dependency, breaking this phase's own rule 6. `core` alone is sufficient: the encoder produces a `BitMatrix`, and `BitMatrix` can back a `BinaryBitmap` through `core`'s own `BitMatrix`-based luminance path, with no image classes involved. If the implementer finds that path does not exist in the pinned version, the honest fallback is to assert the matrix's dimensions and module pattern against a known-good vector and **say in the report that a true round-trip was not achieved** — not to quietly add `javase`.
 - **A blank URL omits its block** — the pure decision, not the composable.
 - **The dismiss stamp is one-way**: a second dismissal does not move `analyticsDisclosureShownAtMs`, exactly as `analyticsActivatedAtMs` does not drift.
 
 ### Not unit-testable, and labelled as such
 
 The screen itself. Compose screens are unreachable from JVM tests here, which is why every decision above — which blocks render, whether to show at all, what the stamp does — lives outside the composable in a presenter, as `AnalyticsPresenter` already does for the settings screen.
+
+### Known and not fixed here
+
+**The policy URLs are never validated.** `TelemetryUrl` checks only the Supabase endpoint; the privacy and terms fields accept any text. So the QR faithfully encodes whatever was typed, including something that is not a URL at all. This phase does not add validation — that belongs with the settings screen that collects them, not the screen that displays them — but device check 4 must therefore actually scan and resolve both codes rather than merely confirm a code renders.
+
+**Two stale KDocs to correct while here.** `Settings.kt:42-44` and `SettingsImport.kt:25-27` both describe `analyticsActivatedAtMs` in terms of a disclosure flag, from the era when the original design planned to overload it. Neither is true now.
 
 ### Device checks
 
