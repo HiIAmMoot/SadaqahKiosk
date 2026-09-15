@@ -57,9 +57,9 @@ Eight blocks of copy, each a `Strings` member so it translates:
 | `disclosureNeverHeading` | What is never sent |
 | `disclosureNeverBody` | Donor names, card numbers or any card data, and SumUp transaction identifiers. |
 | `disclosureDestinationHeading` | Where it goes |
-| `disclosureOffBody` | That clearing the endpoint turns reporting off. |
+| `disclosureOffBody` | **Both** switches: analytics off stops the kiosk *recording*; clearing the destination stops it *sending* what it already recorded. `DonationEvents.eventFor` gates on `analyticsEnabled` alone (`:48`), so naming only the destination would tell an operator the wrong way to stop collection. |
 
-Plus `disclosurePrivacyLabel`, `disclosureTermsLabel`, `disclosureDismiss`, and `disclosureReopen` for the settings row. **Fourteen members across eight languages — 112 strings.**
+Plus `disclosurePrivacyLabel`, `disclosureTermsLabel`, `disclosureDismiss`, and `disclosureReopen` for the settings row. **Fifteen members across eight languages — 120 strings.**
 
 **`disclosureIntro` must not claim reporting is on.** At save time it is not: `Settings.analyticsEnabled` defaults to `false` (`:41`) and the gate blocks an unactivated kiosk outright (`TelemetryGate.kt:39`). A first draft of this spec had the intro say "reporting is now on", which would have been false on every fresh kiosk — the screen's one job is being accurate about the code, and that line contradicted it.
 
@@ -119,13 +119,13 @@ The one thing translation must not do is change meaning in the exclusions list. 
 
 ### JVM-tested
 
-- **Every `Strings` implementation defines all twelve members.** The interface makes this a compile error, which is the real test — but a test that enumerates `Language.entries` and asserts no member is blank catches the copy-paste failure where a member is present and empty.
+- **Every `Strings` implementation defines all fifteen members.** The interface makes this a compile error, which is the real test — but a test that enumerates `Language.entries` and asserts no member is blank catches the copy-paste failure where a member is present and empty.
 - **No translated member contains a URL.** URLs come from settings; a hardcoded one in copy would be wrong in every fork. A test that scans all eight implementations for `http` catches it.
 - **The QR encoder round-trips.** Encode a URL, decode the bit matrix, get the same string back.
 
   **This must use `core` only.** ZXing's `QRCodeReader` decodes from a `BinaryBitmap`, and the usual bridge to one is `BufferedImageLuminanceSource` — which lives in the `javase` artifact and would be a **second** new dependency, breaking this phase's own rule 6. `core` alone is sufficient: the encoder produces a `BitMatrix`, and `BitMatrix` can back a `BinaryBitmap` through `core`'s own `BitMatrix`-based luminance path, with no image classes involved. If the implementer finds that path does not exist in the pinned version, the honest fallback is to assert the matrix's dimensions and module pattern against a known-good vector and **say in the report that a true round-trip was not achieved** — not to quietly add `javase`.
 - **A blank URL omits its block** — the pure decision, not the composable.
-- **The dismiss stamp is one-way**: a second dismissal does not move `analyticsDisclosureShownAtMs`, exactly as `analyticsActivatedAtMs` does not drift.
+- **Re-saving a destination shows the screen again.** There is no stamp and nothing is remembered — saving a destination is a rare, deliberate act, and an operator who has just changed where data goes should be told where it now goes. A test pins that the presenter is pure: the same inputs give the same view, with no hidden first-call behaviour.
 
 ### Not unit-testable, and labelled as such
 

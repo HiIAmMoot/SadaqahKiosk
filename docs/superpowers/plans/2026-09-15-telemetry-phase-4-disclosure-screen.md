@@ -4,7 +4,7 @@
 
 **Goal:** An operator who points this kiosk at a telemetry destination is shown, in their own language, what it will send and what it will never send — and a QR code to the published policy that actually discharges the obligation.
 
-**Architecture:** A pure `DisclosurePresenter` decides whether the screen shows at all and what it contains; a thin composable renders it and decides nothing. QR codes come from ZXing `core`, encoded to a `BitMatrix` this app draws itself. Copy is fourteen new `Strings` members across eight languages.
+**Architecture:** A pure `DisclosurePresenter` decides whether the screen shows at all and what it contains; a thin composable renders it and decides nothing. QR codes come from ZXing `core`, encoded to a `BitMatrix` this app draws itself. Copy is fifteen new `Strings` members across eight languages.
 
 **Tech Stack:** Kotlin 2.0.21, Jetpack Compose, JUnit 4, ZXing core (new). minSdk 30.
 
@@ -36,8 +36,9 @@ Verified at HEAD, because two claims in the first spec draft turned out to be fa
 | `TelemetryCredentials.save` | Returns `UrlVerdict` — `Valid(normalised)` or `Invalid(reason)` (`:21-23`, `:119`). |
 | `onAnalyticsSaveDestination` | `MainActivity.kt:627-631`, a lambda returning that verdict. |
 | `AnalyticsPresenter.policyUrlsMissing` | An **OR over both URLs** (`:154`). Cannot govern a per-block decision. |
-| Screen switching | A `when` chain of `showX -> XScreen(...)` at `MainActivity.kt:2670+`; state is `var showX by mutableStateOf(false)` (`:244`). |
-| `Strings` | An interface of 241 `val`s; eight `object` implementations. Analytics members sit around `:324-333`. |
+| Screen switching | A `when` chain of `showX -> XScreen(...)` inside **`AppUI`, a top-level composable at `MainActivity.kt:2554`** — *not* a member of `MainActivity`. Activity state reaches it only as parameters. |
+| `Strings` | An interface of 245 `val`s; eight `object` implementations. Analytics members sit around `:310-337`. |
+| Language → `Strings` | `TranslationManager.currentStrings()` (`:31`) maps the **current** language only; `rememberStrings()` (`:44`) is `@Composable`. **No mapping exists for an arbitrary `Language`**, so a JVM test cannot ask for German today. |
 
 ---
 
@@ -52,7 +53,7 @@ Verified at HEAD, because two claims in the first spec draft turned out to be fa
 **Modified**
 - `gradle/libs.versions.toml` — one version, one library.
 - `app/build.gradle.kts` — one `implementation`.
-- `Translations.kt` — fourteen members in the interface, fourteen overrides in each of eight objects.
+- `Translations.kt` — fifteen members in the interface, fifteen overrides in each of eight objects, plus one new `stringsFor` mapping.
 - `MainActivity.kt` — one state var, one trigger, one switch arm, one stale KDoc.
 - `screens/AnalyticsSettingsScreen.kt` — one row to reopen.
 - `model/Settings.kt`, `model/SettingsImport.kt` — stale KDocs only, no fields.
@@ -130,19 +131,10 @@ class DisclosurePresenterTest {
         assertEquals("https://abc.supabase.co", view.destinationUrl)
     }
 
-    /**
-     * The identity copy claims a kiosk code. When none is set that claim is
-     * false, so the flag exists to let the screen say the true thing instead.
-     */
-    @Test
-    fun `a blank kiosk code is reported so the copy can stay true`() {
-        assertTrue(DisclosurePresenter.view(settings(kioskCode = ""), "https://x")!!.kioskCodeMissing)
-        assertEquals(false, DisclosurePresenter.view(settings())!!.kioskCodeMissing)
-    }
 }
 ```
 
-The last assertion calls `view(settings())` with one argument — give `destinationUrl` no default, and fix that call to pass one. It is written this way deliberately: if you find yourself adding a default to make a test compile, the test is wrong, not the signature.
+**There is deliberately no `kioskCodeMissing` flag.** An earlier draft carried one so the screen could vary the identity line — but the copy reads "its kiosk code if one is set", which is already true whether or not one is. A flag with no rendering variant to select is a field that looks load-bearing and does nothing, and a test pinning it would assert a rationale the copy itself falsifies.
 
 - [ ] **Step 3: Run and watch them fail**
 
@@ -167,11 +159,7 @@ data class DisclosureView(
     val privacyUrl: String,
     /** Null when no terms URL is set. The terms block is optional; the privacy
      *  policy is not — without it there is no screen at all. */
-    val termsUrl: String?,
-    /** The identity copy would otherwise claim a kiosk code that does not
-     *  exist. A deployment with no kiosk-code scheme is identified by its
-     *  install id alone. */
-    val kioskCodeMissing: Boolean
+    val termsUrl: String?
 )
 
 object DisclosurePresenter {
@@ -195,8 +183,7 @@ object DisclosurePresenter {
         return DisclosureView(
             destinationUrl = destinationUrl,
             privacyUrl = settings.analyticsPrivacyPolicyUrl,
-            termsUrl = settings.analyticsTermsUrl.takeIf { it.isNotBlank() },
-            kioskCodeMissing = settings.kioskCode.isBlank()
+            termsUrl = settings.analyticsTermsUrl.takeIf { it.isNotBlank() }
         )
     }
 }
@@ -222,7 +209,7 @@ git commit -m "Decide the disclosure screen outside the composable"
 - Create: `app/src/main/java/com/sadaqah/kiosk/telemetry/QrEncoder.kt`, `app/src/test/java/com/sadaqah/kiosk/telemetry/QrEncoderTest.kt`
 
 **Interfaces:**
-- Produces: `QrEncoder.encode(text: String, size: Int = 512): BitMatrix`
+- Produces: `QrEncoder.encode(text: String): BitMatrix?`
 
 - [ ] **Step 1: Add exactly one dependency**
 
@@ -269,7 +256,11 @@ zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing-c
     }
 ```
 
-Write `decode` against ZXing `core` only. If — and only if — you establish that `core` in the pinned version cannot back a `BinaryBitmap` without `javase`, **stop and report that** rather than adding the artifact: fall back to asserting the matrix is square, non-empty, and has the quiet-zone border a valid symbol carries, and state plainly in your report that a true round trip was not achieved and why.
+**The route is `RGBLuminanceSource` + `HybridBinarizer`, both in `core`.** Walk the `BitMatrix` into an `IntArray` of black and white pixels, wrap it in `RGBLuminanceSource`, wrap that in `BinaryBitmap(HybridBinarizer(...))`, and hand it to `QRCodeReader().decode(...)`. There is no `BitMatrix`-to-`BinaryBitmap` constructor, which is what an earlier draft of this plan and its spec both assumed — the assumption was wrong in both, and the escape hatch it offered would have been taken for the wrong reason.
+
+Because `encode` now returns module resolution, scale each module up when building the pixel array — a binarizer given a 25x25 image has too little to work with.
+
+Add a third test for the null path: `assertNull(QrEncoder.encode(""))`. An empty URL is reachable in production, since nothing validates these fields.
 
 - [ ] **Step 3: Run and watch it fail**
 
@@ -302,12 +293,35 @@ object QrEncoder {
      *  payload size. */
     private val hints = mapOf(
         EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
-        EncodeHintType.MARGIN to 2,
+        // Four modules, which is the quiet zone the QR specification requires.
+        // Less than that still decodes in a test harness reading a clean
+        // matrix and fails against a phone camera pointed at a lit screen —
+        // a defect no unit test on this machine can catch.
+        EncodeHintType.MARGIN to 4,
         EncodeHintType.CHARACTER_SET to "UTF-8"
     )
 
-    fun encode(text: String, size: Int = 512): BitMatrix =
-        QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, hints)
+    /**
+     * Returns the symbol at **module resolution** — roughly 25x25 to 60x60 —
+     * not at pixel size. The caller scales it when drawing.
+     *
+     * Asking ZXing for 512x512 would return a 512x512 matrix, and a Canvas
+     * drawing one rect per dark module would then issue ~130,000 draw calls
+     * per code, twice per frame. Passing 0 lets the writer pick the smallest
+     * version that fits, and the screen scales ~45 rects per side instead.
+     *
+     * Null rather than a throw: these URLs are never validated anywhere
+     * (`TelemetryUrl` checks only the Supabase endpoint), so the input can be
+     * empty or too long for any QR version, and `QRCodeWriter.encode` throws
+     * on both. A throw during composition would take down a kiosk in lock
+     * task mode, which cannot be dismissed. The screen renders the URL as
+     * text and omits the code.
+     */
+    fun encode(text: String): BitMatrix? = try {
+        QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, 0, 0, hints)
+    } catch (_: Exception) {
+        null
+    }
 }
 ```
 
@@ -331,9 +345,9 @@ git commit -m "Encode policy URLs as QR, since lock task blocks a browser"
 
 ---
 
-## Task 3: Fourteen members, eight languages
+## Task 3: Fifteen members, eight languages
 
-Mechanical and large: fourteen interface members plus fourteen overrides in each of eight objects — 112 strings. Batched as one task because it is the same edit repeated, and splitting it would buy eight review seats for one diff.
+Mechanical and large: fifteen interface members plus fifteen overrides in each of eight objects — 120 strings. Batched as one task because it is the same edit repeated, and splitting it would buy eight review seats for one diff.
 
 **Files:**
 - Modify: `app/src/main/java/com/sadaqah/kiosk/Translations.kt`
@@ -356,14 +370,7 @@ Check whether `TranslationsTest.kt` exists; if not, create it.
     fun `every language defines every disclosure member`() {
         Language.entries.forEach { language ->
             val s = stringsFor(language)
-            listOf(
-                s.disclosureTitle, s.disclosureIntro, s.disclosureSendsHeading,
-                s.disclosureSendsAmount, s.disclosureSendsIdentity, s.disclosureSendsHealth,
-                s.disclosureIdentified, s.disclosureNeverHeading, s.disclosureNeverBody,
-                s.disclosureDestinationHeading, s.disclosureOffBody,
-                s.disclosurePrivacyLabel, s.disclosureTermsLabel,
-                s.disclosureDismiss, s.disclosureReopen
-            ).forEachIndexed { i, value ->
+            disclosureMembers(s).forEachIndexed { i, value ->
                 assertTrue("${language.code} member $i is blank", value.isNotBlank())
             }
         }
@@ -378,15 +385,40 @@ Check whether `TranslationsTest.kt` exists; if not, create it.
     fun `no translated disclosure copy contains a url`() {
         Language.entries.forEach { language ->
             val s = stringsFor(language)
-            listOf(s.disclosureIntro, s.disclosureSendsIdentity, s.disclosureOffBody,
-                   s.disclosureDestinationHeading, s.disclosureIdentified).forEach {
+            disclosureMembers(s).forEach {
                 assertFalse("${language.code}: copy must not embed a URL", it.contains("http"))
             }
         }
     }
 ```
 
-`stringsFor` is the existing `when (language)` mapping — reuse it rather than writing a second one.
+**Both tests iterate one shared `disclosureMembers(s): List<String>` helper listing all fifteen, so the two cannot drift apart and neither can silently cover a subset — the URL scan in an earlier draft checked five of fifteen while its name claimed all.
+
+`stringsFor` does not exist yet — add it, as Step 2a below.** An earlier draft of this plan told you to reuse it, which was wrong: `Translations.kt` has `currentStrings()` for the *current* language and `rememberStrings()` which is `@Composable` and unreachable from a JVM test. Neither can be asked for German.
+
+- [ ] **Step 2a: Add the arbitrary-language mapping the tests need**
+
+`TranslationManager` gains one function, and `currentStrings()` delegates to it so the `when` exists once rather than twice:
+
+```kotlin
+    /** Exposed for tests, which must be able to ask for a language other than
+     *  the current one. [rememberStrings] is @Composable and [currentStrings]
+     *  reads the live selection, so neither can answer "what does German say". */
+    fun stringsFor(language: Language): Strings = when (language) {
+        Language.DUTCH   -> DutchStrings
+        Language.ENGLISH -> EnglishStrings
+        Language.GERMAN  -> GermanStrings
+        Language.FRENCH  -> FrenchStrings
+        Language.SPANISH -> SpanishStrings
+        Language.ITALIAN -> ItalianStrings
+        Language.TURKISH -> TurkishStrings
+        Language.ARABIC  -> ArabicStrings
+    }
+
+    fun currentStrings(): Strings = stringsFor(_currentLanguage.value)
+```
+
+The test calls `TranslationManager.stringsFor(language)`.
 
 - [ ] **Step 3: Write the English copy first, and treat it as the source**
 
@@ -406,14 +438,19 @@ English is the text every translation is made from, so it is worth getting exact
     override val disclosureNeverBody =
         "Donor names. Card numbers or any card data. SumUp transaction identifiers."
     override val disclosureDestinationHeading = "Where it goes"
-    override val disclosureOffBody = "Clearing the destination turns reporting off."
+    override val disclosureOffBody =
+        "Switching analytics off stops this kiosk recording anything. Clearing the destination stops it sending what it has already recorded."
     override val disclosurePrivacyLabel = "Privacy policy"
     override val disclosureTermsLabel = "Terms"
     override val disclosureDismiss = "Close"
     override val disclosureReopen = "What this kiosk reports"
 ```
 
-Note `disclosureIntro` says "once reporting is switched on and tested" and **not** "reporting is now on". At the moment this screen appears, `analyticsEnabled` defaults to `false` and the gate blocks an unactivated kiosk outright, so the latter would be false on every fresh kiosk.
+Two lines here are load-bearing and were wrong in an earlier draft.
+
+`disclosureIntro` says "once reporting is switched on and tested" and **not** "reporting is now on". At the moment this screen appears `analyticsEnabled` defaults to `false` (`Settings.kt:41`) and the gate blocks an unactivated kiosk outright (`TelemetryGate.kt:39`), so the latter is false on every fresh kiosk.
+
+`disclosureOffBody` names **both** switches because they do different things. `DonationEvents.eventFor` gates on `analyticsEnabled` alone (`:48`), so clearing the destination stops *sending* while the kiosk carries on *writing identified donation rows to disk*. An earlier draft said only "clearing the destination turns reporting off", which told an operator the wrong way to stop data collection — on the one screen whose whole purpose is being accurate about what the code does.
 
 - [ ] **Step 4: Translate into the remaining seven**
 
@@ -441,7 +478,7 @@ git commit -m "Add disclosure copy in eight languages"
 - Modify: `MainActivity.kt`, `screens/AnalyticsSettingsScreen.kt`, `model/Settings.kt`, `model/SettingsImport.kt`
 
 **Interfaces:**
-- Consumes: `DisclosurePresenter.view` (Task 1), `QrEncoder.encode` (Task 2), the fourteen `Strings` members (Task 3).
+- Consumes: `DisclosurePresenter.view` (Task 1), `QrEncoder.encode` (Task 2), the fifteen `Strings` members (Task 3).
 
 - [ ] **Step 1: Reconnaissance**
 
@@ -460,6 +497,17 @@ Left-to-right in every language including Arabic: no `LayoutDirection` override 
 - [ ] **Step 3: Trigger it on a successful save**
 
 `MainActivity.kt:244` gains `var disclosureView by mutableStateOf<DisclosureView?>(null)`.
+
+**`AppUI` is a top-level composable (`MainActivity.kt:2554`), not a member of `MainActivity`**, so that state does not reach the switch chain by being in scope — it has to be passed. An earlier draft of this plan wrote the switch arm as though it were inside the Activity, and it would not have compiled.
+
+`AppUI` gains two parameters alongside the analytics ones it already takes:
+
+```kotlin
+    disclosureView: DisclosureView?,
+    onDismissDisclosure: () -> Unit,
+```
+
+and the call site inside `setContent` passes `disclosureView = disclosureView` and `onDismissDisclosure = { disclosureView = null }`. Follow how `analyticsView` and `onShowAnalyticsSettings` are already threaded through — the shape is identical.
 
 `onAnalyticsSaveDestination` (`:627-631`) becomes:
 
@@ -480,13 +528,15 @@ Left-to-right in every language including Arabic: no `LayoutDirection` override 
 
 A null from the presenter leaves the state null and no screen appears — which is the no-policy case, handled without a branch here.
 
+**The policy-URL save must trigger it too, or a common order of operations never shows the screen at all.** An operator on a fresh kiosk who saves the destination *before* filling in the policy URLs gets a null view — correctly, there is no policy yet — and then nothing ever calls the presenter again, because the destination is already saved. `onAnalyticsPolicyUrlsChange` (`MainActivity.kt:634-636`) therefore runs the same check after it stores the URLs, against the destination already in `analyticsSnapshot`. Device check 1 exercises exactly this order.
+
 The switch chain gains an arm **before** `showAnalyticsSettings`, so the disclosure sits above the settings screen it was opened from:
 
 ```kotlin
             disclosureView != null -> DisclosureScreen(
-                view = disclosureView!!,
+                view = disclosureView,
                 strings = rememberStrings(),
-                onDismiss = { disclosureView = null }
+                onDismiss = onDismissDisclosure
             )
 ```
 
@@ -500,7 +550,13 @@ A disclosure an operator dismissed months ago is not one they can consult; this 
 
 `Settings.kt:42-44` and `SettingsImport.kt:25-27` both describe `analyticsActivatedAtMs` in terms of a disclosure flag, from when the original design planned to overload it for that. It has never carried that meaning in shipped code, and this phase deliberately adds no field. Rewrite both to describe what it actually records: when this kiosk first successfully reported.
 
-- [ ] **Step 6: Build, full suite, commit**
+- [ ] **Step 6: Record the gap the spec names**
+
+The spec carries a known gap it explicitly says to record: nothing gates reporting on the policy URLs existing, so a kiosk with a destination and no privacy URL collects and sends with no published disclosure anywhere — and after this phase, with no disclosure screen either. Gating the flush was offered to the founder and declined, because it would silently stop reporting on any already-deployed kiosk in that state.
+
+Add an entry to `docs/known-debt.md` in the shape the file already uses — **What**, **Why deferred**, **What it costs to leave**, **What fixing it needs**, **Established in**. Without this the decision lives only in a spec that a later phase supersedes.
+
+- [ ] **Step 7: Build, full suite, commit**
 
 The screen itself has no JVM test and cannot have one — say so in your report rather than writing a test that asserts nothing. Every decision it depends on is already pinned in Task 1.
 
@@ -527,6 +583,7 @@ git commit -m "Show the disclosure after a destination is saved"
 | Reachable again from settings | Task 4 Step 4 |
 | Exactly one new dependency | Task 2 Steps 1, 5 — with a verification command |
 | No new `Settings` field | Enforced by omission; Task 4 Step 5 corrects the KDocs that implied one |
+| Known gap recorded in `docs/known-debt.md` | Task 4 Step 6 |
 | LTR in Arabic | Task 4 Step 2 |
 | Every decision outside the composable | Task 1 |
 | Device checks 1-6 | Manual; stay in the spec |
