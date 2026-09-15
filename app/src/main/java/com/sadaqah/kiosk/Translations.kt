@@ -628,7 +628,7 @@ object DutchStrings : Strings {
     override val disclosureSendsHeading = "Wat wordt verstuurd"
     override val disclosureSendsAmount = "Het bedrag, de valuta en het tijdstip van elke donatie."
     override val disclosureSendsIdentity = "De installatie-ID van deze kiosk, en de kioskcode indien ingesteld."
-    override val disclosureSendsHealth = "De app-versie, en gebeurtenissen over de gezondheid van deze kiosk zelf — herstarts, kaartlezerproblemen, crashes."
+    override val disclosureSendsHealth = "De app-versie, en gebeurtenissen over de gezondheid van deze kiosk zelf — herstarts, kaartlezerproblemen, crashes, inclusief de technische details van de crash."
     override val disclosureIdentified =
         "Deze rapporten identificeren deze kiosk. Ze zijn niet anoniem."
     override val disclosureNeverHeading = "Wat nooit wordt verstuurd"
@@ -636,7 +636,7 @@ object DutchStrings : Strings {
         "Namen van donateurs. Kaartnummers of andere kaartgegevens. SumUp-transactie-ID's."
     override val disclosureDestinationHeading = "Waar het naartoe gaat"
     override val disclosureOffBody =
-        "Analyse uitschakelen zorgt dat deze kiosk stopt met alles registreren. De bestemming wissen zorgt dat hij stopt met versturen wat al geregistreerd is."
+        "Analyse uitschakelen zorgt dat deze kiosk stopt met alles registreren. De bestemming wissen zorgt dat hij stopt met versturen wat al geregistreerd is, en verwijdert wat nog in de wachtrij staat."
     override val disclosurePrivacyLabel = "Privacybeleid"
     override val disclosureTermsLabel = "Voorwaarden"
     override val disclosureDismiss = "Sluiten"
@@ -828,7 +828,7 @@ object EnglishStrings : Strings {
     override val disclosureSendsHeading = "What is sent"
     override val disclosureSendsAmount = "The amount, currency and time of each donation."
     override val disclosureSendsIdentity = "This kiosk's install id, and its kiosk code if one is set."
-    override val disclosureSendsHealth = "The app version, and events about this kiosk's own health — restarts, card reader problems, crashes."
+    override val disclosureSendsHealth = "The app version, and events about this kiosk's own health — restarts, card reader problems, and crashes, including the technical detail of each crash."
     override val disclosureIdentified =
         "These reports identify this kiosk. They are not anonymous."
     override val disclosureNeverHeading = "What is never sent"
@@ -836,7 +836,7 @@ object EnglishStrings : Strings {
         "Donor names. Card numbers or any card data. SumUp transaction identifiers."
     override val disclosureDestinationHeading = "Where it goes"
     override val disclosureOffBody =
-        "Switching analytics off stops this kiosk recording anything. Clearing the destination stops it sending what it has already recorded."
+        "Switching analytics off stops this kiosk recording anything. Clearing the destination stops it sending what it has already recorded, and deletes anything still queued."
     override val disclosurePrivacyLabel = "Privacy policy"
     override val disclosureTermsLabel = "Terms"
     override val disclosureDismiss = "Close"
@@ -1112,7 +1112,7 @@ object GermanStrings : Strings {
     override val disclosureSendsHeading = "Was gesendet wird"
     override val disclosureSendsAmount = "Betrag, Währung und Uhrzeit jeder Spende."
     override val disclosureSendsIdentity = "Die Installations-ID dieses Kiosks und, falls festgelegt, der Kiosk-Code."
-    override val disclosureSendsHealth = "Die App-Version sowie Ereignisse zum eigenen Zustand dieses Kiosks — Neustarts, Kartenleser-Probleme, Abstürze."
+    override val disclosureSendsHealth = "Die App-Version sowie Ereignisse zum eigenen Zustand dieses Kiosks — Neustarts, Kartenleser-Probleme, Abstürze, einschließlich der technischen Details des Absturzes."
     override val disclosureIdentified =
         "Diese Meldungen identifizieren diesen Kiosk. Sie sind nicht anonym."
     override val disclosureNeverHeading = "Was niemals gesendet wird"
@@ -1120,7 +1120,7 @@ object GermanStrings : Strings {
         "Namen von Spendern. Kartennummern oder sonstige Kartendaten. SumUp-Transaktionskennungen."
     override val disclosureDestinationHeading = "Wohin es geht"
     override val disclosureOffBody =
-        "Analyse ausschalten beendet jede Aufzeichnung durch diesen Kiosk. Das Ziel zu löschen beendet den Versand dessen, was bereits aufgezeichnet wurde."
+        "Analyse ausschalten beendet jede Aufzeichnung durch diesen Kiosk. Das Ziel zu löschen beendet den Versand dessen, was bereits aufgezeichnet wurde, und löscht, was noch in der Warteschlange steht."
     override val disclosurePrivacyLabel = "Datenschutzerklärung"
     override val disclosureTermsLabel = "Nutzungsbedingungen"
     override val disclosureDismiss = "Schließen"
@@ -1396,7 +1396,7 @@ object FrenchStrings : Strings {
     override val disclosureSendsHeading = "Ce qui est envoyé"
     override val disclosureSendsAmount = "Le montant, la devise et l'heure de chaque don."
     override val disclosureSendsIdentity = "L'ID d'installation de ce kiosque, ainsi que son code de kiosque s'il en a un."
-    override val disclosureSendsHealth = "La version de l'application, et des événements sur l'état de ce kiosque lui-même — redémarrages, problèmes de lecteur de carte, plantages."
+    override val disclosureSendsHealth = "La version de l'application, et des événements sur l'état de ce kiosque lui-même — redémarrages, problèmes de lecteur de carte, plantages, y compris le détail technique du plantage."
     override val disclosureIdentified =
         "Ces rapports identifient ce kiosque. Ils ne sont pas anonymes."
     override val disclosureNeverHeading = "Ce qui n'est jamais envoyé"
@@ -1404,7 +1404,7 @@ object FrenchStrings : Strings {
         "Les noms des donateurs. Les numéros de carte ou toute autre donnée de carte. Les identifiants de transaction SumUp."
     override val disclosureDestinationHeading = "Où cela va"
     override val disclosureOffBody =
-        "Désactiver les données analytiques arrête tout enregistrement par ce kiosque. Effacer la destination arrête l'envoi de ce qui a déjà été enregistré."
+        "Désactiver les données analytiques arrête tout enregistrement par ce kiosque. Effacer la destination arrête l'envoi de ce qui a déjà été enregistré, et supprime ce qui est encore en attente."
     override val disclosurePrivacyLabel = "Politique de confidentialité"
     override val disclosureTermsLabel = "Conditions"
     override val disclosureDismiss = "Fermer"
@@ -1680,7 +1680,7 @@ object SpanishStrings : Strings {
     override val disclosureSendsHeading = "Qué se envía"
     override val disclosureSendsAmount = "El importe, la moneda y la hora de cada donación."
     override val disclosureSendsIdentity = "El ID de instalación de este kiosco, y su código de kiosco si tiene uno configurado."
-    override val disclosureSendsHealth = "La versión de la app, y eventos sobre el propio estado de este kiosco — reinicios, problemas del lector de tarjetas, fallos."
+    override val disclosureSendsHealth = "La versión de la app, y eventos sobre el propio estado de este kiosco — reinicios, problemas del lector de tarjetas, fallos, incluido el detalle técnico del fallo."
     override val disclosureIdentified =
         "Estos informes identifican a este kiosco. No son anónimos."
     override val disclosureNeverHeading = "Qué nunca se envía"
@@ -1688,7 +1688,7 @@ object SpanishStrings : Strings {
         "Nombres de donantes. Números de tarjeta o cualquier dato de tarjeta. Identificadores de transacción de SumUp."
     override val disclosureDestinationHeading = "A dónde va"
     override val disclosureOffBody =
-        "Desactivar la analítica hace que este kiosco deje de registrar cualquier cosa. Borrar el destino hace que deje de enviar lo que ya ha registrado."
+        "Desactivar la analítica hace que este kiosco deje de registrar cualquier cosa. Borrar el destino hace que deje de enviar lo que ya ha registrado, y elimina lo que aún está en cola."
     override val disclosurePrivacyLabel = "Política de privacidad"
     override val disclosureTermsLabel = "Términos"
     override val disclosureDismiss = "Cerrar"
@@ -1964,7 +1964,7 @@ object ItalianStrings : Strings {
     override val disclosureSendsHeading = "Cosa viene inviato"
     override val disclosureSendsAmount = "L'importo, la valuta e l'orario di ogni donazione."
     override val disclosureSendsIdentity = "L'ID di installazione di questo kiosk, e il suo codice kiosk se impostato."
-    override val disclosureSendsHealth = "La versione dell'app, ed eventi sullo stato del kiosk stesso — riavvii, problemi al lettore di carte, crash."
+    override val disclosureSendsHealth = "La versione dell'app, ed eventi sullo stato del kiosk stesso — riavvii, problemi al lettore di carte, crash, incluso il dettaglio tecnico del crash."
     override val disclosureIdentified =
         "Questi report identificano questo kiosk. Non sono anonimi."
     override val disclosureNeverHeading = "Cosa non viene mai inviato"
@@ -1972,7 +1972,7 @@ object ItalianStrings : Strings {
         "Nomi dei donatori. Numeri di carta o qualsiasi dato di carta. Identificativi di transazione SumUp."
     override val disclosureDestinationHeading = "Dove va"
     override val disclosureOffBody =
-        "Disattivare l'analisi interrompe qualsiasi registrazione da parte di questo kiosk. Cancellare la destinazione interrompe l'invio di ciò che è già stato registrato."
+        "Disattivare l'analisi interrompe qualsiasi registrazione da parte di questo kiosk. Cancellare la destinazione interrompe l'invio di ciò che è già stato registrato, ed elimina ciò che è ancora in coda."
     override val disclosurePrivacyLabel = "Informativa privacy"
     override val disclosureTermsLabel = "Termini"
     override val disclosureDismiss = "Chiudi"
@@ -2248,7 +2248,7 @@ object TurkishStrings : Strings {
     override val disclosureSendsHeading = "Neler gönderiliyor"
     override val disclosureSendsAmount = "Her bağışın tutarı, para birimi ve zamanı."
     override val disclosureSendsIdentity = "Bu kioskun kurulum kimliği ve varsa kiosk kodu."
-    override val disclosureSendsHealth = "Uygulama sürümü ve bu kioskun kendi sağlığıyla ilgili olaylar — yeniden başlatmalar, kart okuyucu sorunları, çökmeler."
+    override val disclosureSendsHealth = "Uygulama sürümü ve bu kioskun kendi sağlığıyla ilgili olaylar — yeniden başlatmalar, kart okuyucu sorunları, çökmeler ve çökmenin teknik ayrıntıları."
     override val disclosureIdentified =
         "Bu raporlar bu kioskun kimliğini belirtir. Anonim değildirler."
     override val disclosureNeverHeading = "Neler asla gönderilmez"
@@ -2256,7 +2256,7 @@ object TurkishStrings : Strings {
         "Bağışçı adları. Kart numaraları veya herhangi bir kart verisi. SumUp işlem kimlikleri."
     override val disclosureDestinationHeading = "Nereye gidiyor"
     override val disclosureOffBody =
-        "Analitiği kapatmak bu kioskun her şeyi kaydetmesini durdurur. Hedefi temizlemek zaten kaydedilmiş olanların gönderilmesini durdurur."
+        "Analitiği kapatmak bu kioskun her şeyi kaydetmesini durdurur. Hedefi temizlemek zaten kaydedilmiş olanların gönderilmesini durdurur ve sırada bekleyenleri siler."
     override val disclosurePrivacyLabel = "Gizlilik politikası"
     override val disclosureTermsLabel = "Şartlar"
     override val disclosureDismiss = "Kapat"
@@ -2532,7 +2532,7 @@ object ArabicStrings : Strings {
     override val disclosureSendsHeading = "ما الذي يُرسَل"
     override val disclosureSendsAmount = "المبلغ والعملة ووقت كل تبرع."
     override val disclosureSendsIdentity = "معرّف التثبيت لهذا الكشك، ورمز الكشك إن وُجد."
-    override val disclosureSendsHealth = "إصدار التطبيق، وأحداث عن حالة هذا الكشك نفسه — إعادة التشغيل، مشاكل قارئ البطاقات، الأعطال."
+    override val disclosureSendsHealth = "إصدار التطبيق، وأحداث عن حالة هذا الكشك نفسه — إعادة التشغيل، مشاكل قارئ البطاقات، الأعطال، بما في ذلك التفاصيل التقنية للعطل."
     override val disclosureIdentified =
         "تُعرّف هذه التقارير هذا الكشك. إنها ليست مجهولة الهوية."
     override val disclosureNeverHeading = "ما لا يُرسَل أبداً"
@@ -2540,7 +2540,7 @@ object ArabicStrings : Strings {
         "أسماء المتبرعين. أرقام البطاقات أو أي بيانات بطاقة. معرّفات معاملات SumUp."
     override val disclosureDestinationHeading = "إلى أين يذهب"
     override val disclosureOffBody =
-        "إيقاف التحليلات يوقف تسجيل أي شيء بواسطة هذا الكشك. مسح الوجهة يوقف إرسال ما تم تسجيله بالفعل."
+        "إيقاف التحليلات يوقف تسجيل أي شيء بواسطة هذا الكشك. مسح الوجهة يوقف إرسال ما تم تسجيله بالفعل، ويحذف ما لا يزال في الانتظار."
     override val disclosurePrivacyLabel = "سياسة الخصوصية"
     override val disclosureTermsLabel = "الشروط"
     override val disclosureDismiss = "إغلاق"
