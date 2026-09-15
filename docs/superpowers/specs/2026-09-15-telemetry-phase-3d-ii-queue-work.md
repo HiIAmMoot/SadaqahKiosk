@@ -10,11 +10,11 @@ The phase was inherited from 3d-i's "Required of 3d-ii" list, written before any
 
 ### The finding that reorders the phase: every append is O(queue)
 
-`TelemetryOutbox.append` is `synchronized(lock)` over a body ending in `compactIfNeeded` (`:58`), and `compactIfNeeded` opens with an unconditional `readAll()` (`:109`). `readAll` reads every line and JSON-parses each one (`:132-135`).
+`TelemetryOutbox.append` is `synchronized(lock)` over a body ending in `compactIfNeeded` (`:58`), and `compactIfNeeded` opens with an unconditional `readAll()` (`:109`). `readAll` reads every line and JSON-parses each one (`:132-137`).
 
 So **every append reads and parses the entire queue**, holding the lock, on the path a donation travels. At the 5000-row cap that is 5000 `JsonParser.parseString` calls to append one row.
 
-The method's KDoc (`:103-107`) says it "reclaims in batches rather than on every append" and that rewriting each time "would put a full read-and-write on the donation path". Only the *write* was ever batched. The read is on every call, and the comment reads as though it is not — which is why this survived three phases.
+The method's KDoc (`:102-107`) says it "reclaims in batches rather than on every append" and that rewriting each time "would put a full read-and-write on the donation path". Only the *write* was ever batched. The read is on every call, and the comment reads as though it is not — which is why this survived three phases.
 
 **A kiosk runs unattended for days, months, or years without a restart.** Anything O(n) per append with a growing n compounds for the life of the deployment, and anything whose bound depends on a process restart does not have a bound. That lens governs every decision below.
 
@@ -22,7 +22,7 @@ The method's KDoc (`:103-107`) says it "reclaims in batches rather than on every
 
 The inherited requirement was a bounded write with a lock timeout, after three earlier spec reviews found Criticals in that design. **Declined**, but not for the reason first drafted.
 
-The first draft argued that once appends stop reading, "the lock is held for an `appendText` and nothing else." **That is false.** `peek`, `remove` and `size` all still call `readAll` under the same monitor (`:66-72`, `:75-78`, `:80`), and `remove` writes the whole file. A crash handler can still arrive while a flush holds the lock across a full read.
+The first draft argued that once appends stop reading, "the lock is held for an `appendText` and nothing else." **That is false.** `peek`, `remove` and `size` all still call `readAll` under the same monitor (`:73-79`, `:81-84`, `:86`), and `remove` writes the whole file. A crash handler can still arrive while a flush holds the lock across a full read.
 
 The argument that does hold: **no network call ever happens inside the lock.** `TelemetryManager` peeks, releases, uploads, and only then re-acquires to remove. So the longest any thread can hold the monitor is one local file read-and-write over a queue the count cap bounds at 5000 rows — sub-second on device storage, and bounded by construction rather than by hope. `MainActivity.kt:377` already reasons this way: the drop callback "can delay the chain but never break it."
 
@@ -55,10 +55,10 @@ The argument that does **not** hold, and is withdrawn: the first draft claimed t
 
 ## What already exists and is NOT rebuilt
 
-- `writeAll`'s temp-file-plus-atomic-move (`:124-130`).
-- `parseLine`'s skip-on-failure (`:133-149`).
-- The `PLAUSIBLE_EPOCH_FLOOR_MS` guard, which stops a dead-RTC kiosk aging out its own queue once the clock is corrected (`:104-113`).
-- The path-keyed lock (`:182-188`). This phase extends its idiom.
+- `writeAll`'s temp-file-plus-atomic-move (`:137-144`).
+- `parseLine`'s skip-on-failure (`:146-163`).
+- The `PLAUSIBLE_EPOCH_FLOOR_MS` guard, which stops a dead-RTC kiosk aging out its own queue once the clock is corrected (`:118-130`).
+- The path-keyed lock (`:180-189`). This phase extends its idiom.
 - Everything 3d-i shipped on the send path.
 
 ---
@@ -72,14 +72,19 @@ An in-memory count cannot live on the instance: two `TelemetryOutbox` objects ex
 ```kotlin
     private class QueueState {
         var rows: Int = UNKNOWN          // sentinel; a real count is never negative
-        var unprotectedRows: Int = 0
         var lastCompactionMs: Long = 0L
     }
 ```
 
 Read and written only under the path-keyed monitor, so no field needs volatility of its own.
 
-**Every entry point loads before it uses.** `append`, `size`, `peek` and `remove` each begin with the same guard: if `rows == UNKNOWN`, do one `readAll` and populate all three fields from it. This is not optional and not implicit — the first draft of this spec described the load in prose and then omitted it from the `append` code block, which would have left `rows` incrementing from the sentinel, `size()` reporting near-zero while donations sat on disk, and `TelemetryGate` reporting `EMPTY_QUEUE` forever.
+**Two fields, not three.** An earlier draft also cached `unprotectedRows`, maintained on the donation path. Nothing reads it: once eviction sizes itself from the filtered list (Part 2), every quantity it needs comes from that list. A counter kept current on the hot path and read by nothing is worse than no counter — it looks load-bearing to the next reader and costs a branch per append.
+
+**`lastCompactionMs` has no value in the file**, because the file does not record when it was last compacted. Neither obvious default works: leaving it `0` makes the first append of every process overdue, and stamping it `now` at load makes the age sweep depend on a process restart, which Non-negotiable 3 forbids. See the load rule below.
+
+**Every entry point loads before it uses.** `append`, `size`, `peek` and `remove` each begin with the same guard: if `rows == UNKNOWN`, load. This is not optional and not implicit — the first draft described the load in prose and then omitted it from the `append` code block, which would have left `rows` incrementing from the sentinel, `size()` reporting near-zero while donations sat on disk, and `TelemetryGate` reporting `EMPTY_QUEUE` forever.
+
+**The first load *is* a compaction.** It already reads the whole file, so it applies the caps in the same pass, writes back only if something was droppable, sets `rows` from the surviving list, and stamps `lastCompactionMs = now`. That resolves the `lastCompactionMs` problem exactly: the stamp is real rather than invented, the process start gets a free age sweep, and the first append does **one** read rather than the two a load-then-compact sequence would cost.
 
 That one read per process is unavoidable: the file outlives the process.
 
@@ -92,7 +97,6 @@ That one read per process is unavoidable: the file outlives the process.
         file.parentFile?.mkdirs()
         file.appendText(serialise(QueuedEvent(id, table, payload, now)))
         state.rows += 1
-        if (table !in protectedTables) state.unprotectedRows += 1
         compactIfDue(now)
     }
 ```
@@ -103,11 +107,16 @@ If `appendText` throws, the counts are not bumped — the increments follow the 
 
 ```kotlin
     private fun compactIfDue(now: Long) {
-        val overCap = state.rows > maxEvents + compactSlack
-        val overdue = now - state.lastCompactionMs >= compactIntervalMs
+        val overCap = state.rows >= maxEvents + compactSlack
+        val sinceLast = now - state.lastCompactionMs
+        val overdue = sinceLast >= compactIntervalMs || now < state.lastCompactionMs
         if (overCap || overdue) compactNow(now)
     }
 ```
+
+**`>=`, not `>`.** The behaviour being preserved is `discarded >= compactSlack` (`TelemetryOutbox.kt:112`), which fires when the queue reaches `maxEvents + compactSlack`, not one row past it. A `>` here is an off-by-one that changes when compaction happens and breaks `countCap_dropsOldestFirst` (`TelemetryOutboxTest.kt:150`) and `compactionReclaimsInBatches` (`:246`).
+
+**`now < state.lastCompactionMs` is the clock-correction clause**, and it is not defensive padding. This queue already carries `PLAUSIBLE_EPOCH_FLOOR_MS` precisely because these devices ship with dead RTCs that read near 1970 until corrected. A kiosk that compacts at a wrong-and-high clock value, then has its clock corrected downward, would otherwise compute a negative `sinceLast` forever and never sweep again — the exact permanent stall the time trigger exists to prevent. `TelemetryGate.kt:47-51` already uses this shape for the same reason.
 
 The count trigger is the obvious one. **The time trigger is load-bearing, and the first draft of this spec omitted it — which would have shipped a data-stranding bug.**
 
@@ -118,6 +127,20 @@ Two places in this codebase depend, in writing, on the age cap retiring a row th
 
 A count-only trigger turns "outlasts 30 days by a wide margin" into **never**. A low-volume kiosk with one poison row at the head would stop uploading permanently, donations included, with no mechanism left to clear it. The age cap is not a housekeeping nicety; it is the only automatic escape from a stalled head.
 
+### The trigger must fire when nothing is appending
+
+`compactIfDue` is reached from `append`. **That alone is not a bound**, and Non-negotiable 3 says so in this document: a trigger that only fires under load is not a bound. The stall this mechanism exists to clear is precisely the case where the kiosk is quiet — a low-volume site with one poison row at the head, appending rarely or not at all, would never reach the check.
+
+So `peek` calls `compactIfDue` as well. Three reasons it is the right second site:
+
+- **It runs without appends.** `MainActivity` retries a flush every `TELEMETRY_FLUSH_TICK_MS` — 30 minutes (`MainActivity.kt:82`) — while the screensaver is up, which is the state a quiet kiosk sits in. The flush peeks; the queue gets maintained.
+- **It already reads the whole queue**, so the marginal cost of applying the caps in the same pass is the filter and a conditional write, not a second read.
+- **It is the stalled path itself.** A kiosk with a poison head row is, by definition, still flushing and still being refused. The mechanism fires on exactly the code path the failure runs through.
+
+`size` and `remove` deliberately do **not** trigger it. `remove` runs immediately after a successful upload, when the queue has just shrunk and nothing is owed; `size` is called from the gate on every flush evaluation and from `status()` for the screen, and a display read must not be able to rewrite the queue.
+
+**One consequence to state, because it touches a dying thread.** `crashOutbox.append` (`MainActivity.kt:2344`, and the crash handler itself) can now be the append that finds the interval overdue and performs a compaction. That is strictly better than today, where *every* append pays a full read — but it means the crash path's worst case is still one read-and-write, not zero. The bounded-write decline above rests on that being bounded by a local file operation over a capped queue, which remains true.
+
 `compactIntervalMs` defaults to 24 hours. The age cap's precision is 30 days, so a day's granularity is immaterial, and it bounds the cost of the age sweep to one queue read per day rather than one per append — which is the entire point of this phase. `lastCompactionMs` is part of the shared state, so the interval is per-file, not per-instance.
 
 ### `compactNow`
@@ -127,12 +150,12 @@ Does the existing `readAll` / `applyCaps` / `writeAll`, then refreshes all three
 Three rules the first draft got wrong or left unsaid:
 
 - **Refresh the counters on the no-write path too.** When nothing is droppable, `writeAll` is skipped — but the counters and `lastCompactionMs` must still be refreshed from the read. Otherwise an overdue compaction that finds nothing to drop leaves `lastCompactionMs` stale, re-fires on the very next append, and the O(n) read returns permanently and silently.
-- **Refresh only after `Files.move` succeeds.** If the atomic move throws, the file still holds the pre-compaction contents and the counters must describe that, not the list that was never installed.
+- **Refresh the counters only after `Files.move` succeeds — but stamp `lastCompactionMs` on every attempt.** These two must not share a condition. If the move throws, the file still holds its pre-compaction contents, so the counters must describe *that*; but if the stamp is also skipped, a device with a full disk stays permanently overdue and every subsequent append retries a full read *and* a failed write. A disk-full kiosk would have every donation append paying the cost this phase exists to remove, forever. The stamp records that an attempt was made; the counters record what is actually on disk.
 - **No `writeAll` and no `onDropped(0)` when nothing is droppable.** Otherwise every overdue compaction rewrites the whole queue for nothing.
 
 ### `remove` and `clear` maintain the counts
 
-`remove` currently reads, filters and writes (`:75-78`). It must refresh the counters from the list it writes. **This is not optional:** `remove` runs on every successful flush, so counters that ignore it drift upward without limit, and `TelemetryManager.status()` reports `queued` straight from `outbox.size()` (`:79`) to the operator's screen. A kiosk uploading normally for months would show a growing queue depth that does not exist.
+`remove` currently reads, filters and writes (`:81-84`). It must refresh the counters from the list it writes. **This is not optional:** `remove` runs on every successful flush, so counters that ignore it drift upward without limit, and `TelemetryManager.status()` reports `queued` straight from `outbox.size()` (`TelemetryManager.kt:79`) to the operator's screen. A kiosk uploading normally for months would show a growing queue depth that does not exist.
 
 `clear` resets `rows` and `unprotectedRows` to zero and leaves the state loaded, rather than returning it to the sentinel.
 
@@ -154,7 +177,7 @@ This separation is the rule that keeps the cache safe, and stating it is what st
 
 ### The failure case, and why it is not hypothetical
 
-`applyCaps` ends in `takeLast(maxEvents)` (`:113`), which keeps the newest rows regardless of table. That destroys a donation whenever donations are **older** than the diagnostics behind them.
+`applyCaps` ends in `takeLast(maxEvents)` (`:129`), which keeps the newest rows regardless of table. That destroys a donation whenever donations are **older** than the diagnostics behind them.
 
 That ordering is exactly what 3c-ii created. A kiosk takes donations through the day; the card reader dies in the evening; `checkout_no_reader` — deliberately unthrottled, because each row is a donor who tried to give and could not — floods the queue. The donations are now the oldest rows in the file, and the next eviction takes one while keeping a diagnostic minutes old.
 
@@ -170,6 +193,11 @@ Stated as an invariant rather than a preference, because every "prefer the large
 
 ```kotlin
     private val protectedTables: Set<String> = emptySet(),
+```
+
+**Position matters.** Four existing tests pass `onDropped` as a trailing lambda (`TelemetryOutboxTest.kt:140`, `:351`, `:366`, `:377`), so `onDropped` must remain the **last** parameter. Every parameter this phase adds — `protectedTables`, `compactIntervalMs`, `readLines` — is inserted before it, and all three are defaulted, so no existing construction site changes. There are 21 of them.
+
+```kotlin
 ```
 
 `MainActivity` passes `setOf(TelemetryTables.DONATIONS)` at both construction sites. Defaulting to empty means every existing test keeps today's behaviour unless it opts in.
@@ -199,7 +227,9 @@ Two passes over `aged` — one to count, one to filter — are fine. The single-
 
 ## Part 3: the stale comment
 
-`MainActivity.kt:2055-2068` describes backoff as a single global deadline. 3d-i made it per-table. One comment, corrected.
+`MainActivity.kt:78-81`, the KDoc on `TELEMETRY_FLUSH_TICK_MS`, says a flush "can be refused by a backoff of up to 60 minutes and would then never be retried until 02:00." 3d-i made backoff per-table, so a refusal now blocks only the tables actually backed off — a donation behind a refused diagnostics table is no longer waiting on that ceiling at all. One comment, corrected.
+
+The inherited requirement named `MainActivity.kt:2055-2068` instead. That citation is wrong twice over: it is not where the stale text is, and the comment it does point at was already corrected during 3d-i. Verified against the file rather than carried forward.
 
 ---
 
