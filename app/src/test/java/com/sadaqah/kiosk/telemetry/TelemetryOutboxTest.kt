@@ -412,6 +412,50 @@ class TelemetryOutboxTest {
         assertEquals("onDropped(0) must never be called", 0, dropped.size)
     }
 
+    /**
+     * A failed reclaim write sets `lastCompactionFailed` so a retry doesn't
+     * spin on the same failing write forever, but the flag must not outlive
+     * the failure: once the uploader drains the queue below the cap through
+     * `remove()`, the next sweep that finds nothing droppable must still
+     * clear it. Skipping that clear-path leaves the count trigger permanently
+     * suppressed -- the cap then only fires once every `compactIntervalMs`,
+     * on a kiosk that runs for months without a restart.
+     */
+    @Test
+    fun aFailedReclaimDoesNotPermanentlySuppressTheCountTrigger() {
+        val dropped = mutableListOf<Int>()
+        val box = TelemetryOutbox(file, maxEvents = 3, compactSlack = 0, clock = { now },
+            compactIntervalMs = 1_000L) { dropped += it }
+
+        box.appendDonation("a")
+        box.appendDonation("b")
+        box.appendDonation("c")
+
+        // Block the next reclaim's write: writeAll's sibling .tmp path exists
+        // as a directory, so tmp.writeText(...) throws before any bytes move
+        // -- no permission trickery, and reliable across platforms.
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        tmp.mkdirs()
+        box.appendDonation("d")   // over cap, tries to reclaim, write fails
+        tmp.delete()
+
+        // The uploader drains the queue below the cap through the ordinary
+        // remove path -- this does not touch the failure flag.
+        box.remove(setOf("a", "b"))
+
+        // An interval-driven sweep that finds nothing droppable must still
+        // clear the failure flag.
+        now += 2_000L
+        box.appendDonation("e")
+
+        // Immediately over cap again, same `now`: must reclaim now, not wait
+        // out another full interval.
+        box.appendDonation("f")
+
+        assertEquals("a stale failure flag must not suppress the count trigger",
+            3, file.readLines().count { it.isNotBlank() })
+    }
+
     // ── Counter maintenance ──────────────────────────────────────────────────
 
     @Test
@@ -439,12 +483,22 @@ class TelemetryOutboxTest {
         assertEquals(before, reads)
     }
 
+    /**
+     * A per-instance count would pass a single-append check trivially --
+     * `b.size()` just reads the file itself. The property the design rests on
+     * only shows up under interleaving: a stale in-memory count that missed
+     * another instance's append would undercount here specifically because
+     * `size()` no longer reads.
+     */
     @Test
-    fun twoInstancesOverOneFileShareTheCount() {
+    fun countsStayConsistentAcrossInterleavedAppendsOnTwoInstances() {
         val a = outbox()
         val b = outbox()
         a.appendDonation("one")
-        assertEquals("the second instance must see the first's append", 1, b.size())
+        b.appendDonation("two")
+        a.appendDonation("three")
+        assertEquals("interleaved appends through two instances must share one count",
+            3, a.size())
     }
 
     @Test

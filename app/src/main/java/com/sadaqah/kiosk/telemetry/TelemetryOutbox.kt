@@ -182,7 +182,15 @@ class TelemetryOutbox(
             state.rows = all.size
             val kept = applyCaps(all, now)
             val discarded = all.size - kept.size
-            if (discarded == 0) return all   // no write when nothing is droppable
+            if (discarded == 0) {
+                // Nothing was attempted, so nothing is failing: a prior failed
+                // reclaim must not outlive the condition that caused it, or a
+                // queue drained below the cap by remove() would suppress the
+                // count trigger forever, since that trigger can never clear
+                // itself once nothing is left to drop.
+                state.lastCompactionFailed = false
+                return all
+            }
             return try {
                 writeAll(kept)
                 state.rows = kept.size
