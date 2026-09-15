@@ -29,7 +29,7 @@
 
 | Thing | Reality |
 |---|---|
-| `outbox(maxEvents, maxAgeMs, compactSlack)` | A factory **function**, `:18-22`. Used as `val box = outbox()`. **Its `compactSlack` default is `1`, not the production `100`.** |
+| `outbox(maxEvents, maxAgeMs, compactSlack)` | A factory **function**, `:18-22`. Used as `val box = outbox()`. **Its `compactSlack` default is `1`, not the production `100`.** It takes **no** `compactIntervalMs`, so Task 1 Step 2a must add one before any test can pass it. |
 | `file` | A `lateinit var` field, re-created per test by `@Before` `:25-28`. |
 | `now` | A `var` field, `1_000_000L`, reset by `@Before`. |
 | `TelemetryOutbox.appendDonation(id)` | An extension helper, `:30-31`. |
@@ -91,6 +91,20 @@ class TelemetryOutbox(
         if (!file.exists()) return emptyList()
         return readLines(file).mapNotNull { parseLine(it) }
     }
+```
+
+- [ ] **Step 2a: Give the test helper the new parameter**
+
+Several tests below pass `compactIntervalMs` to `outbox(...)`, and the helper at `TelemetryOutboxTest.kt:18-22` does not take it. Add it with the production default so no existing call changes:
+
+```kotlin
+    private fun outbox(
+        maxEvents: Int = 5000,
+        maxAgeMs: Long = 30L * 24 * 60 * 60 * 1000,
+        compactSlack: Int = 1,
+        compactIntervalMs: Long = 24L * 60 * 60 * 1000
+    ) = TelemetryOutbox(file, maxEvents, maxAgeMs, compactSlack, clock = { now },
+        compactIntervalMs = compactIntervalMs)
 ```
 
 - [ ] **Step 3: Write the failing read-count test**
@@ -248,30 +262,59 @@ Extract the canonical-path derivation `lockFor` already performs into a shared `
      * then corrected downward would compute a negative interval forever and
      * never sweep again, which is the permanent stall the interval exists to
      * prevent. TelemetryGate uses this same shape for the same reason.
+     *
+     * **This asserts that a compaction was triggered, not that a row aged out,
+     * and the distinction is load-bearing.** A backwards clock jump moves the
+     * age cutoff backwards with it, so every existing row looks *newer* than the
+     * cutoff and nothing ages out — an assertion on eviction would fail against
+     * correct code. Worse, the obvious way to force such an assertion green is
+     * to start discarding future-stamped rows, which would delete donations on
+     * every forward NTP correction. Assert the trigger, through the read seam.
+     *
+     * Mutation-check: delete the `now < state.lastCompactionMs` clause and this
+     * must fail.
      */
     @Test
-    fun aClockCorrectedBackwardsDoesNotDisableTheInterval() {
+    fun aClockCorrectedBackwardsStillTriggersACompaction() {
         now = 1_600_000_000_000L
-        val box = outbox(maxAgeMs = 10_000L, compactIntervalMs = 60_000L)
-        box.appendDonation("stale")
+        var reads = 0
+        val box = TelemetryOutbox(
+            file, clock = { now }, compactIntervalMs = 60_000L,
+            readLines = { reads++; it.readLines() }
+        )
+        box.appendDonation("first")
+        val afterLoad = reads
         now -= 500_000L
-        box.appendDonation("afterCorrection")
-        assertEquals("a backwards jump must still be treated as overdue",
-            listOf("afterCorrection"), box.peek().map { it.id })
+        box.appendDonation("second")
+
+        assertTrue("a backwards jump must still count as overdue", reads > afterLoad)
     }
 
+    /**
+     * The stamp must be refreshed even when the compaction drops nothing.
+     *
+     * Skipping it there looks harmless and is not: the queue stays permanently
+     * overdue, so every subsequent append performs a full read — restoring, in
+     * silence, the exact O(n)-per-append cost this phase exists to remove.
+     *
+     * Mutation-check: refresh `lastCompactionMs` only on the branch that writes,
+     * and this must fail.
+     */
     @Test
-    fun aCompactionThatFindsNothingDroppableDoesNotRewriteTheFile() {
-        val box = outbox(maxEvents = 5000, compactIntervalMs = 1L)
+    fun aCompactionThatDropsNothingStillRestartsTheInterval() {
+        var reads = 0
+        val box = TelemetryOutbox(
+            file, maxEvents = 5000, clock = { now }, compactIntervalMs = 1_000L,
+            readLines = { reads++; it.readLines() }
+        )
         box.appendDonation("a")
-        val before = file.lastModified()
-        now += 10L
-        box.appendDonation("b")
-        assertEquals("nothing droppable means no rewrite", 2,
-            file.readLines().count { it.isNotBlank() })
-        // The file grew by one appended line; it must not have been rewritten
-        // wholesale. Assert on content order, which a rewrite preserves anyway,
-        // plus the drop callback never firing — see the next test.
+        now += 2_000L
+        box.appendDonation("b")          // overdue, compacts, nothing droppable
+        val afterSweep = reads
+        box.appendDonation("c")          // must no longer be overdue
+
+        assertEquals("a no-drop compaction must still restart the interval",
+            afterSweep, reads)
     }
 
     @Test
@@ -389,12 +432,29 @@ Both still assert the same behaviour; only what provokes the sweep changes.
 
     @Test
     fun aFailedAppendDoesNotInflateTheCount() {
-        // Point the outbox at a path whose parent is a *file*, so appendText
-        // cannot succeed. Assert append throws and size() is unchanged.
+        // Use the unwritable-path shape below. Append once successfully against
+        // a good file first if you need a loaded state, then assert that an
+        // append which throws leaves size() unchanged.
     }
 ```
 
-Write that last body against whatever the file's existing failure-path tests do — grep for `IOException` first and follow the shape already there. If no such shape exists, report it and skip the test rather than inventing a fragile one.
+**The fixture for "append throws" already exists** — `KioskCrashHandlerTest.kt:42-48`, which documents the technique: there is no mocking library and `TelemetryOutbox` is final, so the failure is produced with the real class over an impossible path.
+
+```kotlin
+    private fun unwritableOutbox() =
+        TelemetryOutbox(File(temp.newFile("blocker"), "outbox.jsonl"), clock = { now })
+```
+
+The parent is a regular file, so `mkdirs()` returns false and `appendText` throws `FileNotFoundException`. Copy that shape rather than inventing one, and do not skip this test — the ordering it pins (count bumped only after the write) is a spec requirement.
+
+- [ ] **Step 11a: Record what has no test, and why**
+
+Two behaviours in `compactNow` are specified and are **not** unit-testable here. Say so in your report rather than leaving a silent gap:
+
+- **Counters are not refreshed when `writeAll` throws.** Forcing a mid-compaction write failure needs a seam over `writeAll`, and adding one to pin a two-line ordering is more surface than the ordering is worth. It is instead guaranteed structurally: both `state.rows` assignments sit *after* `writeAll(kept)` inside the same `try`, so a throw cannot reach them.
+- **The crash handler's shortened wait.** A consequence of the append no longer reading, not a branch, and `MainActivity` is unreachable from JVM tests.
+
+Do not write a test that asserts nothing in order to close either gap.
 
 - [ ] **Step 12: Reset shared state between tests**
 
@@ -472,7 +532,9 @@ Expected: FAIL — `peek` returns `["stale"]`, because nothing has swept it.
         }
 ```
 
-`size` and `remove` deliberately do **not** trigger it: `remove` runs right after a successful upload when nothing is owed, and `size` is called from the flush gate and from `status()` for the screen — a display read must not be able to rewrite the queue. Say so in a comment on `size`.
+`size` and `remove` deliberately do **not** call `compactIfDue`: `remove` runs right after a successful upload when nothing is owed, and `size` is called from the flush gate and from `status()` for the screen, so a display read must not be able to start an interval sweep.
+
+**State that precisely, because the obvious phrasing is false.** `size` does call `ensureLoaded`, and the first load *is* a compaction — so the very first `size()` of a process can rewrite the file. That is intended: the load has to read anyway, and applying the caps in that pass is what makes the process-start sweep free. What `size` must never do is trigger the *interval* check on subsequent calls. A comment claiming "size never rewrites the queue" would be a lie a reader could check in one minute.
 
 - [ ] **Step 4: Run, mutate, restore**
 
@@ -611,9 +673,13 @@ Both pass `protectedTables = setOf(TelemetryTables.DONATIONS)` — the lazy `tel
 
 **Only donations are protected.** An activation row regenerates by pressing "Test connection" and a diagnostic describes a condition that will recur; a donation is gone.
 
-- [ ] **Step 6: Correct the stale comment**
+- [ ] **Step 6: Correct the three comments this phase makes untrue**
 
-`MainActivity.kt:78-81`, the KDoc on `TELEMETRY_FLUSH_TICK_MS`, says a flush "can be refused by a backoff of up to 60 minutes and would then never be retried until 02:00." 3d-i made backoff per-table, so a refusal now blocks only the tables actually backed off — a donation queued behind a refused diagnostics table is not waiting on that ceiling at all. Rewrite it to say what is now true.
+A comment describing removed or changed behaviour is worse than none, and each of these is checkable in under a minute by whoever reads it next.
+
+- **`MainActivity.kt:78-81`**, the KDoc on `TELEMETRY_FLUSH_TICK_MS`: says a flush "can be refused by a backoff of up to 60 minutes and would then never be retried until 02:00." 3d-i made backoff per-table, so a refusal now blocks only the tables actually backed off — a donation queued behind a refused diagnostics table is not waiting on that ceiling at all.
+- **`MainActivity.kt:374-378`**, on `CrashContext.onOutboxDropped`: says the callback is "bounded by compactSlack (only past 100 discards)". **This phase makes that false.** `compactNow` invokes `onDropped` whenever anything was discarded, and it is now reachable from an interval sweep and from `peek`, not only from an append that crossed the slack. The surrounding argument still holds — the work is bounded and `KioskCrashHandler`'s own `catch(Throwable)` still means it can delay the chain but never break it — so correct the bound, keep the conclusion.
+- **`TelemetryUploader.kt:217-227`**, in the fallback-cap KDoc: says "compaction only rewrites the file once at least `compactSlack` rows are droppable in one pass, so on a low-volume kiosk a stall can outlast 30 days by a wide margin." The interval trigger is what bounds that now. Rewrite it to say the stall is bounded by the age cap plus at most one compaction interval. This comment is the reason the interval exists, so leaving it describing the old unbounded behaviour would hide the fix from the next reader of the code that motivated it.
 
 - [ ] **Step 7: Build, run the whole suite, commit**
 
