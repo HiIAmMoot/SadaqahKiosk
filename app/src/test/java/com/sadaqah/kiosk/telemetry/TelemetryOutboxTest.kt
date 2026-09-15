@@ -6,6 +6,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
+import java.io.IOException
 
 class TelemetryOutboxTest {
 
@@ -18,19 +19,54 @@ class TelemetryOutboxTest {
     private fun outbox(
         maxEvents: Int = 5000,
         maxAgeMs: Long = 30L * 24 * 60 * 60 * 1000,
-        compactSlack: Int = 1
-    ) = TelemetryOutbox(file, maxEvents, maxAgeMs, compactSlack, clock = { now })
+        compactSlack: Int = 1,
+        compactIntervalMs: Long = 24L * 60 * 60 * 1000
+    ) = TelemetryOutbox(file, maxEvents, maxAgeMs, compactSlack, clock = { now },
+        compactIntervalMs = compactIntervalMs)
 
     @Before
     fun setUp() {
         file = File(temp.newFolder("telemetry"), "outbox.jsonl")
         now = 1_000_000L
+        TelemetryOutbox.resetStateForTests()
     }
 
     private fun TelemetryOutbox.appendDonation(id: String) =
         append(id, "donation_events", """{"id":"$id","amount_cents":100}""")
 
+    /**
+     * There is no mocking library and TelemetryOutbox is final, so "append
+     * throws" is produced with the real class over an impossible path: the
+     * parent is a regular file, so mkdirs() returns false and appendText
+     * throws FileNotFoundException. Same shape as KioskCrashHandlerTest's
+     * unwritableOutbox().
+     */
+    private fun unwritableOutbox() =
+        TelemetryOutbox(File(temp.newFile("blocker"), "outbox.jsonl"), clock = { now })
+
     // ── Append and read ──────────────────────────────────────────────────────
+
+    /**
+     * The phase's headline. Every append used to read and JSON-parse the whole
+     * queue inside the lock, on the path a donation travels — at the 5000-row
+     * cap, 5000 parses to append one row. Asserted on a counting seam rather
+     * than on elapsed time, because a timing assertion on a build machine
+     * proves nothing.
+     */
+    @Test
+    fun appendingDoesNotReadTheQueueOncePerAppend() {
+        var reads = 0
+        val box = TelemetryOutbox(
+            file, maxEvents = 5000, clock = { now },
+            readLines = { reads++; it.readLines() }
+        )
+        box.appendDonation("first")
+        val afterLoad = reads
+        repeat(20) { box.appendDonation("e$it") }
+
+        assertEquals("the first append loads once; the rest must not read at all",
+            afterLoad, reads)
+    }
 
     @Test
     fun emptyOutbox_readsAsEmpty() {
@@ -157,7 +193,10 @@ class TelemetryOutboxTest {
     @Test
     fun ageCap_dropsEventsPastTheWindow() {
         now = 1_600_000_000_000L  // Well above PLAUSIBLE_EPOCH_FLOOR_MS
-        val box = outbox(maxAgeMs = 10_000L)
+        // A short interval provokes the sweep on the append that crosses the
+        // window; the default 24h interval would leave this two-row queue,
+        // far below maxEvents, never compacting at all.
+        val box = outbox(maxAgeMs = 10_000L, compactIntervalMs = 10_000L)
         box.appendDonation("old")
         now += 20_000L
         box.appendDonation("fresh")
@@ -201,7 +240,7 @@ class TelemetryOutboxTest {
         val box = outbox()
         box.appendDonation("e1")
         file.appendText("\n\n")
-        assertEquals(1, box.size())
+        assertEquals(listOf("e1"), box.peek().map { it.id })
     }
 
     @Test
@@ -262,6 +301,157 @@ class TelemetryOutboxTest {
         repeat(5) { box.appendDonation("e$it") }
         assertEquals(2, box.size())
         assertFalse(File(file.parentFile, file.name + ".tmp").exists())
+    }
+
+    // ── Compaction triggers ──────────────────────────────────────────────────
+
+    @Test
+    fun aQueueCrossingItsSlackCompacts() {
+        val box = outbox(maxEvents = 5, compactSlack = 10)
+        repeat(14) { box.appendDonation("e$it") }
+        assertEquals("14 rows, 9 over the cap, still under the slack of 10", 14,
+            file.readLines().count { it.isNotBlank() })
+        box.appendDonation("fifteenth")
+        assertEquals("15 rows is exactly cap plus slack, so it reclaims", 5,
+            file.readLines().count { it.isNotBlank() })
+    }
+
+    /**
+     * The poison-row escape, and the reason a count-only trigger is not enough.
+     *
+     * Two callers depend on the age cap in writing: TelemetryUploader's fallback
+     * comment says a bad head row blocks the rows behind it "until the outbox's
+     * 30-day age cap retires them", and HttpPoster keeps an unconfirmable 409
+     * retryable because "a stall that the 30-day age cap eventually retires is
+     * visible and reversible". On a low-volume kiosk that never approaches the
+     * count cap, a count-only trigger turns "eventually" into never — and the
+     * donations queued behind that row never upload again.
+     *
+     * Mutation-check: delete the `overdue` term from compactIfDue and this test
+     * must fail.
+     */
+    @Test
+    fun anOverdueIntervalCompactsEvenFarBelowTheCap() {
+        now = 1_600_000_000_000L
+        val box = outbox(maxAgeMs = 10_000L, compactIntervalMs = 60_000L)
+        box.appendDonation("stale")
+        now += 120_000L
+        box.appendDonation("fresh")
+        assertEquals(listOf("fresh"), box.peek().map { it.id })
+    }
+
+    /**
+     * These devices ship with dead RTCs — PLAUSIBLE_EPOCH_FLOOR_MS exists for
+     * exactly that. A kiosk that compacts at a wrong-and-high clock value and is
+     * then corrected downward would compute a negative interval forever and
+     * never sweep again, which is the permanent stall the interval exists to
+     * prevent. TelemetryGate uses this same shape for the same reason.
+     *
+     * **This asserts that a compaction was triggered, not that a row aged out,
+     * and the distinction is load-bearing.** A backwards clock jump moves the
+     * age cutoff backwards with it, so every existing row looks *newer* than the
+     * cutoff and nothing ages out — an assertion on eviction would fail against
+     * correct code. Worse, the obvious way to force such an assertion green is
+     * to start discarding future-stamped rows, which would delete donations on
+     * every forward NTP correction. Assert the trigger, through the read seam.
+     *
+     * Mutation-check: delete the `now < state.lastCompactionMs` clause and this
+     * must fail.
+     */
+    @Test
+    fun aClockCorrectedBackwardsStillTriggersACompaction() {
+        now = 1_600_000_000_000L
+        var reads = 0
+        val box = TelemetryOutbox(
+            file, clock = { now }, compactIntervalMs = 60_000L,
+            readLines = { reads++; it.readLines() }
+        )
+        box.appendDonation("first")
+        val afterLoad = reads
+        now -= 500_000L
+        box.appendDonation("second")
+
+        assertTrue("a backwards jump must still count as overdue", reads > afterLoad)
+    }
+
+    /**
+     * The stamp must be refreshed even when the compaction drops nothing.
+     *
+     * Skipping it there looks harmless and is not: the queue stays permanently
+     * overdue, so every subsequent append performs a full read — restoring, in
+     * silence, the exact O(n)-per-append cost this phase exists to remove.
+     *
+     * Mutation-check: refresh `lastCompactionMs` only on the branch that writes,
+     * and this must fail.
+     */
+    @Test
+    fun aCompactionThatDropsNothingStillRestartsTheInterval() {
+        var reads = 0
+        val box = TelemetryOutbox(
+            file, maxEvents = 5000, clock = { now }, compactIntervalMs = 1_000L,
+            readLines = { reads++; it.readLines() }
+        )
+        box.appendDonation("a")
+        now += 2_000L
+        box.appendDonation("b")          // overdue, compacts, nothing droppable
+        val afterSweep = reads
+        box.appendDonation("c")          // must no longer be overdue
+
+        assertEquals("a no-drop compaction must still restart the interval",
+            afterSweep, reads)
+    }
+
+    @Test
+    fun aCompactionThatFindsNothingDroppableReportsNoDrops() {
+        val dropped = mutableListOf<Int>()
+        val box = TelemetryOutbox(file, maxEvents = 5000, compactSlack = 1,
+            clock = { now }, compactIntervalMs = 1L) { dropped += it }
+        box.appendDonation("a")
+        now += 10L
+        box.appendDonation("b")
+        assertEquals("onDropped(0) must never be called", 0, dropped.size)
+    }
+
+    // ── Counter maintenance ──────────────────────────────────────────────────
+
+    @Test
+    fun removeKeepsTheCountAccurateWithoutRereading() {
+        var reads = 0
+        val box = TelemetryOutbox(file, clock = { now },
+            readLines = { reads++; it.readLines() })
+        listOf("a", "b", "c").forEach { box.appendDonation(it) }
+        box.remove(setOf("b"))
+        val before = reads
+        assertEquals(2, box.size())
+        assertEquals("size() must not read after remove refreshed the count",
+            before, reads)
+    }
+
+    @Test
+    fun clearResetsTheCountWithoutRereading() {
+        var reads = 0
+        val box = TelemetryOutbox(file, clock = { now },
+            readLines = { reads++; it.readLines() })
+        box.appendDonation("a")
+        box.clear()
+        val before = reads
+        assertEquals(0, box.size())
+        assertEquals(before, reads)
+    }
+
+    @Test
+    fun twoInstancesOverOneFileShareTheCount() {
+        val a = outbox()
+        val b = outbox()
+        a.appendDonation("one")
+        assertEquals("the second instance must see the first's append", 1, b.size())
+    }
+
+    @Test
+    fun aFailedAppendDoesNotInflateTheCount() {
+        val box = unwritableOutbox()
+        assertThrows(IOException::class.java) { box.append("x", "t", "{}") }
+        assertEquals(0, box.size())
     }
 
     // ── Clear ────────────────────────────────────────────────────────────────
@@ -363,7 +553,11 @@ class TelemetryOutboxTest {
     fun droppingEventsOverTheAgeCapReportsHowManyWereLost() {
         now = 1_600_000_000_000L // well above PLAUSIBLE_EPOCH_FLOOR_MS
         val dropped = mutableListOf<Int>()
-        val box = TelemetryOutbox(file, maxAgeMs = 10_000L, compactSlack = 0, clock = { now }) { dropped += it }
+        // A short interval provokes the sweep on the append that crosses the
+        // window; the default 24h interval would leave this queue, far below
+        // maxEvents, never compacting at all.
+        val box = TelemetryOutbox(file, maxAgeMs = 10_000L, compactSlack = 0, clock = { now },
+            compactIntervalMs = 10_000L) { dropped += it }
         box.appendDonation("old1")
         box.appendDonation("old2")
         now += 20_000L // past maxAgeMs: both earlier rows age out

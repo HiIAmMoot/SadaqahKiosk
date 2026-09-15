@@ -39,6 +39,13 @@ class TelemetryOutbox(
     private val maxAgeMs: Long = 30L * 24 * 60 * 60 * 1000,
     private val compactSlack: Int = 100,
     private val clock: () -> Long = System::currentTimeMillis,
+    /** How long the queue may go uncompacted before an append or a peek sweeps
+     *  it anyway. Not housekeeping: two callers depend in writing on the age cap
+     *  retiring a row nothing else will — see [compactIfDue]. */
+    private val compactIntervalMs: Long = 24L * 60 * 60 * 1000,
+    /** Seamed for the same reason [clock] is: the tests that matter here assert
+     *  how many times the queue is read, and there is no other way to count. */
+    private val readLines: (File) -> List<String> = File::readLines,
     private val onDropped: (Int) -> Unit = {}
 ) {
     /** Locking is keyed on the file, not the instance: phase 2's crash handler
@@ -47,15 +54,23 @@ class TelemetryOutbox(
      *  overwrite a concurrent append. */
     private val lock: Any = lockFor(file)
 
+    /** Keyed the same way as [lock] and guarded by it. Two TelemetryOutbox
+     *  instances exist over one file, so per-instance counts would diverge on
+     *  the first append; the lock already solves that problem this way. */
+    private val state: QueueState = stateFor(file)
+
     fun append(id: String, table: String, payload: String): Unit = synchronized(lock) {
         val now = clock()
+        ensureLoaded()
         file.parentFile?.mkdirs()
         // A real append never puts existing bytes at risk, so an unclean death
         // costs at most the line being written — which parseLine already skips.
         // Rewriting the file instead would place the entire queue inside a
         // truncate window on every call.
         file.appendText(serialise(QueuedEvent(id, table, payload, now)))
-        compactIfNeeded(now)
+        // After the write, so a throwing append cannot inflate the count.
+        state.rows += 1
+        compactIfDue(now)
     }
 
     /**
@@ -80,10 +95,22 @@ class TelemetryOutbox(
 
     fun remove(ids: Set<String>): Unit = synchronized(lock) {
         if (ids.isEmpty()) return@synchronized
-        writeAll(readAll().filterNot { it.id in ids })
+        // No ensureLoaded: this sets `rows` from the list it writes, so a load
+        // would be a wasted read — and with the load pure it could not compact
+        // here anyway, which is the property `size` and `remove` are meant to have.
+        val kept = readAll().filterNot { it.id in ids }
+        writeAll(kept)
+        // Not optional: remove runs after every successful flush, and
+        // TelemetryManager.status() reports size() straight to the operator's
+        // screen. Counters that ignored this would drift upward without limit,
+        // showing a growing queue depth that does not exist.
+        state.rows = kept.size
     }
 
-    fun size(): Int = synchronized(lock) { readAll().size }
+    fun size(): Int = synchronized(lock) {
+        ensureLoaded()
+        state.rows
+    }
 
     /** Removes the queue entirely. Used when credentials are cleared: the rows
      *  name a kiosk, so leaving them on disk would strand identified data an
@@ -96,22 +123,96 @@ class TelemetryOutbox(
     fun clear(): Unit = synchronized(lock) {
         file.delete()
         File(file.parentFile, file.name + ".tmp").delete()
+        state.rows = 0
+        state.lastCompactionMs = clock()
     }
 
     // ── Internals ────────────────────────────────────────────────────────────
 
-    /** Reclaims in batches rather than on every append. Rewriting whenever the
-     *  queue sits one event over its cap would put a full read-and-write on the
-     *  donation path for the entire time a kiosk is saturated — which is exactly
-     *  the offline case the cap exists for. The file is allowed to run up to
-     *  [compactSlack] events over instead. */
-    private fun compactIfNeeded(now: Long) {
-        val all = readAll()
-        val kept = applyCaps(all, now)
-        val discarded = all.size - kept.size
-        if (discarded >= compactSlack) {
-            writeAll(kept)
-            if (discarded > 0) onDropped(discarded)
+    /**
+     * A pure read. It sets [QueueState.rows] and writes nothing.
+     *
+     * It deliberately leaves [QueueState.lastCompactionMs] at zero, which makes
+     * the first `append` or `peek` of the process overdue and so buys an early
+     * sweep — through the normal trigger, on a path that is allowed to write,
+     * rather than from inside a read.
+     *
+     * Making the load itself compact is a deadlock, and it is worth knowing why
+     * so nobody re-derives it: this method skips its work once `rows` is set, so
+     * a `writeAll` that threw would leave `rows` at the sentinel and every later
+     * append, peek, size and remove would retry the same failing write forever.
+     * `writeAll` stages a full second copy of the queue before its atomic move,
+     * so on a full disk it is guaranteed to fail — and a full disk is the exact
+     * condition the cap exists to prevent.
+     */
+    private fun ensureLoaded() {
+        if (state.rows != UNKNOWN) return
+        state.rows = readAll().size
+    }
+
+    /** Reclaims — and now reads — in batches rather than on every append. The
+     *  old comment here described only the write; the read ran on every call
+     *  regardless, and that mismatch is exactly the cost this phase removes. A
+     *  queue is swept when it crosses [compactSlack] over the cap or when
+     *  [compactIntervalMs] has elapsed, whichever comes first. */
+    private fun compactIfDue(now: Long): List<QueuedEvent>? {
+        val last = state.lastCompactionMs
+        val overdue = last == null ||
+            now - last >= compactIntervalMs ||
+            now < last                       // clock corrected backwards
+        // `>=`, not `>`: the behaviour being preserved is the old
+        // `discarded >= compactSlack`, which fired *at* the threshold.
+        //
+        // Suppressed while the last reclaim failed, and that suppression costs
+        // nothing real: applyCaps caps its result at maxEvents, so a reclaim
+        // that *succeeds* always leaves the count under the threshold. An
+        // overCap that survives a compaction can therefore only mean the write
+        // failed — so gating it here suppresses failed retries and nothing else.
+        val overCap = state.rows >= maxEvents + compactSlack && !state.lastCompactionFailed
+        return if (overCap || overdue) compactNow(now) else null
+    }
+
+    /** Returns the rows now on disk, so a caller that was about to read can use
+     *  this instead of reading again. Null when no compaction was due. */
+    private fun compactNow(now: Long): List<QueuedEvent> {
+        try {
+            val all = readAll()
+            // Set from the read, before any write is attempted: a failed reclaim
+            // below must not leave the count unknown.
+            state.rows = all.size
+            val kept = applyCaps(all, now)
+            val discarded = all.size - kept.size
+            if (discarded == 0) return all   // no write when nothing is droppable
+            return try {
+                writeAll(kept)
+                state.rows = kept.size
+                state.lastCompactionFailed = false
+                onDropped(discarded)
+                kept
+            } catch (_: Throwable) {
+                // A failed reclaim is swallowed, and that is not laziness.
+                //
+                // Propagating it on the append path would be actively wrong:
+                // the row has already been written, and MainActivity treats an
+                // append throw as a lost event and bumps droppedCount — so a
+                // failed *reclaim* would be reported to the operator as a
+                // destroyed donation that is in fact safely on disk. It would
+                // also make peek and size, pure reads today, able to throw into
+                // a flush that does not wrap them (TelemetryManager.kt:270, :283).
+                //
+                // The queue is unharmed: writeAll stages through a temp file and
+                // moves atomically, so a failure leaves the previous contents in
+                // place — which is what state.rows above already describes.
+                state.lastCompactionFailed = true
+                all
+            }
+        } finally {
+            // Stamped on every attempt, including a failed one, and deliberately
+            // not sharing the counters' condition. A device with a full disk
+            // would otherwise stay permanently overdue and retry a full read and
+            // a failed write on every single append, for the life of the
+            // deployment, on the donation path.
+            state.lastCompactionMs = now
         }
     }
 
@@ -131,7 +232,7 @@ class TelemetryOutbox(
 
     private fun readAll(): List<QueuedEvent> {
         if (!file.exists()) return emptyList()
-        return file.readLines().mapNotNull { parseLine(it) }
+        return readLines(file).mapNotNull { parseLine(it) }
     }
 
     /** Writes to a sibling temp file and moves it into place, so a crash during
@@ -170,6 +271,27 @@ class TelemetryOutbox(
         }
     }
 
+    /** Two fields, not three. An earlier design also cached a per-table count
+     *  maintained on the donation path; nothing read it, because eviction sizes
+     *  itself from the list it is filtering. A counter kept current on the hot
+     *  path and read by nothing reads as load-bearing to whoever comes next. */
+    private class QueueState {
+        var rows: Int = UNKNOWN
+        /** Null means no compaction has run in this process. Null rather than
+         *  zero because `now - 0` is only "overdue" when the clock is large:
+         *  on a dead-RTC kiosk reading near 1970 — the case
+         *  PLAUSIBLE_EPOCH_FLOOR_MS exists for — a zero stamp would silently
+         *  skip the boot sweep the design depends on. */
+        var lastCompactionMs: Long? = null
+        /** Set when a reclaim's write failed, cleared when one succeeds. While
+         *  set, the **count** trigger is suppressed and only the interval
+         *  retries. Without it a device whose writes keep failing does a full
+         *  read and a failed write on *every append*, forever — the count
+         *  trigger cannot clear itself, because the row count it reads stays
+         *  over the cap precisely because the write did not happen. */
+        var lastCompactionFailed: Boolean = false
+    }
+
     companion object {
         const val DEFAULT_BATCH = 100
 
@@ -177,15 +299,26 @@ class TelemetryOutbox(
          *  and its age cannot be trusted. */
         private const val PLAUSIBLE_EPOCH_FLOOR_MS = 1_577_836_800_000L
 
-        private val locksByPath = java.util.concurrent.ConcurrentHashMap<String, Any>()
+        /** A real row count is never negative. */
+        private const val UNKNOWN = -1
 
-        private fun lockFor(file: File): Any {
-            val key = try {
-                file.canonicalPath
-            } catch (_: Exception) {
-                file.absolutePath
-            }
-            return locksByPath.computeIfAbsent(key) { Any() }
+        private val locksByPath = java.util.concurrent.ConcurrentHashMap<String, Any>()
+        private val statesByPath = java.util.concurrent.ConcurrentHashMap<String, QueueState>()
+
+        private fun keyFor(file: File): String = try {
+            file.canonicalPath
+        } catch (_: Exception) {
+            file.absolutePath
+        }
+
+        private fun lockFor(file: File): Any = locksByPath.computeIfAbsent(keyFor(file)) { Any() }
+
+        private fun stateFor(file: File): QueueState = statesByPath.computeIfAbsent(keyFor(file)) { QueueState() }
+
+        /** Visible for tests: the state outlives every instance, so a test that
+         *  reuses a path would otherwise inherit the previous test's counts. */
+        internal fun resetStateForTests() {
+            statesByPath.clear()
         }
     }
 }
