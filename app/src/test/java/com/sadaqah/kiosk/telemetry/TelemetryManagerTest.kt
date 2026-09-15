@@ -504,6 +504,7 @@ class TelemetryManagerTest {
      */
     @Test
     fun aPartialOutcomeRemovesBothTheUploadedAndTheRejectedRow() {
+        val store = InMemoryStatusStore()
         val outbox = outboxWith("a", "b")
         val poster = ScriptedPoster(
             listOf(
@@ -512,13 +513,23 @@ class TelemetryManagerTest {
                 HttpResponse(400, "row refused")     // row "b" retried alone: refused
             )
         )
-        val result = manager(outbox, poster).flush()
+        val result = manager(outbox, poster, statusStore = store).flush()
         assertEquals(FlushBlock.NONE, result)
         assertEquals("exactly the batch attempt plus one retry per row", 3, poster.callCount)
         assertEquals(
             "both the uploaded row and the sibling-corroborated rejected row must be removed",
             0,
             outbox.size()
+        )
+        // A permanently rejected row is deleted from the outbox and counted
+        // nowhere else (droppedCount tracks outbox evictions and failed appends,
+        // not uploader rejections) — lastError is the only remaining trace that
+        // a donation was destroyed, so a healthy retryableTables must not erase
+        // it even though nothing in this flush is backing off.
+        assertEquals(
+            "the row's own rejection reason must survive, not be cleared by the sibling's success",
+            "HTTP 400 row refused",
+            store.read().lastError
         )
     }
 
@@ -907,8 +918,12 @@ class TelemetryManagerTest {
         val diagnosticsError = store.read().lastError
         assertEquals("HTTP 503 down", diagnosticsError)
 
-        // Flush 2 (same `now`, so the deadline is still live): queue only a
-        // donation, everything 201. x1 is excluded and never attempted.
+        // Flush 2, 30s later — a real gap, not the same instant twice in a row.
+        // backoffDelayMs(1) == 60_000ms, so the diagnostics deadline is still
+        // live and x1 is excluded and never attempted: 30s keeps this test about
+        // the state it names rather than about the elapsed-deadline retry
+        // lastErrorClearsOnceNoTableIsBackedOff covers.
+        now += 30_000
         outbox.append("a2", TelemetryTables.DONATIONS, """{"id":"a2"}""")
         manager(outbox, ConstantPoster(HttpResponse(201, null)), statusStore = store).flush()
 
@@ -936,6 +951,12 @@ class TelemetryManagerTest {
         val outbox = outboxWithRows("a1" to TelemetryTables.DONATIONS, "x1" to TelemetryTables.DIAGNOSTICS)
 
         manager(outbox, diagnosticsFailsDonationsSucceed(), statusStore = store).flush() // flush 1
+        // Prove the clearing this test is named for is actually a transition,
+        // not a no-op against a store nothing ever wrote: the error and the
+        // deadline must genuinely be set before the final flush clears them.
+        assertEquals("HTTP 503 down", store.read().lastError)
+        assertTrue(TelemetryTables.DIAGNOSTICS in store.read().backoffUntilMsByTable)
+
         outbox.append("a2", TelemetryTables.DONATIONS, """{"id":"a2"}""")
         manager(outbox, ConstantPoster(HttpResponse(201, null)), statusStore = store).flush() // flush 2
 
