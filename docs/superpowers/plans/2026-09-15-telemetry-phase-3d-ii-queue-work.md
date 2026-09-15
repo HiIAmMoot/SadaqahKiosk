@@ -174,7 +174,19 @@ Extract the canonical-path derivation `lockFor` already performs into a shared `
      *  path and read by nothing reads as load-bearing to whoever comes next. */
     private class QueueState {
         var rows: Int = UNKNOWN
-        var lastCompactionMs: Long = 0L
+        /** Null means no compaction has run in this process. Null rather than
+         *  zero because `now - 0` is only "overdue" when the clock is large:
+         *  on a dead-RTC kiosk reading near 1970 — the case
+         *  PLAUSIBLE_EPOCH_FLOOR_MS exists for — a zero stamp would silently
+         *  skip the boot sweep the design depends on. */
+        var lastCompactionMs: Long? = null
+        /** Set when a reclaim's write failed, cleared when one succeeds. While
+         *  set, the **count** trigger is suppressed and only the interval
+         *  retries. Without it a device whose writes keep failing does a full
+         *  read and a failed write on *every append*, forever — the count
+         *  trigger cannot clear itself, because the row count it reads stays
+         *  over the cap precisely because the write did not happen. */
+        var lastCompactionFailed: Boolean = false
     }
 ```
 
@@ -199,7 +211,7 @@ Extract the canonical-path derivation `lockFor` already performs into a shared `
      * so on a full disk it is guaranteed to fail — and a full disk is the exact
      * condition the cap exists to prevent.
      */
-    private fun ensureLoaded(now: Long) {
+    private fun ensureLoaded() {
         if (state.rows != UNKNOWN) return
         state.rows = readAll().size
     }
@@ -220,6 +232,7 @@ Extract the canonical-path derivation `lockFor` already performs into a shared `
             return try {
                 writeAll(kept)
                 state.rows = kept.size
+                state.lastCompactionFailed = false
                 onDropped(discarded)
                 kept
             } catch (_: Throwable) {
@@ -236,6 +249,7 @@ Extract the canonical-path derivation `lockFor` already performs into a shared `
                 // The queue is unharmed: writeAll stages through a temp file and
                 // moves atomically, so a failure leaves the previous contents in
                 // place — which is what state.rows above already describes.
+                state.lastCompactionFailed = true
                 all
             }
         } finally {
@@ -368,12 +382,19 @@ That is fine, and it is stated so nobody spends an hour hunting a RED that was n
 
 ```kotlin
     private fun compactIfDue(now: Long): List<QueuedEvent>? {
+        val last = state.lastCompactionMs
+        val overdue = last == null ||
+            now - last >= compactIntervalMs ||
+            now < last                       // clock corrected backwards
         // `>=`, not `>`: the behaviour being preserved is the old
-        // `discarded >= compactSlack`, which fired *at* the threshold. A `>`
-        // here is an off-by-one that changes when reclamation happens.
-        val overCap = state.rows >= maxEvents + compactSlack
-        val sinceLast = now - state.lastCompactionMs
-        val overdue = sinceLast >= compactIntervalMs || now < state.lastCompactionMs
+        // `discarded >= compactSlack`, which fired *at* the threshold.
+        //
+        // Suppressed while the last reclaim failed, and that suppression costs
+        // nothing real: applyCaps caps its result at maxEvents, so a reclaim
+        // that *succeeds* always leaves the count under the threshold. An
+        // overCap that survives a compaction can therefore only mean the write
+        // failed — so gating it here suppresses failed retries and nothing else.
+        val overCap = state.rows >= maxEvents + compactSlack && !state.lastCompactionFailed
         return if (overCap || overdue) compactNow(now) else null
     }
 ```
@@ -381,7 +402,7 @@ That is fine, and it is stated so nobody spends an hour hunting a RED that was n
 ```kotlin
     fun append(id: String, table: String, payload: String): Unit = synchronized(lock) {
         val now = clock()
-        ensureLoaded(now)
+        ensureLoaded()
         file.parentFile?.mkdirs()
         // A real append never puts existing bytes at risk, so an unclean death
         // costs at most the line being written — which parseLine already skips.
@@ -430,7 +451,7 @@ Both still assert the same behaviour; only what provokes the sweep changes.
     }
 ```
 
-`size()` calls `ensureLoaded` and then returns `state.rows` rather than reading. It never calls `compactIfDue`, so it cannot write — and because the load is pure, that is now a property that holds rather than one the design quietly violated. `size()` feeds the flush gate (`TelemetryManager.kt:270`), the operator's screen via `status()` (`:79`) and `activate()` (`:180`), so a display read that could rewrite the queue would have the widest blast radius in this phase.
+`size()` calls `ensureLoaded()` and then returns `state.rows` rather than reading. It never calls `compactIfDue`, so it cannot write — and because the load is pure, that is now a property that holds rather than one the design quietly violated. `size()` feeds the flush gate (`TelemetryManager.kt:270`), the operator's screen via `status()` (`:79`) and `activate()` (`:180`), so a display read that could rewrite the queue would have the widest blast radius in this phase.
 
 `peek()` is Task 2's concern.
 
@@ -491,7 +512,7 @@ The parent is a regular file, so `mkdirs()` returns false and `appendText` throw
 
 Two behaviours in `compactNow` are specified and are **not** unit-testable here. Say so in your report rather than leaving a silent gap:
 
-- **Counters are not refreshed when `writeAll` throws.** Forcing a mid-compaction write failure needs a seam over `writeAll`, and adding one to pin a two-line ordering is more surface than the ordering is worth. It is instead guaranteed structurally: both `state.rows` assignments sit *after* `writeAll(kept)` inside the same `try`, so a throw cannot reach them.
+- **The failed-reclaim path.** `compactNow` sets `state.rows` from the read *before* attempting the write, sets `lastCompactionFailed` in the catch, and stamps the timestamp in the `finally`. Forcing a mid-compaction write failure needs a seam over `writeAll`, and adding one is more surface than this is worth — but note the earlier justification for skipping it ("both assignments sit after `writeAll`") is **no longer true**, because the count is deliberately set before the write now. If you can reach this path cheaply with the unwritable-path fixture, test it; if not, say so plainly rather than repeating a structural argument that no longer holds.
 - **The crash handler's shortened wait.** A consequence of the append no longer reading, not a branch, and `MainActivity` is unreachable from JVM tests.
 
 Do not write a test that asserts nothing in order to close either gap.
@@ -504,7 +525,14 @@ The state map outlives every instance. `@Before` already creates a fresh `file` 
 
 Run: `./gradlew :app:compileDebugKotlin && ./gradlew :app:testDebugUnitTest`
 
-Then run both named mutations — delete the `overdue` term; change `>=` to `>` — confirm the named test fails each time, restore, and record both results.
+Then run **every** mutation this task names, confirm the named test fails each time, restore, and record all four:
+
+| Mutation | Test that must die |
+|---|---|
+| Delete the `overdue` term from `compactIfDue` | `anOverdueIntervalCompactsEvenFarBelowTheCap` |
+| Change `>=` to `>` on the cap trigger | `compactionReclaimsInBatchesRatherThanOnEveryAppend` |
+| Delete the `now < last` clause | `aClockCorrectedBackwardsStillTriggersACompaction` |
+| Stamp `lastCompactionMs` only on the branch that writes | `aCompactionThatDropsNothingStillRestartsTheInterval` |
 
 ```bash
 git add -A
@@ -568,6 +596,9 @@ Expected: FAIL — `peek` returns `["stale"]`, because nothing has swept it.
             // this, peek would read twice on every sweep — and the spec's claim
             // that applying the caps here costs "a filter, not a second read"
             // would be false from the first commit.
+            //
+            // ensureLoaded() above is a pure read and never compacts: the
+            // compaction happens here, on a path that is allowed to write.
             val rows = compactIfDue(now) ?: readAll()
             rows.asSequence()
                 .filterNot { it.table in excludeTables }
