@@ -77,8 +77,10 @@ private const val INACTIVITY_BOUNCE_MS = 5L * 60 * 1000 // 5 min on settings / c
 
 /** How often a flush is retried while the screensaver stays up. The screensaver
  *  coming up already flushes once; this exists because that attempt can be
- *  refused by a backoff of up to 60 minutes and would then never be retried
- *  until 02:00. */
+ *  refused by a per-table backoff of up to 60 minutes, and only the tables
+ *  actually backed off would otherwise sit untried until 02:00 — a donation
+ *  queued behind a refused diagnostics table is not waiting on that ceiling
+ *  at all. */
 private const val TELEMETRY_FLUSH_TICK_MS = 30L * 60 * 1000 // 30 min
 
 /** How long the Bluetooth radio may stay off before the watchdog switches it back on.
@@ -145,6 +147,7 @@ class MainActivity : FragmentActivity() {
     private val telemetryOutbox: TelemetryOutbox by lazy {
         TelemetryOutbox(
             File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"),
+            protectedTables = setOf(TelemetryTables.DONATIONS),
             onDropped = ::onOutboxDropped
         )
     }
@@ -373,12 +376,14 @@ class MainActivity : FragmentActivity() {
         // The touch this closure makes when it fires — telemetryStatusStore's
         // `by lazy` and a possible first-load getSharedPreferences — runs from
         // inside the outbox's own monitor, on whatever thread dropped the
-        // event, including a dying one; bounded by compactSlack (only past 100
-        // discards) and by KioskCrashHandler's own catch(Throwable), so it can
-        // delay the chain but never break it.
+        // event, including a dying one. It can fire from any compaction now —
+        // an interval sweep or a peek, not only an append that crossed
+        // compactSlack — but it is still bounded by KioskCrashHandler's own
+        // catch(Throwable), so it can delay the chain but never break it.
         CrashContext.onOutboxDropped = ::onOutboxDropped
         crashOutbox = TelemetryOutbox(
             File(File(filesDir, "telemetry").apply { mkdirs() }, "outbox.jsonl"),
+            protectedTables = setOf(TelemetryTables.DONATIONS),
             onDropped = { CrashContext.onOutboxDropped?.invoke(it) }
         )
 

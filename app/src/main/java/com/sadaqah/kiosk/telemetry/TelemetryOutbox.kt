@@ -46,6 +46,11 @@ class TelemetryOutbox(
     /** Seamed for the same reason [clock] is: the tests that matter here assert
      *  how many times the queue is read, and there is no other way to count. */
     private val readLines: (File) -> List<String> = File::readLines,
+    /** Tables whose rows are evicted last. Injected rather than named here: this
+     *  class knows nothing about event types by design, and a table name inside
+     *  it would be the first violation. Empty by default, so every existing
+     *  caller keeps today's behaviour. */
+    private val protectedTables: Set<String> = emptySet(),
     private val onDropped: (Int) -> Unit = {}
 ) {
     /** Locking is keyed on the file, not the instance: phase 2's crash handler
@@ -251,9 +256,36 @@ class TelemetryOutbox(
      *  of them. The count cap still bounds them. */
     private fun applyCaps(events: List<QueuedEvent>, now: Long): List<QueuedEvent> {
         val cutoff = now - maxAgeMs
-        return events
-            .filter { it.queuedAtMs < PLAUSIBLE_EPOCH_FLOOR_MS || it.queuedAtMs >= cutoff }
-            .takeLast(maxEvents)
+        val aged = events.filter {
+            it.queuedAtMs < PLAUSIBLE_EPOCH_FLOOR_MS || it.queuedAtMs >= cutoff
+        }
+        if (aged.size <= maxEvents) return aged
+
+        // Every quantity comes from `aged`, the list actually being capped —
+        // never from the cached row count, which describes the file *before*
+        // the age filter above. Sizing a deletion from that counter would
+        // over-evict, and the rows it would over-evict are donations.
+        val shed = aged.size - maxEvents
+        val unprotected = aged.count { it.table !in protectedTables }
+        val dropUnprotected = minOf(shed, unprotected)
+        // Non-zero only when the queue is all-but-entirely protected rows. That
+        // is the stated tie-break: with 5000 undelivered donations and nothing
+        // else, oldest-first is the only option and the kiosk has a different
+        // emergency. Computing both budgets up front is what makes the result
+        // exact — dropping unprotected rows and "falling through" when they run
+        // out leaves the queue over its cap.
+        val dropProtected = shed - dropUnprotected
+
+        var remainingUnprotected = dropUnprotected
+        var remainingProtected = dropProtected
+        return aged.filter { event ->
+            val isProtected = event.table in protectedTables
+            when {
+                !isProtected && remainingUnprotected > 0 -> { remainingUnprotected--; false }
+                isProtected && remainingProtected > 0 -> { remainingProtected--; false }
+                else -> true
+            }
+        }
     }
 
     private fun readAll(): List<QueuedEvent> {

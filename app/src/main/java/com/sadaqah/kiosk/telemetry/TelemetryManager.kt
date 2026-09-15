@@ -296,14 +296,13 @@ class TelemetryManager(
             // The cost of getting here at all is one extra readAll on a flush
             // that does no network work.
             //
-            // The EMPTY_QUEUE arm below is kept for that reason alone, and is
-            // not unit-reachable: reaching it needs the queue to drain between
-            // `outbox.size()` above and this `peek`, a genuine race that a
-            // single-threaded suite against a concrete TelemetryOutbox (no
-            // injection seam for a draining one) cannot manufacture. Deleting
-            // the guard would make that drain report BACKING_OFF instead, which
-            // is the worse read for an operator watching logcat, so it stays
-            // despite having no test of its own.
+            // The EMPTY_QUEUE arm below is kept for that reason alone. It no
+            // longer needs a genuine race to reach: `peek` now compacts, so a
+            // single thread can have `outbox.size()` above report a non-zero
+            // queue and this `peek` shed every row on its own, with no
+            // interleaving required. Deleting the guard would make that drain
+            // report BACKING_OFF instead, which is the worse read for an
+            // operator watching logcat, so it stays.
             return if (backedOffTables.isEmpty()) FlushBlock.EMPTY_QUEUE else FlushBlock.BACKING_OFF
         }
 

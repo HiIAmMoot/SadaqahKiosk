@@ -221,6 +221,102 @@ class TelemetryOutboxTest {
         assertEquals(2, file.readLines().count { it.isNotBlank() })
     }
 
+    // ── Protected tables (eviction) ──────────────────────────────────────────
+
+    /**
+     * The case the phase exists for, and it is not hypothetical. A kiosk takes
+     * donations through the day; the card reader dies in the evening; 3c-ii's
+     * checkout_no_reader — deliberately unthrottled, because each row is a donor
+     * who tried to give and could not — floods the queue. The donations are now
+     * the *oldest* rows in the file, and takeLast(maxEvents) evicts one of them
+     * while keeping a diagnostic minutes old.
+     *
+     * Mutation-check: drop the protection and let applyCaps end in
+     * takeLast(maxEvents); this must fail.
+     */
+    @Test
+    fun anOldDonationIsNotEvictedWhileANewerDiagnosticCouldBe() {
+        val box = TelemetryOutbox(
+            file, maxEvents = 3, compactSlack = 1, clock = { now },
+            protectedTables = setOf(TelemetryTables.DONATIONS)
+        )
+        box.appendDonation("donation")
+        repeat(3) { box.append("diag$it", TelemetryTables.DIAGNOSTICS, """{"id":"diag$it"}""") }
+
+        val ids = box.peek().map { it.id }
+        assertTrue("the donation must survive", ids.contains("donation"))
+        assertEquals(3, ids.size)
+    }
+
+    /**
+     * A big diagnostic flood can outnumber what a small cap can absorb by
+     * itself. With a large compactSlack and compactIntervalMs nothing
+     * compacts mid-append, so a single interval-driven sweep runs applyCaps
+     * over the whole queue at once, over cap by more than the one unprotected
+     * row can cover -- proving the "fall through" arithmetic in one shot
+     * rather than across several smaller evictions.
+     */
+    @Test
+    fun shedBeyondTheUnprotectedCountFallsThroughToProtectedRows() {
+        val box = TelemetryOutbox(
+            file, maxEvents = 2, compactSlack = 10, compactIntervalMs = 1_000L,
+            clock = { now }, protectedTables = setOf(TelemetryTables.DONATIONS)
+        )
+        box.append("diag", TelemetryTables.DIAGNOSTICS, """{"id":"diag"}""")
+        box.appendDonation("d1")
+        box.appendDonation("d2")
+        box.appendDonation("d3")
+        now += 2_000L // overdue: one sweep evicts everything over cap at once
+
+        val ids = box.peek().map { it.id }
+        assertEquals(
+            "the diagnostic goes first, then the oldest donation, ending exactly at the cap",
+            listOf("d2", "d3"), ids
+        )
+    }
+
+    @Test
+    fun withOnlyProtectedRowsEvictionIsOldestFirst() {
+        val box = TelemetryOutbox(
+            file, maxEvents = 2, compactSlack = 0, clock = { now },
+            protectedTables = setOf(TelemetryTables.DONATIONS)
+        )
+        box.appendDonation("d1")
+        box.appendDonation("d2")
+        box.appendDonation("d3")
+
+        assertEquals(listOf("d2", "d3"), box.peek().map { it.id })
+    }
+
+    @Test
+    fun theDefaultEmptyProtectionBehavesExactlyAsBefore() {
+        val box = TelemetryOutbox(file, maxEvents = 2, compactSlack = 0, clock = { now })
+        box.appendDonation("d1")
+        box.append("diag", TelemetryTables.DIAGNOSTICS, """{"id":"diag"}""")
+        box.appendDonation("d2")
+
+        assertEquals(listOf("diag", "d2"), box.peek().map { it.id })
+    }
+
+    /**
+     * An activation regenerates the next time someone presses "Test
+     * connection"; a donation does not regenerate at all. Only donations are
+     * protected, so an activation is shed ahead of one even though it is the
+     * *newer* row here -- oldest-first alone would keep the activation and
+     * evict the donation instead.
+     */
+    @Test
+    fun activationsAreEvictable() {
+        val box = TelemetryOutbox(
+            file, maxEvents = 1, compactSlack = 0, clock = { now },
+            protectedTables = setOf(TelemetryTables.DONATIONS)
+        )
+        box.appendDonation("d1")
+        box.append("act", TelemetryTables.ACTIVATIONS, """{"id":"act"}""")
+
+        assertEquals(listOf("d1"), box.peek().map { it.id })
+    }
+
     // ── Corruption tolerance ─────────────────────────────────────────────────
 
     /** The case that matters is a torn line surviving a crash and then being
