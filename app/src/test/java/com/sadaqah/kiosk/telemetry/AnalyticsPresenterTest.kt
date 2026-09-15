@@ -323,6 +323,27 @@ class AnalyticsPresenterTest {
         )).consecutiveFailures)
     }
 
+    /**
+     * The spec is the highest count across tables, because that is what
+     * conveys how bad things are — a badly-failing table must not be masked
+     * by a healthier sibling. All tables sharing one value (as above) cannot
+     * tell `maxOrNull` apart from `minOrNull`; these must differ.
+     *
+     * Mutation check: change `maxOrNull()` to `minOrNull()` in
+     * AnalyticsPresenter.view's consecutiveFailures derivation and this test
+     * must fail.
+     */
+    @Test
+    fun consecutiveFailuresReportsTheHighestAcrossTables() {
+        val result = view(status = TelemetryStatus(
+            consecutiveFailuresByTable = mapOf(
+                TelemetryTables.DONATIONS to 2,
+                TelemetryTables.DIAGNOSTICS to 9
+            )
+        ))
+        assertEquals(9, result.consecutiveFailures)
+    }
+
     @Test
     fun policyUrlsAreCarriedThroughFromSettings() {
         val settings = Settings(

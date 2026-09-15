@@ -173,6 +173,30 @@ class TelemetryManagerTest {
         assertEquals(now, store.read().lastErrorAtMs)
     }
 
+    /**
+     * lastSuccessMs is the operator's single strongest signal that telemetry is
+     * broken — it must only move when something actually reached the server.
+     *
+     * Mutation check: make `lastSuccessMs` advance unconditionally in
+     * recordOutcome and this test must fail — a kiosk that never successfully
+     * uploaded anything would then display a fresh "Last upload" time after a
+     * flush where every table failed.
+     */
+    @Test
+    fun aFlushWhereEveryTableFailsLeavesLastSuccessMsUntouched() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(lastSuccessMs = 500L))
+        val outbox = outboxWith("a")
+
+        manager(outbox, ConstantPoster(HttpResponse(503, "down")), statusStore = store).flush()
+
+        assertEquals(
+            "a flush with no success must not advance lastSuccessMs",
+            500L,
+            store.read().lastSuccessMs
+        )
+    }
+
     @Test
     fun aSuccessResetsTheFailureCount() {
         val store = InMemoryStatusStore()
@@ -312,6 +336,37 @@ class TelemetryManagerTest {
         assertEquals(
             FlushBlock.EMPTY_QUEUE,
             manager(outbox, ConstantPoster(HttpResponse(201, null))).flush()
+        )
+    }
+
+    /**
+     * A deadline further out than TelemetryGate.MAX_BACKOFF_MS cannot have come
+     * from backoffDelayMs — only a clock that has since jumped — and the fail-open
+     * guard in TelemetryGate.isTableBackedOff discounts it rather than let it
+     * exclude the table forever.
+     *
+     * Mutation check: replace `TelemetryGate.isTableBackedOff(it, now)` with
+     * `it > now` in flush()'s backedOffTables computation and this test must fail
+     * — the mutated code would exclude this table from every future flush.
+     */
+    @Test
+    fun aDeadlineBeyondTheCeilingDoesNotExcludeItsTableFromTheFlush() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(
+            backoffUntilMsByTable = mapOf(
+                TelemetryTables.DIAGNOSTICS to now + TelemetryGate.MAX_BACKOFF_MS + 1_000
+            )
+        ))
+        val outbox = outboxWithRows("x1" to TelemetryTables.DIAGNOSTICS)
+        val poster = ConstantPoster(HttpResponse(201, null))
+
+        val result = manager(outbox, poster, statusStore = store).flush()
+
+        assertEquals(FlushBlock.NONE, result)
+        assertEquals(
+            "a deadline beyond the ceiling must not exclude the table forever",
+            0,
+            outbox.size()
         )
     }
 

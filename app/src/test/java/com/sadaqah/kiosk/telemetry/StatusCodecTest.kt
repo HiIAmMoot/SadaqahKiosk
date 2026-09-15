@@ -48,6 +48,27 @@ class StatusCodecTest {
      * Mutation check: stop emitting the two legacy keys from `encode` and this
      * test must fail.
      */
+    /**
+     * No other test in this file round-trips more than one table at a time, so
+     * a table silently dropped from `encode`'s loop over TelemetryTables.ALL
+     * would go unnoticed: its backoff and failure count would never be
+     * persisted, and a restart would forget them. A distinct value per table
+     * is what makes a dropped table visible in the round trip.
+     *
+     * Mutation check: drop one table from the `for (table in TelemetryTables.ALL)`
+     * loop in `encode` and this test must fail.
+     */
+    @Test
+    fun `every table survives the round trip with its own distinct value`() {
+        val status = TelemetryStatus(
+            consecutiveFailuresByTable = TelemetryTables.ALL.withIndex()
+                .associate { (i, table) -> table to (i + 1) },
+            backoffUntilMsByTable = TelemetryTables.ALL.withIndex()
+                .associate { (i, table) -> table to (1_000L * (i + 1)) }
+        )
+        assertEquals(status, StatusCodec.decode(asStored(status)))
+    }
+
     @Test
     fun `a write clears the legacy keys, so a recovered table stays recovered`() {
         val upgraded = mutableMapOf<String, Any?>(
