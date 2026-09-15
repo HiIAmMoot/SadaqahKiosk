@@ -173,52 +173,76 @@ Extract the canonical-path derivation `lockFor` already performs into a shared `
 
 ```kotlin
     /**
-     * The first load **is** a compaction, and that is deliberate.
+     * A pure read. It sets [QueueState.rows] and writes nothing.
      *
-     * The file does not record when it was last compacted, so neither obvious
-     * default for [QueueState.lastCompactionMs] works: leaving it at zero makes
-     * the first append of every process overdue, and stamping it `now` without
-     * doing the work makes the age sweep depend on a process restart — which on
-     * a kiosk that runs for months is not a bound at all. Doing the work during
-     * the one read the load needs anyway resolves both, and buys a free age
-     * sweep at every process start.
+     * It deliberately leaves [QueueState.lastCompactionMs] at zero, which makes
+     * the first `append` or `peek` of the process overdue and so buys an early
+     * sweep — through the normal trigger, on a path that is allowed to write,
+     * rather than from inside a read.
+     *
+     * Making the load itself compact is a deadlock, and it is worth knowing why
+     * so nobody re-derives it: this method skips its work once `rows` is set, so
+     * a `writeAll` that threw would leave `rows` at the sentinel and every later
+     * append, peek, size and remove would retry the same failing write forever.
+     * `writeAll` stages a full second copy of the queue before its atomic move,
+     * so on a full disk it is guaranteed to fail — and a full disk is the exact
+     * condition the cap exists to prevent.
      */
     private fun ensureLoaded(now: Long) {
         if (state.rows != UNKNOWN) return
-        compactNow(now)
+        state.rows = readAll().size
     }
 ```
 
 ```kotlin
-    private fun compactNow(now: Long) {
+    /** Returns the rows now on disk, so a caller that was about to read can use
+     *  this instead of reading again. Null when no compaction was due. */
+    private fun compactNow(now: Long): List<QueuedEvent> {
         try {
             val all = readAll()
+            // Set from the read, before any write is attempted: a failed reclaim
+            // below must not leave the count unknown.
+            state.rows = all.size
             val kept = applyCaps(all, now)
             val discarded = all.size - kept.size
-            if (discarded > 0) {
-                // Throws on a full disk. The counters are set only past this
-                // line, so a failed write leaves them describing what is
-                // actually on disk rather than the list that never landed.
+            if (discarded == 0) return all   // no write when nothing is droppable
+            return try {
                 writeAll(kept)
                 state.rows = kept.size
                 onDropped(discarded)
-            } else {
-                // No write when nothing is droppable: otherwise every overdue
-                // compaction rewrites the whole queue for nothing.
-                state.rows = all.size
+                kept
+            } catch (_: Throwable) {
+                // A failed reclaim is swallowed, and that is not laziness.
+                //
+                // Propagating it on the append path would be actively wrong:
+                // the row has already been written, and MainActivity treats an
+                // append throw as a lost event and bumps droppedCount — so a
+                // failed *reclaim* would be reported to the operator as a
+                // destroyed donation that is in fact safely on disk. It would
+                // also make peek and size, pure reads today, able to throw into
+                // a flush that does not wrap them (TelemetryManager.kt:270, :283).
+                //
+                // The queue is unharmed: writeAll stages through a temp file and
+                // moves atomically, so a failure leaves the previous contents in
+                // place — which is what state.rows above already describes.
+                all
             }
         } finally {
             // Stamped on every attempt, including a failed one, and deliberately
             // not sharing the counters' condition. A device with a full disk
             // would otherwise stay permanently overdue and retry a full read and
-            // a failed write on every single append — for the life of the
+            // a failed write on every single append, for the life of the
             // deployment, on the donation path.
             state.lastCompactionMs = now
         }
     }
 ```
 
-- [ ] **Step 7: Write the failing trigger tests**
+- [ ] **Step 7: Write the trigger tests — and expect most of them to start green**
+
+**Only `aCompactionThatDropsNothingStillRestartsTheInterval` is genuinely red before the implementation.** The other four assert behaviour today's per-append sweep already delivers, by a different mechanism — they are regression pins for a schedule that is about to change underneath them, not discriminators.
+
+That is fine, and it is stated so nobody spends an hour hunting a RED that was never there. What makes them worth writing is the named mutation on each: every one of those must fail when its clause is removed, and Step 13 runs them.
 
 ```kotlin
     @Test
@@ -332,14 +356,14 @@ Extract the canonical-path derivation `lockFor` already performs into a shared `
 - [ ] **Step 8: Add `compactIfDue` and rewire `append`**
 
 ```kotlin
-    private fun compactIfDue(now: Long) {
+    private fun compactIfDue(now: Long): List<QueuedEvent>? {
         // `>=`, not `>`: the behaviour being preserved is the old
         // `discarded >= compactSlack`, which fired *at* the threshold. A `>`
         // here is an off-by-one that changes when reclamation happens.
         val overCap = state.rows >= maxEvents + compactSlack
         val sinceLast = now - state.lastCompactionMs
         val overdue = sinceLast >= compactIntervalMs || now < state.lastCompactionMs
-        if (overCap || overdue) compactNow(now)
+        return if (overCap || overdue) compactNow(now) else null
     }
 ```
 
@@ -365,6 +389,7 @@ Both still assert the same behaviour; only what provokes the sweep changes.
 
 - `ageCap_dropsEventsPastTheWindow` (`:158`) and `droppingEventsOverTheAgeCapReportsHowManyWereLost` (`:363`) rely on the age sweep running on the append that crosses the threshold. Under the count-plus-interval triggers, a two-row queue far below `maxEvents` never compacts. Give each an explicit `compactIntervalMs` shorter than the clock advance it already performs — both advance `now` by 20 s, so an interval of 10 s provokes the sweep without changing what is asserted.
 - `ageCap_keepsEventsInsideTheWindow` (`:168`) needs no change: it asserts nothing is dropped, which holds whether or not a compaction runs.
+- `blankLinesAreIgnored` (`:199-205`) **goes vacuous and must be repointed.** Its only assertion is `box.size()`, which after Step 10 returns the cached count instead of reading — so it would stop exercising `parseLine`'s blank-line skip entirely while still passing. Change it to assert through `peek()`, which still reads, so it keeps testing what its name claims.
 - `compactionReclaimsInBatchesRatherThanOnEveryAppend` (`:246`) needs no change, and is the regression test for the `>=` boundary — 12 rows under a slack of 10 stay on disk, 15 reclaim. Confirm it still passes rather than editing it.
 
 - [ ] **Step 10: Maintain the counters in `remove` and `clear`**
@@ -372,7 +397,9 @@ Both still assert the same behaviour; only what provokes the sweep changes.
 ```kotlin
     fun remove(ids: Set<String>): Unit = synchronized(lock) {
         if (ids.isEmpty()) return@synchronized
-        ensureLoaded(clock())
+        // No ensureLoaded: this sets `rows` from the list it writes, so a load
+        // would be a wasted read — and with the load pure it could not compact
+        // here anyway, which is the property `size` and `remove` are meant to have.
         val kept = readAll().filterNot { it.id in ids }
         writeAll(kept)
         // Not optional: remove runs after every successful flush, and
@@ -392,7 +419,9 @@ Both still assert the same behaviour; only what provokes the sweep changes.
     }
 ```
 
-`size()` and `peek()` both call `ensureLoaded` first; `size()` then returns `state.rows` rather than reading.
+`size()` calls `ensureLoaded` and then returns `state.rows` rather than reading. It never calls `compactIfDue`, so it cannot write — and because the load is pure, that is now a property that holds rather than one the design quietly violated. `size()` feeds the flush gate (`TelemetryManager.kt:270`), the operator's screen via `status()` (`:79`) and `activate()` (`:180`), so a display read that could rewrite the queue would have the widest blast radius in this phase.
+
+`peek()` is Task 2's concern.
 
 - [ ] **Step 11: Write the counter-maintenance tests**
 
@@ -524,8 +553,12 @@ Expected: FAIL — `peek` returns `["stale"]`, because nothing has swept it.
             // happens on a quiet kiosk that is still flushing and still being
             // refused. peek already reads the whole queue, so applying the caps
             // in the same pass costs a filter and a conditional write.
-            compactIfDue(now)
-            readAll().asSequence()
+            // Uses the list the compaction already read, when one ran. Without
+            // this, peek would read twice on every sweep — and the spec's claim
+            // that applying the caps here costs "a filter, not a second read"
+            // would be false from the first commit.
+            val rows = compactIfDue(now) ?: readAll()
+            rows.asSequence()
                 .filterNot { it.table in excludeTables }
                 .take(limit)
                 .toList()
@@ -673,12 +706,13 @@ Both pass `protectedTables = setOf(TelemetryTables.DONATIONS)` — the lazy `tel
 
 **Only donations are protected.** An activation row regenerates by pressing "Test connection" and a diagnostic describes a condition that will recur; a donation is gone.
 
-- [ ] **Step 6: Correct the three comments this phase makes untrue**
+- [ ] **Step 6: Correct the four comments this phase makes untrue**
 
 A comment describing removed or changed behaviour is worse than none, and each of these is checkable in under a minute by whoever reads it next.
 
 - **`MainActivity.kt:78-81`**, the KDoc on `TELEMETRY_FLUSH_TICK_MS`: says a flush "can be refused by a backoff of up to 60 minutes and would then never be retried until 02:00." 3d-i made backoff per-table, so a refusal now blocks only the tables actually backed off — a donation queued behind a refused diagnostics table is not waiting on that ceiling at all.
 - **`MainActivity.kt:374-378`**, on `CrashContext.onOutboxDropped`: says the callback is "bounded by compactSlack (only past 100 discards)". **This phase makes that false.** `compactNow` invokes `onDropped` whenever anything was discarded, and it is now reachable from an interval sweep and from `peek`, not only from an append that crossed the slack. The surrounding argument still holds — the work is bounded and `KioskCrashHandler`'s own `catch(Throwable)` still means it can delay the chain but never break it — so correct the bound, keep the conclusion.
+- **`TelemetryManager.kt:299-305`**, on the post-exclusion `EMPTY_QUEUE` arm: says that arm "is not unit-reachable: reaching it needs the queue to drain between `outbox.size()` above and this `peek`, a genuine race that a single-threaded suite ... cannot manufacture." **This phase makes it reachable.** `peek` now compacts, so a single thread can have `size()` report a non-zero queue and the following `peek` shed every row — no race required. Correct the comment, and say in your report that the arm now *can* be tested, so a later phase can close the gap that comment was written to excuse.
 - **`TelemetryUploader.kt:217-227`**, in the fallback-cap KDoc: says "compaction only rewrites the file once at least `compactSlack` rows are droppable in one pass, so on a low-volume kiosk a stall can outlast 30 days by a wide margin." The interval trigger is what bounds that now. Rewrite it to say the stall is bounded by the age cap plus at most one compaction interval. This comment is the reason the interval exists, so leaving it describing the old unbounded behaviour would hide the fix from the next reader of the code that motivated it.
 
 - [ ] **Step 7: Build, run the whole suite, commit**

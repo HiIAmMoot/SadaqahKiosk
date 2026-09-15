@@ -84,7 +84,13 @@ Read and written only under the path-keyed monitor, so no field needs volatility
 
 **Every entry point loads before it uses.** `append`, `size`, `peek` and `remove` each begin with the same guard: if `rows == UNKNOWN`, load. This is not optional and not implicit — the first draft described the load in prose and then omitted it from the `append` code block, which would have left `rows` incrementing from the sentinel, `size()` reporting near-zero while donations sat on disk, and `TelemetryGate` reporting `EMPTY_QUEUE` forever.
 
-**The first load *is* a compaction.** It already reads the whole file, so it applies the caps in the same pass, writes back only if something was droppable, sets `rows` from the surviving list, and stamps `lastCompactionMs = now`. That resolves the `lastCompactionMs` problem exactly: the stamp is real rather than invented, the process start gets a free age sweep, and the first append does **one** read rather than the two a load-then-compact sequence would cost.
+**The load is a pure read, and that is a correction to an earlier draft.** It reads, sets `rows`, and writes nothing.
+
+An earlier draft made the first load *be* a compaction, which is a deadlock. `ensureLoaded` skips its work once `rows` is set, so a `writeAll` that throws leaves `rows` at the sentinel — and every subsequent `append`, `peek`, `size` and `remove` retries the same failing write, forever. `writeAll` stages a **full second copy** of the queue before its atomic move, so on a full disk it is guaranteed to fail — and a full disk is the exact condition the cap exists to prevent. The reclaim that would free space could not run because it needed space. Worse, `TelemetryManager` calls `outbox.size()` and `outbox.peek()` unwrapped (`:270`, `:283`), so the throw would kill every flush permanently.
+
+**`lastCompactionMs` is left at zero by the load** rather than stamped. That makes the first `append` or `peek` of the process overdue, so the early sweep still happens — through the normal trigger, on a path that is allowed to write, instead of inside a read.
+
+The cost is that the first append or peek of a process reads twice: once to load, once to compact. Once per process, not once per append, and the phase's claim is about the steady state.
 
 That one read per process is unavoidable: the file outlives the process.
 
@@ -134,10 +140,10 @@ A count-only trigger turns "outlasts 30 days by a wide margin" into **never**. A
 So `peek` calls `compactIfDue` as well. Three reasons it is the right second site:
 
 - **It runs without appends.** `MainActivity` retries a flush every `TELEMETRY_FLUSH_TICK_MS` — 30 minutes (`MainActivity.kt:82`) — while the screensaver is up, which is the state a quiet kiosk sits in. The flush peeks; the queue gets maintained.
-- **It already reads the whole queue**, so the marginal cost of applying the caps in the same pass is the filter and a conditional write, not a second read.
+- **It already reads the whole queue**, so in the steady state the caps are applied to the list `peek` was going to read anyway — `compactIfDue` hands that list back rather than making `peek` read again. A compaction that actually fires does cost a second read, but that is once per interval, not once per peek.
 - **It is the stalled path itself.** A kiosk with a poison head row is, by definition, still flushing and still being refused. The mechanism fires on exactly the code path the failure runs through.
 
-`size` and `remove` deliberately do **not** trigger it. `remove` runs immediately after a successful upload, when the queue has just shrunk and nothing is owed; `size` is called from the gate on every flush evaluation and from `status()` for the screen, and a display read must not be able to rewrite the queue.
+`size` and `remove` deliberately do **not** trigger it, and with the load now pure this is a property that actually holds rather than one the design quietly violated. `remove` runs immediately after a successful upload, when the queue has just shrunk and nothing is owed — and it sets `rows` from the list it writes, so it needs no load at all. `size` is called from the gate on every flush evaluation and from `status()` for the screen: a display read must never rewrite the queue, and now it cannot.
 
 **One consequence to state, because it touches a dying thread.** `crashOutbox.append` (`MainActivity.kt:2344`, and the crash handler itself) can now be the append that finds the interval overdue and performs a compaction. That is strictly better than today, where *every* append pays a full read — but it means the crash path's worst case is still one read-and-write, not zero. The bounded-write decline above rests on that being bounded by a local file operation over a capped queue, which remains true.
 
@@ -150,6 +156,7 @@ Does the existing `readAll` / `applyCaps` / `writeAll`, then refreshes all three
 Three rules the first draft got wrong or left unsaid:
 
 - **Refresh the counters on the no-write path too.** When nothing is droppable, `writeAll` is skipped — but the counters and `lastCompactionMs` must still be refreshed from the read. Otherwise an overdue compaction that finds nothing to drop leaves `lastCompactionMs` stale, re-fires on the very next append, and the O(n) read returns permanently and silently.
+- **A failed reclaim is swallowed, not propagated.** A compaction is housekeeping; the caller's append has already landed its row and a reader has already got its data. Propagating would be actively wrong on the append path: `MainActivity` treats an append throw as a lost event and increments `droppedCount`, so a failed *reclaim* would be reported to the operator as a destroyed donation that is in fact safely on disk. It would also make `peek` and `size` — pure reads today — able to throw into a flush that does not wrap them.
 - **Refresh the counters only after `Files.move` succeeds — but stamp `lastCompactionMs` on every attempt.** These two must not share a condition. If the move throws, the file still holds its pre-compaction contents, so the counters must describe *that*; but if the stamp is also skipped, a device with a full disk stays permanently overdue and every subsequent append retries a full read *and* a failed write. A disk-full kiosk would have every donation append paying the cost this phase exists to remove, forever. The stamp records that an attempt was made; the counters record what is actually on disk.
 - **No `writeAll` and no `onDropped(0)` when nothing is droppable.** Otherwise every overdue compaction rewrites the whole queue for nothing.
 
