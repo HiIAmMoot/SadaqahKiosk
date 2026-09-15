@@ -810,6 +810,35 @@ class TelemetryOutboxTest {
         assertEquals(0, dropped.sum())
     }
 
+    /**
+     * The reclaim has already landed on disk by the time `onDropped` runs, so
+     * a throwing callback -- PrefsStatusStore's lazy getSharedPreferences can
+     * fail on exactly the full disk that caused this shed -- must not be
+     * mistaken for a failed queue write: it must not fail the `append` that
+     * triggered it, must not mark the reclaim failed, and must not escape
+     * this class at all. See the comment at the call site in `compactNow`.
+     *
+     * Mutation-check: remove the `try { onDropped(discarded) } catch (_:
+     * Exception) {}` wrapper around the call and this must fail with the
+     * callback's exception propagating out of `append`.
+     */
+    @Test
+    fun aThrowingOnDroppedDoesNotFailTheAppendOrTheReclaim() {
+        val box = TelemetryOutbox(file, maxEvents = 2, compactSlack = 0, clock = { now }) {
+            throw RuntimeException("status store is unavailable")
+        }
+        box.appendDonation("a")
+        box.appendDonation("b")
+        box.appendDonation("c")  // over cap: triggers a reclaim; the callback throws
+
+        // Reaching this line at all proves the throw did not escape append().
+        assertEquals("the reclaim must still have landed on disk",
+            2, file.readLines().count { it.isNotBlank() })
+        assertEquals("the reclaim must not have been recorded as failed -- " +
+            "peek must see the capped list, not the pre-compaction one",
+            listOf("b", "c"), box.peek().map { it.id })
+    }
+
     // ── Per-table exclusion ──────────────────────────────────────────────────
 
     /**

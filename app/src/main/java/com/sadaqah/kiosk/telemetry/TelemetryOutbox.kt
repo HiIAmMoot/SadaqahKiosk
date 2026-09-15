@@ -258,7 +258,19 @@ class TelemetryOutbox(
             // Inside the try, that throw would be caught by the block above and
             // recorded as a failed reclaim -- even though the write had already
             // landed -- and this call would then hand peek the pre-compaction list.
-            if (reclaimed) onDropped(discarded)
+            //
+            // Its own throw is swallowed here for the same reason, not a
+            // different one: a reclaim that succeeded must be reported as
+            // succeeded, and PrefsStatusStore failing to persist that fact --
+            // its lazy getSharedPreferences can fail on the very full disk
+            // that caused this shed -- is not evidence the queue write
+            // failed. Left unswallowed it reaches append and peek's callers
+            // unwrapped (TelemetryManager.kt:233, :284; the latter inside a
+            // bare lifecycleScope.launch with no CoroutineExceptionHandler),
+            // and MainActivity would record a safely-reclaimed donation as
+            // lost -- the exact misreport this method exists to prevent,
+            // arriving through a different door.
+            if (reclaimed) try { onDropped(discarded) } catch (_: Exception) { }
             return if (reclaimed) kept else all
         } finally {
             // Stamped on every attempt, including a failed one, and deliberately
