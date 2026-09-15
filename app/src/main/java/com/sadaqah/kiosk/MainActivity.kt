@@ -2183,6 +2183,14 @@ class MainActivity : FragmentActivity() {
     fun onAnalyticsClearCredentials() {
         TelemetryTeardown.clearEverything(telemetryCredentials, telemetryOutbox, telemetryStatusStore)
         refreshAnalyticsSnapshot()
+        // An arm from a destination saved earlier in this same visit must not
+        // outlive a clear: DisclosurePresenter.view only needs a non-blank URL
+        // and a non-blank privacy policy URL, neither of which this touches, so
+        // without this the exit branch would still show a destination this
+        // function just tore down. disclosureView needs no clearing here — a
+        // non-null one wins the switch chain, so this control is unreachable
+        // while one is showing.
+        disclosurePendingUrl = null
     }
 
     /**
