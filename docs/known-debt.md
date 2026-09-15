@@ -34,6 +34,34 @@ This file exists because deferred items were previously recorded only in phase s
 
 ---
 
+---
+
+## The truncation suffix's byte budget is guarded only by a grep
+
+**What.** `DiagnosticEvents.truncateWrappedMessage` reserves budget for the
+truncation suffix by measuring `TelemetryRedactor.TRUNCATION_SUFFIX`'s
+JSON-escaped length. Phase 3d-i gave that literal a single definition so the two
+could not drift. But a reviewer simulated a drifted copy — a suffix longer than
+the one the budget was computed against — and **no test failed**: the 512-byte
+reserve absorbs the difference.
+
+**Why deferred.** Nothing is wrong today, and the single definition means the two
+values cannot actually diverge without someone deliberately reintroducing a
+second copy. The finding is that the *test suite* would not notice if they did.
+Widening 3d-i to cover it would have meant designing a budget test on a path the
+phase otherwise did not touch.
+
+**What it costs to leave.** The grep in phase 3d-i's Task 5 (`grep -rn '… truncated'
+app/src/main` must return exactly one line) is the only thing standing between a
+reintroduced second copy and a silently wrong budget. Greps are not run by CI.
+
+**What fixing it needs.** A test that pins the relationship rather than the
+literal: assert that a message truncated at the budget boundary, plus the suffix,
+still fits inside `MAX_TEXT_BYTES` — which fails for any suffix the budget did
+not account for, without hardcoding either value.
+
+**Established in.** Phase 3d-i, Task 5 review — found by mutation, not by reading.
+
 ## Resolved
 
 Items here have been closed; kept briefly so their history is findable.
