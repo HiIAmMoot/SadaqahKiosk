@@ -87,7 +87,21 @@ class TelemetryOutbox(
      */
     fun peek(limit: Int = DEFAULT_BATCH, excludeTables: Set<String> = emptySet()): List<QueuedEvent> =
         synchronized(lock) {
-            readAll().asSequence()
+            val now = clock()
+            ensureLoaded()
+            // The second trigger site, and the one that makes the interval a
+            // real bound. append alone only fires under load, and the stall this
+            // clears — a poison row at the head that the uploader refuses —
+            // happens on a quiet kiosk that is still flushing and still being
+            // refused. peek already reads the whole queue, so applying the caps
+            // in the same pass costs a filter and a conditional write.
+            // Uses the list the compaction already read, when one ran, so peek
+            // never reads the file twice on a sweep.
+            //
+            // ensureLoaded() above is a pure read and never compacts: the
+            // compaction happens here, on a path that is allowed to write.
+            val rows = compactIfDue(now) ?: readAll()
+            rows.asSequence()
                 .filterNot { it.table in excludeTables }
                 .take(limit)
                 .toList()

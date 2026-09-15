@@ -668,4 +668,23 @@ class TelemetryOutboxTest {
         box.append("d", TelemetryTables.DIAGNOSTICS, """{"id":"d"}""")
         assertEquals(listOf("a", "d"), box.peek().map { it.id })
     }
+
+    /**
+     * A quiet kiosk is the case the interval exists for, and a quiet kiosk does
+     * not append. MainActivity retries a flush every TELEMETRY_FLUSH_TICK_MS —
+     * 30 minutes — while the screensaver is up, and every one of those peeks.
+     * That is the code path a stalled kiosk is already executing.
+     *
+     * Mutation-check: remove the compactIfDue call from peek and this fails.
+     */
+    @Test
+    fun peekSweepsAnOverdueQueueWithoutAnyAppend() {
+        now = 1_600_000_000_000L
+        val box = outbox(maxAgeMs = 10_000L, compactIntervalMs = 60_000L)
+        box.appendDonation("stale")
+        now += 120_000L
+
+        assertEquals("peek alone must retire the aged row",
+            emptyList<String>(), box.peek().map { it.id })
+    }
 }
