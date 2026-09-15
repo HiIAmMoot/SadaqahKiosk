@@ -156,6 +156,17 @@ Beside `locksByPath` in the companion, keyed the same way and guarded by the sam
 
 Extract the canonical-path derivation `lockFor` already performs into a shared `keyFor(file)` so the lock and the state cannot key differently.
 
+**Declare the instance field beside the existing lock field**, or nothing in this task compiles — every code block below reads `state.rows`:
+
+```kotlin
+    private val lock: Any = lockFor(file)
+
+    /** Keyed the same way as [lock] and guarded by it. Two TelemetryOutbox
+     *  instances exist over one file, so per-instance counts would diverge on
+     *  the first append; the lock already solves that problem this way. */
+    private val state: QueueState = stateFor(file)
+```
+
 ```kotlin
     /** Two fields, not three. An earlier design also cached a per-table count
      *  maintained on the donation path; nothing read it, because eviction sizes
