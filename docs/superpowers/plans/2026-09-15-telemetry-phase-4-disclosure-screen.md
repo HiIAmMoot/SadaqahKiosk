@@ -490,7 +490,7 @@ A composable taking `view: DisclosureView`, `strings: Strings`, `onDismiss: () -
 
 Each URL block is the label, the URL as selectable text, and the QR beside it. Draw the `BitMatrix` with Compose `Canvas`, one filled rect per dark module; do not convert to a `Bitmap`.
 
-**When `view.kioskCodeMissing` is true, render `disclosureSendsIdentity` without its kiosk-code clause** — the presenter reports the fact so the screen can say the true thing. Decide how in the composable only if it is a pure string choice; if it needs logic, it belongs in the presenter.
+`disclosureSendsIdentity` renders unconditionally. Its copy reads "its kiosk code if one is set", which is true whether or not one is — so the screen needs no variant and the presenter needs no flag to select one.
 
 Left-to-right in every language including Arabic: no `LayoutDirection` override anywhere. Founder-ruled; the rest of the app is the same.
 
@@ -575,7 +575,7 @@ git commit -m "Show the disclosure after a destination is saved"
 | No policy URL ⇒ no screen | Task 1 Steps 2, 4 |
 | Terms block independently optional | Task 1 Step 2 |
 | `policyUrlsMissing` cannot govern (OR over both) | Task 1 Step 2, with its own test |
-| Copy split per item so it stays true with a blank kiosk code | Task 3 Step 3 + Task 1's `kioskCodeMissing` |
+| Copy split per item so it stays true with a blank kiosk code | Task 3 Step 3 — phrasing alone, no flag |
 | `disclosureIdentified` — reports identify this kiosk | Task 3 Step 3 |
 | Intro must not claim reporting is on | Task 3 Step 3 |
 | Exclusions stay absolute in translation | Task 3 Step 4 |
