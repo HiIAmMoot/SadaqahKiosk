@@ -195,6 +195,10 @@ The watchdog clear, and the ticker's move to the shared helper.
 
 **The screen's numbers are aggregates.** "3 consecutive failures" is the worst table, not a total.
 
+**`lastError` stays one global field, so its text can name the wrong table.** Diagnostics fails with a 400 and a long deadline; donations then fails with a 503 and overwrites `lastError`; donations recovers while diagnostics is still backed off. The screen reads "HTTP 503" while the thing actually stuck is the 400. This is accepted rather than fixed: `backingOff`, `backoffRemainingSeconds` and `consecutiveFailures` all stay correct beside it, so the operator is never told everything is fine — they are pointed at a real failure, just not the one still outstanding. A per-table error string would cost a field per table and a second screen row to say it.
+
+**A per-table failure count is only cleared by that table's own success.** A table whose rows are all evicted by the outbox caps never succeeds again, so its count — and the "Failed attempts: N" the screen derives from it — stays on screen indefinitely. Pressing "Test connection" clears every table, which is the operator's escape hatch.
+
 ---
 
 ## Decisions
