@@ -450,7 +450,11 @@ class TelemetryUploaderTest {
         assertEquals("the batch plus one row, then stop", 2, poster.calls.size)
         assertTrue(outcome.uploadedIds.isEmpty())
         assertTrue(outcome.rejectedIds.isEmpty())
-        assertTrue(outcome.retryableTables.isNotEmpty())
+        // The set's contents, not merely that it is non-empty: every row here
+        // belongs to one table, so naming it is free and pins that the stall is
+        // attributed to that table rather than to whatever else was in flight.
+        assertEquals(setOf(TelemetryTables.DONATIONS), outcome.retryableTables)
+        assertTrue(outcome.succeededTables.isEmpty())
     }
 
     /** Rejections found mid-fallback are dropped too when the group stalls before
