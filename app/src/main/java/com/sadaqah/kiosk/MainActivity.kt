@@ -2702,6 +2702,7 @@ fun AppUI(
             )
             disclosureView != null -> DisclosureScreen(
                 view = disclosureView,
+                settings = settings,
                 strings = rememberStrings(),
                 onDismiss = onDismissDisclosure
             )
