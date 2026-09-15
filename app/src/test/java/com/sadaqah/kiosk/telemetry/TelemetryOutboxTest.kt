@@ -221,6 +221,55 @@ class TelemetryOutboxTest {
         assertEquals(2, file.readLines().count { it.isNotBlank() })
     }
 
+    /**
+     * The donation-loss path this class's rule exists for: `applyCaps` must
+     * size its eviction from the age-filtered list, never from the cached row
+     * count, because the cached count describes the file *before* the age
+     * filter runs.
+     *
+     * The queue holds 5 rows the age filter will discard, plus 4 live rows —
+     * one over the cap of 3. Sizing correctly from the filtered list sheds
+     * exactly 1 (the oldest live row) and the donation survives. Sizing from
+     * the pre-filter row count of 9 sheds 6, which -- floored at the 4 live
+     * rows actually available -- destroys every live row, donation included.
+     *
+     * Rows are written directly to the file rather than through `append`, so
+     * the compaction under test is the one `peek` runs on the first call of a
+     * fresh process — the only shape that lets every row land on disk before
+     * any compaction can run.
+     *
+     * Mutation-check: change `aged.size - maxEvents` to `state.rows -
+     * maxEvents` in applyCaps and this must fail.
+     */
+    @Test
+    fun applyCapsSizesTheEvictionFromTheFilteredListNotTheCachedRowCount() {
+        now = 1_600_000_000_000L // well above PLAUSIBLE_EPOCH_FLOOR_MS
+        val maxAgeMs = 10_000L
+        val cutoff = now - maxAgeMs
+
+        fun writeRawLine(id: String, table: String, queuedAtMs: Long) {
+            file.appendText(
+                """{"id":"$id","table":"$table","queuedAt":$queuedAtMs,"payload":"{}"}""" + "\n"
+            )
+        }
+
+        // 5 rows the age filter will discard.
+        repeat(5) { writeRawLine("old$it", "diagnostic_events", cutoff - 1_000_000L) }
+        // 4 live rows, one of them a donation, in increasing queued order.
+        writeRawLine("l1", "diagnostic_events", cutoff + 10)
+        writeRawLine("donation", "donation_events", cutoff + 20)
+        writeRawLine("l3", "diagnostic_events", cutoff + 30)
+        writeRawLine("l4", "diagnostic_events", cutoff + 40)
+
+        val box = TelemetryOutbox(file, maxEvents = 3, maxAgeMs = maxAgeMs, clock = { now })
+
+        val ids = box.peek().map { it.id }
+        assertTrue("the donation must survive an eviction sized from the " +
+            "post-age-filter list, not the pre-filter row count", ids.contains("donation"))
+        assertEquals("only the one live row over the cap should be shed",
+            listOf("donation", "l3", "l4"), ids)
+    }
+
     // ── Protected tables (eviction) ──────────────────────────────────────────
 
     /**
@@ -550,6 +599,44 @@ class TelemetryOutboxTest {
 
         assertEquals("a stale failure flag must not suppress the count trigger",
             3, file.readLines().count { it.isNotBlank() })
+    }
+
+    /**
+     * The other half of the failed-reclaim flag: while it is set, the count
+     * trigger must stay suppressed, or a device whose writes keep failing
+     * performs a full read and a failed write on every single append forever
+     * -- the row count can never drop below the cap, because the write that
+     * would drop it is the one that keeps failing.
+     *
+     * Mutation-check: delete `&& !state.lastCompactionFailed` from the
+     * overCap term in compactIfDue and this must fail.
+     */
+    @Test
+    fun aStuckFailedReclaimStopsRetryingOnEveryAppend() {
+        var reads = 0
+        val box = TelemetryOutbox(
+            file, maxEvents = 3, compactSlack = 0, clock = { now },
+            compactIntervalMs = 1_000_000L,
+            readLines = { reads++; it.readLines() }
+        )
+        box.appendDonation("a")
+        box.appendDonation("b")
+        box.appendDonation("c")
+
+        // Block every future reclaim write: writeAll's sibling .tmp path
+        // exists as a directory, so tmp.writeText(...) throws before any
+        // bytes move -- and it is left in place for the rest of this test,
+        // simulating a device whose writes keep failing.
+        val tmp = File(file.parentFile, file.name + ".tmp")
+        tmp.mkdirs()
+
+        box.appendDonation("d")   // over cap, tries to reclaim, write fails
+        val readsAfterFailure = reads
+
+        repeat(5) { box.appendDonation("e$it") }  // still over cap, still broken
+
+        assertEquals("a stuck failed reclaim must stop retrying the full " +
+            "read-and-write on every append", readsAfterFailure, reads)
     }
 
     // ── Counter maintenance ──────────────────────────────────────────────────

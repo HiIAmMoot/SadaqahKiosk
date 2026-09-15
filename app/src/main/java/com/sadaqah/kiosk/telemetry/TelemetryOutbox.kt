@@ -106,8 +106,12 @@ class TelemetryOutbox(
             // so the first peek still sweeps without a load in front of it.
             // Calling ensureLoaded() first would cost that boot sweep a second
             // full read of the queue, on the exact path this task exists to
-            // bound. When no sweep is due, `.also` below is a refresh of an
-            // already-known count, not a load.
+            // bound. When no sweep is due, `.also` below is usually a refresh
+            // of an already-known count, not a load -- except when a previous
+            // compactNow threw out of its own readAll(): its finally still
+            // stamps lastCompactionMs, but rows is left UNKNOWN, so the next
+            // call to reach here performs a genuine load despite no sweep
+            // looking due.
             val rows = compactIfDue(now) ?: readAll().also { state.rows = it.size }
             rows.asSequence()
                 .filterNot { it.table in excludeTables }
@@ -154,7 +158,7 @@ class TelemetryOutbox(
     /**
      * A pure read. It sets [QueueState.rows] and writes nothing.
      *
-     * It deliberately leaves [QueueState.lastCompactionMs] at zero, which makes
+     * It deliberately leaves [QueueState.lastCompactionMs] null, which makes
      * the first `append` or `peek` of the process overdue and so buys an early
      * sweep — through the normal trigger, on a path that is allowed to write,
      * rather than from inside a read.
@@ -176,7 +180,11 @@ class TelemetryOutbox(
      *  old comment here described only the write; the read ran on every call
      *  regardless, and that mismatch is exactly the cost this phase removes. A
      *  queue is swept when it crosses [compactSlack] over the cap or when
-     *  [compactIntervalMs] has elapsed, whichever comes first. */
+     *  [compactIntervalMs] has elapsed, whichever comes first.
+     *
+     *  Returns null when neither trigger fires -- the caller already knows
+     *  the queue is untouched and reads it itself if it needs the rows.
+     *  Otherwise returns whatever [compactNow] read and attempted to cap. */
     private fun compactIfDue(now: Long): List<QueuedEvent>? {
         val last = state.lastCompactionMs
         val overdue = last == null ||
@@ -194,8 +202,11 @@ class TelemetryOutbox(
         return if (overCap || overdue) compactNow(now) else null
     }
 
-    /** Returns the rows now on disk, so a caller that was about to read can use
-     *  this instead of reading again. Null when no compaction was due. */
+    /** Returns the rows now on disk after this reclaim attempt: the newly
+     *  capped list on success, or the unmodified list read at the top of this
+     *  call if the write failed. Always a list -- unlike [compactIfDue], this
+     *  is only called once a compaction is already known to be due, so there
+     *  is nothing for it to return when none is. */
     private fun compactNow(now: Long): List<QueuedEvent> {
         try {
             val all = readAll()
@@ -213,13 +224,12 @@ class TelemetryOutbox(
                 state.lastCompactionFailed = false
                 return all
             }
-            return try {
+            val reclaimed = try {
                 writeAll(kept)
                 state.rows = kept.size
                 state.lastCompactionFailed = false
-                onDropped(discarded)
-                kept
-            } catch (_: Throwable) {
+                true
+            } catch (_: Exception) {
                 // A failed reclaim is swallowed, and that is not laziness.
                 //
                 // Propagating it on the append path would be actively wrong:
@@ -234,9 +244,22 @@ class TelemetryOutbox(
                 // The queue is unharmed: writeAll stages through a temp file and
                 // moves atomically, so a failure leaves the previous contents in
                 // place — which is what state.rows above already describes.
+                //
+                // Narrowed to Exception, not Throwable: the reasoning above is
+                // about IO failures from a real write, and an Error (OOM, stack
+                // overflow) is not a "failed write" this method should be
+                // reporting as one.
                 state.lastCompactionFailed = true
-                all
+                false
             }
+            // Called only once the write is known to have succeeded, not from
+            // inside the try above: onDropped reaches MainActivity.onOutboxDropped
+            // -> statusStore.update -> SharedPreferences, which can itself throw.
+            // Inside the try, that throw would be caught by the block above and
+            // recorded as a failed reclaim -- even though the write had already
+            // landed -- and this call would then hand peek the pre-compaction list.
+            if (reclaimed) onDropped(discarded)
+            return if (reclaimed) kept else all
         } finally {
             // Stamped on every attempt, including a failed one, and deliberately
             // not sharing the counters' condition. A device with a full disk
@@ -247,8 +270,10 @@ class TelemetryOutbox(
         }
     }
 
-    /** Caps are enforced on append so an offline kiosk sheds its oldest
-     *  telemetry rather than filling the device's storage.
+    /** Caps are enforced during compaction -- triggered by append or peek,
+     *  either over-cap or over-interval, never on every read -- so an offline
+     *  kiosk sheds its oldest telemetry rather than filling the device's
+     *  storage.
      *
      *  Events stamped before [PLAUSIBLE_EPOCH_FLOOR_MS] are never aged out: a
      *  kiosk with a dead RTC stamps them near 1970, and once the clock is
@@ -276,6 +301,11 @@ class TelemetryOutbox(
         // out leaves the queue over its cap.
         val dropProtected = shed - dropUnprotected
 
+        // Correct only because List.filter is eager and visits every element
+        // exactly once, in order: these vars are mutated as a side effect of
+        // that single ordered pass. Changing `aged` to a Sequence would make
+        // filter lazy -- re-evaluated per terminal operation, order no longer
+        // guaranteed against a mutable outer var -- and silently wrong.
         var remainingUnprotected = dropUnprotected
         var remainingProtected = dropProtected
         return aged.filter { event ->
@@ -329,10 +359,14 @@ class TelemetryOutbox(
         }
     }
 
-    /** Two fields, not three. An earlier design also cached a per-table count
-     *  maintained on the donation path; nothing read it, because eviction sizes
-     *  itself from the list it is filtering. A counter kept current on the hot
-     *  path and read by nothing reads as load-bearing to whoever comes next. */
+    /** Three fields, and each earns its place: [rows] is the O(1) count that
+     *  makes append cheap, [lastCompactionMs] is the interval trigger's clock,
+     *  and [lastCompactionFailed] stops a broken reclaim from re-attempting
+     *  itself on every single append. An earlier design also cached a
+     *  per-table count maintained on the donation path; nothing read it,
+     *  because eviction sizes itself from the list it is filtering. A counter
+     *  kept current on the hot path and read by nothing reads as load-bearing
+     *  to whoever comes next. */
     private class QueueState {
         var rows: Int = UNKNOWN
         /** Null means no compaction has run in this process. Null rather than
