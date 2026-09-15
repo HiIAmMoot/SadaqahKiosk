@@ -242,6 +242,10 @@ class MainActivity : FragmentActivity() {
     var showSetupStatus by mutableStateOf(false)
     var showDonationHistory by mutableStateOf(false)
     var showAnalyticsSettings by mutableStateOf(false)
+    // Null means "no disclosure to show" — set by a successful destination save
+    // or policy-URL save (see onAnalyticsSaveDestination/onAnalyticsPolicyUrlsChange),
+    // never restored across process death: the trigger is a save, not a visit.
+    var disclosureView by mutableStateOf<DisclosureView?>(null)
     // The two expensive reads behind the analytics screen (Keystore decrypt,
     // full outbox parse) cached in Activity state so composition only ever
     // does the pure AnalyticsPresenter.view call. Null means "not loaded" —
@@ -627,14 +631,33 @@ class MainActivity : FragmentActivity() {
                     onAnalyticsSaveDestination = { url, key ->
                         val verdict = telemetryCredentials.save(url, key)
                         refreshAnalyticsSnapshot()
+                        // Only a stored destination is worth disclosing: a save
+                        // the credentials layer rejected configured nothing, so
+                        // naming a destination that was never kept would be
+                        // worse than showing nothing.
+                        if (verdict is UrlVerdict.Valid) {
+                            disclosureView = DisclosurePresenter.view(settings, verdict.normalised)
+                        }
                         verdict
                     },
                     onAnalyticsTestConnection = ::onAnalyticsTestConnection,
                     onAnalyticsKioskCodeChange = { code -> onSettingsChange(settings.copy(kioskCode = code)) },
                     onAnalyticsPolicyUrlsChange = { privacy, terms ->
                         onSettingsChange(settings.copy(analyticsPrivacyPolicyUrl = privacy, analyticsTermsUrl = terms))
+                        // A destination saved before any policy URL existed gets a
+                        // null view at that point, correctly, and nothing calls the
+                        // presenter again once the destination is already saved —
+                        // so the policy save has to trigger it too, against the
+                        // destination already on record, or the screen never
+                        // appears at all for that (common) order of operations.
+                        disclosureView = DisclosurePresenter.view(settings, analyticsSnapshot?.config?.baseUrl.orEmpty())
+                    },
+                    onShowDisclosure = {
+                        disclosureView = DisclosurePresenter.view(settings, analyticsSnapshot?.config?.baseUrl.orEmpty())
                     },
                     onAnalyticsClearCredentials = ::onAnalyticsClearCredentials,
+                    disclosureView = disclosureView,
+                    onDismissDisclosure = { disclosureView = null },
                     setupStatusFromOffline = setupStatusFromOffline,
                     onExitSetupStatus = ::exitSetupStatus,
                     onUnpinApp = ::unpinApp,
@@ -2603,7 +2626,10 @@ fun AppUI(
     onAnalyticsTestConnection: () -> Unit,
     onAnalyticsKioskCodeChange: (String) -> Unit,
     onAnalyticsPolicyUrlsChange: (String, String) -> Unit,
+    onShowDisclosure: () -> Unit,
     onAnalyticsClearCredentials: () -> Unit,
+    disclosureView: DisclosureView?,
+    onDismissDisclosure: () -> Unit,
     onShowSetupStatus: (Boolean) -> Unit,
     setupStatusFromOffline: Boolean,
     onExitSetupStatus: () -> Unit,
@@ -2674,6 +2700,11 @@ fun AppUI(
                 onClearHistory = { donationHistory.clearAll() },
                 onBack = { onShowDonationHistory(false) }
             )
+            disclosureView != null -> DisclosureScreen(
+                view = disclosureView,
+                strings = rememberStrings(),
+                onDismiss = onDismissDisclosure
+            )
             showAnalyticsSettings -> AnalyticsSettingsScreen(
                 view = analyticsView,
                 settings = settings,
@@ -2685,6 +2716,7 @@ fun AppUI(
                 onTestConnection = onAnalyticsTestConnection,
                 onKioskCodeChange = onAnalyticsKioskCodeChange,
                 onPolicyUrlsChange = onAnalyticsPolicyUrlsChange,
+                onShowDisclosure = onShowDisclosure,
                 onClearCredentials = onAnalyticsClearCredentials
             )
             showSetupStatus -> SetupStatusScreen(

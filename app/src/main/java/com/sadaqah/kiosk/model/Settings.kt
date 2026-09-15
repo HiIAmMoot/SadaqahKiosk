@@ -39,8 +39,10 @@ data class Settings(
     // Credentials are deliberately NOT here — they live in TelemetryCredentials so
     // they never reach the settings JSON except through the encrypted export path.
     val analyticsEnabled: Boolean = false,
-    /** 0 = the disclosure has not been shown. Not proof of anything; it exists so
-     *  the disclosure is not re-shown on every visit to the Analytics screen. */
+    /** Wall-clock instant this kiosk first successfully reported: stamped once,
+     *  the first time "Test connection" succeeds. 0 = never. Never overwritten
+     *  after that, so it answers "when did this kiosk start reporting", not
+     *  "is it currently reporting". */
     val analyticsActivatedAtMs: Long = 0L,
     val analyticsPrivacyPolicyUrl: String = "",
     val analyticsTermsUrl: String = "",

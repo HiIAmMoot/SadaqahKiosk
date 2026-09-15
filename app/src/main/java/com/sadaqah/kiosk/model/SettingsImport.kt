@@ -22,8 +22,8 @@ object SettingsImport {
         // device's value always, including when it is itself 0, which lets the
         // bootstrap give this device its own anchor.
         donationStatsStartedAtMs = current.donationStatsStartedAtMs,
-        // A record that the disclosure was shown on THIS device. Inheriting it
-        // would make a kiosk that has never shown the disclosure look like it had.
+        // A record that THIS device's telemetry has reported. Inheriting it
+        // would make a kiosk that has never reported look like it had.
         analyticsActivatedAtMs = current.analyticsActivatedAtMs,
         // A one-shot signature-check bypass. Riding an export onto a whole fleet
         // would disable that check across every kiosk that imports it, so force

@@ -89,6 +89,7 @@ fun AnalyticsSettingsScreen(
     onTestConnection: () -> Unit,
     onKioskCodeChange: (String) -> Unit,
     onPolicyUrlsChange: (privacy: String, terms: String) -> Unit,
+    onShowDisclosure: () -> Unit,
     onClearCredentials: () -> Unit
 ) {
     val border = Color(settings.buttonBorderColor)
@@ -351,6 +352,20 @@ fun AnalyticsSettingsScreen(
                         )
                         if (view.policyUrlsMissing) {
                             Text(strings.analyticsPolicyUrlsMissing, color = warningColor, fontSize = responsiveSp(11.0))
+                        }
+                        // The disclosure only ever appears automatically, right
+                        // after a save — an operator who dismissed it months ago
+                        // has no other way back to it. Goes through the same
+                        // presenter as the save trigger, so a kiosk with no
+                        // policy URL still gets no screen from this row either.
+                        Button(
+                            onClick = onShowDisclosure,
+                            colors = ButtonDefaults.buttonColors(containerColor = button),
+                            shape = RoundedCornerShape(responsiveDp(10.dp)),
+                            border = BorderStroke(responsiveDp(2.dp), border),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text(strings.disclosureReopen, color = border, fontSize = responsiveSp(14.0))
                         }
                     }
                 }

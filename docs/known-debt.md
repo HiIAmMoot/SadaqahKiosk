@@ -62,6 +62,33 @@ not account for, without hardcoding either value.
 
 **Established in.** Phase 3d-i, Task 5 review — found by mutation, not by reading.
 
+---
+
+## Reporting is not gated on a published privacy policy existing
+
+**What.** A kiosk can have a telemetry destination saved and analytics switched
+on with no privacy policy URL set. Nothing stops it collecting and sending rows
+in that state. Before phase 4 there was no disclosure screen either way; after
+phase 4, `DisclosurePresenter.view` returns null with no policy URL, so this
+kiosk also never sees the disclosure screen — it reports with no published
+disclosure anywhere and no on-device signpost pointing at one.
+
+**Why deferred.** Gating the flush on a policy URL being present was offered to
+the founder and declined: an already-deployed kiosk in this state would
+silently stop reporting the moment this shipped, which is a worse outcome than
+the gap itself for a fleet that is already live.
+
+**What it costs to leave.** An operator can configure a working, reporting
+kiosk while skipping the field that is supposed to make that reporting legible
+to donors. Nothing in the app currently tells them this is missing outside the
+settings screen's existing `analyticsPolicyUrlsMissing` warning.
+
+**What fixing it needs.** A product decision on whether to gate the flush (with
+a migration path for kiosks already in this state) or add a more insistent
+warning short of gating it — not a code change alone.
+
+**Established in.** Phase 4 spec ("Global Constraints" / known gap), 2026-09-15.
+
 ## Resolved
 
 Items here have been closed; kept briefly so their history is findable.
