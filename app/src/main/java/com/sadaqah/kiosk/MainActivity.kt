@@ -243,17 +243,20 @@ class MainActivity : FragmentActivity() {
     var showDonationHistory by mutableStateOf(false)
     var showAnalyticsSettings by mutableStateOf(false)
     // Null means "no disclosure to show" — set only from onShowAnalyticsSettings's
-    // exit branch (consuming disclosurePending) or from the explicit reopen row,
+    // exit branch (consuming disclosurePendingUrl) or from the explicit reopen row,
     // never restored across process death: the trigger is a save, not a visit.
     // Cleared wherever the settings stack is torn down out from under the
     // operator (inactivity bounce, screensaver) so a stale disclosure never
     // opens on a later, unrelated visit.
     var disclosureView by mutableStateOf<DisclosureView?>(null)
-    // Armed by a successful destination save; consumed (and cleared) the moment
-    // the operator deliberately leaves the analytics screen, not on every
-    // keystroke that follows in the policy-URL fields — those write to the same
-    // `settings` this would otherwise re-read on each character typed.
-    var disclosurePending by mutableStateOf(false)
+    // Armed by a successful destination save, carrying the exact URL the save
+    // just verified — not a boolean re-deriving it later from analyticsSnapshot,
+    // which is only refreshed asynchronously (Keystore decrypt + outbox parse)
+    // and can still hold the *previous* destination, or none yet, at the moment
+    // this is consumed. Consumed (and cleared) the moment the operator
+    // deliberately leaves the analytics screen, not on every keystroke that
+    // follows in the policy-URL fields.
+    var disclosurePendingUrl by mutableStateOf<String?>(null)
     // The two expensive reads behind the analytics screen (Keystore decrypt,
     // full outbox parse) cached in Activity state so composition only ever
     // does the pure AnalyticsPresenter.view call. Null means "not loaded" —
@@ -565,7 +568,7 @@ class MainActivity : FragmentActivity() {
                             // visit, not whatever happened to be sitting in state
                             // when a forgotten session got bounced.
                             disclosureView = null
-                            disclosurePending = false
+                            disclosurePendingUrl = null
                             // Reset so the screensaver doesn't immediately fire on top of the bounce.
                             lastInteractionTime = System.currentTimeMillis()
                         }
@@ -637,11 +640,14 @@ class MainActivity : FragmentActivity() {
                             // also called by the inactivity bounce and by the
                             // screensaver path, and firing the disclosure there
                             // would throw it up during a teardown to the
-                            // donation grid rather than a real visit.
-                            if (disclosurePending) {
-                                disclosureView = DisclosurePresenter.view(settings, analyticsSnapshot?.config?.baseUrl.orEmpty())
-                                disclosurePending = false
+                            // donation grid rather than a real visit. Reads the
+                            // URL the arming save already verified, not the
+                            // async-refreshed snapshot — that can still hold
+                            // nothing, or the previous destination, at this point.
+                            disclosurePendingUrl?.let { url ->
+                                disclosureView = DisclosurePresenter.view(settings, url)
                             }
+                            disclosurePendingUrl = null
                             closeAnalyticsSettings()
                         }
                     },
@@ -664,12 +670,18 @@ class MainActivity : FragmentActivity() {
                         // Only a stored destination is worth disclosing: a save
                         // the credentials layer rejected configured nothing, so
                         // naming a destination that was never kept would be
-                        // worse than showing nothing. Armed, not shown — see
-                        // onShowAnalyticsSettings's exit branch, which is what
-                        // actually computes and shows the view once the visit
-                        // that made this save is really over.
+                        // worse than showing nothing. Armed with the URL itself,
+                        // not shown yet — see onShowAnalyticsSettings's exit
+                        // branch, which is what actually computes and shows the
+                        // view once the visit that made this save is really
+                        // over. Carrying verdict.normalised here, rather than
+                        // re-deriving it from analyticsSnapshot at exit, matters:
+                        // that snapshot only refreshes asynchronously behind a
+                        // Keystore decrypt and a full outbox parse, so at exit it
+                        // can still be blank (first-ever configuration) or the
+                        // previous destination (re-pointing an existing kiosk).
                         if (verdict is UrlVerdict.Valid) {
-                            disclosurePending = true
+                            disclosurePendingUrl = verdict.normalised
                         }
                         verdict
                     },
@@ -1067,7 +1079,7 @@ class MainActivity : FragmentActivity() {
         // here is not a dismissal, so a disclosure (or an armed-but-unshown one)
         // must not linger to surface on whatever settings screen is opened next.
         disclosureView = null
-        disclosurePending = false
+        disclosurePendingUrl = null
         isScreensaverActive = true
         if (isConnectingCardReader) syntheticCloseReader = "screensaver"
         finishActivity(2)
@@ -1863,11 +1875,16 @@ class MainActivity : FragmentActivity() {
             setupStatusFromOffline = false
             showDonationHistory = false
             closeAnalyticsSettings()
-            // Same reset as the inactivity bounce and activateScreensaver(): this
-            // clears the identical sibling set, so a stale or armed-but-unshown
-            // disclosure must not survive it either.
+            // Load-bearing, not just consistent with the other two teardown
+            // sites: the idle loop above activates the screensaver inline
+            // (`isScreensaverActive = true`) without going through
+            // activateScreensaver() and clears nothing when it does, so this is
+            // the only place that nets a disclosure armed or shown before that
+            // idle timeout. Guarded by the enclosing `if (isScreensaverActive)`,
+            // so it can only run once the screensaver has actually taken over —
+            // never wiping a disclosure a still-present operator is looking at.
             disclosureView = null
-            disclosurePending = false
+            disclosurePendingUrl = null
             prepareCardReader()
         }
     }
