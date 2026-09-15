@@ -174,6 +174,8 @@ This separation is the rule that keeps the cache safe, and stating it is what st
 
 ### What this costs, stated rather than buried
 
+**The age filter runs before protection, so a 30-day-old donation is discarded while newer diagnostics survive.** That ordering predates this phase, but compaction now writes whenever anything is droppable rather than only past a slack of 100, so the sweep fires far more often and the field meets this for the first time. **Put to the founder on 2026-09-15 and accepted:** an undelivered donation still sitting in the queue after a month is an edge case not worth exempting from the age cap. Recorded so it is not reopened as a defect.
+
 **A permanently failing write leaves the queue unbounded, and nothing says so on screen.** If `writeAll` cannot succeed — a full disk being the realistic case — the reclaim is swallowed, the retry is bounded to one attempt per interval, and the queue simply keeps growing. The only operator-visible signal is `queued` climbing on the analytics screen, which looks identical to a kiosk that has merely been offline for a while. Accepted rather than fixed: distinguishing them needs a status field and a string in eight languages, and the device is in a state where storage itself is failing, which Android surfaces on its own. Recorded so it is a known cost rather than a surprise.
 
 **A queue mutated outside this process would desynchronise the counters.** Nothing does that today; the file is in app-private storage. Every compaction refreshes from a real read, so the state is self-healing at the only points it could matter.
