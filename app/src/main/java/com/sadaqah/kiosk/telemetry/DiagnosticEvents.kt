@@ -211,8 +211,6 @@ object DiagnosticEvents {
      *  case silently stopped bounding the uncommon one. */
     private const val WRAPPED_MESSAGE_RESERVE_BYTES = 512
 
-    private const val TRUNCATION_SUFFIX = "\n… truncated"
-
     /** Truncates a message that is about to be wrapped in [sumUpFailureDetail]
      *  or [checkoutNoReaderDetail], not the assembled JSON — truncating after
      *  wrapping can cut mid-document and lose the whole detail the same way
@@ -230,14 +228,14 @@ object DiagnosticEvents {
         if (message == null) return null
         val budget = TelemetryRedactor.MAX_TEXT_BYTES - WRAPPED_MESSAGE_RESERVE_BYTES
         if (jsonEscapedByteLength(message) <= budget) return message
-        val contentBudget = (budget - jsonEscapedByteLength(TRUNCATION_SUFFIX)).coerceAtLeast(0)
+        val contentBudget = (budget - jsonEscapedByteLength(TelemetryRedactor.TRUNCATION_SUFFIX)).coerceAtLeast(0)
         var lo = 0
         var hi = message.length
         while (lo < hi) {
             val mid = (lo + hi + 1) / 2
             if (jsonEscapedByteLength(message.substring(0, mid)) <= contentBudget) lo = mid else hi = mid - 1
         }
-        return message.substring(0, lo) + TRUNCATION_SUFFIX
+        return message.substring(0, lo) + TelemetryRedactor.TRUNCATION_SUFFIX
     }
 
     /** The byte length a string contributes as a JSON string *value* — i.e.

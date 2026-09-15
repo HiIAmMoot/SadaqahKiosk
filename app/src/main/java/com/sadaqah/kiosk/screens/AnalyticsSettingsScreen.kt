@@ -42,8 +42,6 @@ import com.sadaqah.kiosk.responsiveSp
 import com.sadaqah.kiosk.telemetry.AnalyticsView
 import com.sadaqah.kiosk.telemetry.TestUnavailable
 import com.sadaqah.kiosk.telemetry.UrlVerdict
-import java.text.DateFormat
-import java.util.Date
 
 /**
  * What the "Test connection" button is currently doing, decided by whatever
@@ -287,7 +285,7 @@ fun AnalyticsSettingsScreen(
                         AnalyticsStatusLine(strings.analyticsQueued, view.queued.toString(), border)
                         AnalyticsStatusLine(
                             strings.analyticsLastUpload,
-                            if (view.neverUploaded) strings.analyticsNeverUploaded else formatTimestamp(view.lastSuccessMs),
+                            if (view.neverUploaded) strings.analyticsNeverUploaded else view.lastSuccessText,
                             border
                         )
                         if (view.error != null) {
@@ -423,6 +421,3 @@ private fun analyticsFieldColors(border: Color) = OutlinedTextFieldDefaults.colo
     focusedTextColor = border,
     unfocusedTextColor = border
 )
-
-private fun formatTimestamp(ms: Long): String =
-    DateFormat.getDateTimeInstance(DateFormat.SHORT, DateFormat.SHORT).format(Date(ms))

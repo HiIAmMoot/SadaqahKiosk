@@ -30,12 +30,17 @@ object TelemetryRedactor {
         return TOKEN_SHAPED.replace(withoutKey, REDACTED)
     }
 
-    fun truncate(text: String?, maxBytes: Int = MAX_TEXT_BYTES): String? {
+    /** One definition, because [DiagnosticEvents] measures this string's
+     *  JSON-escaped length against its own budget — two copies that drifted
+     *  would make that budget silently wrong. */
+    const val TRUNCATION_SUFFIX = "\n… truncated"
+
+    fun truncate(text: String?): String? {
         if (text == null) return null
         val bytes = text.toByteArray(Charsets.UTF_8)
-        if (bytes.size <= maxBytes) return text
+        if (bytes.size <= MAX_TEXT_BYTES) return text
         // A cut can land mid-codepoint; the resulting replacement char is
         // harmless in a diagnostic and cheaper than scanning for a boundary.
-        return String(bytes, 0, maxBytes, Charsets.UTF_8) + "\n… truncated"
+        return String(bytes, 0, MAX_TEXT_BYTES, Charsets.UTF_8) + TRUNCATION_SUFFIX
     }
 }

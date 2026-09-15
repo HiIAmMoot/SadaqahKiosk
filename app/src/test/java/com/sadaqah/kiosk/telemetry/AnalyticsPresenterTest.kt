@@ -1,8 +1,11 @@
 package com.sadaqah.kiosk.telemetry
 
 import com.sadaqah.kiosk.model.Settings
+import java.time.ZoneId
+import java.util.Locale
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -15,8 +18,10 @@ class AnalyticsPresenterTest {
         settings: Settings = Settings(analyticsEnabled = true, installId = "install-1"),
         config: TelemetryConfig? = TelemetryConfig("https://abc.supabase.co", "publishable-key"),
         status: TelemetryStatus = TelemetryStatus(),
-        now: Long = this.now
-    ) = AnalyticsPresenter.view(settings, config, status, now)
+        now: Long = this.now,
+        zone: ZoneId = ZoneId.of("UTC"),
+        locale: Locale = Locale.UK
+    ) = AnalyticsPresenter.view(settings, config, status, now, zone, locale)
 
     @Test
     fun anUnconfiguredKioskCannotBeTested() {
@@ -259,6 +264,31 @@ class AnalyticsPresenterTest {
     @Test
     fun theLastSuccessMsIsCarriedThrough() {
         assertEquals(now - 3_600_000, view(status = TelemetryStatus(lastSuccessMs = now - 3_600_000)).lastSuccessMs)
+    }
+
+    // ── Timestamp formatting depends on the injected zone/locale ────────────
+    //
+    // FormatStyle.SHORT output is CLDR-data dependent and its exact shape has
+    // changed across JDK releases, so asserting a literal would make this a
+    // JDK-upgrade tripwire. What actually needs proving is that zone and
+    // locale are injected rather than read from the platform.
+
+    @Test
+    fun theLastUploadTimestampUsesTheInjectedZone() {
+        val status = TelemetryStatus(lastSuccessMs = 1_700_000_000_000L)
+        assertNotEquals(
+            view(status = status, zone = ZoneId.of("UTC"), locale = Locale.UK).lastSuccessText,
+            view(status = status, zone = ZoneId.of("Asia/Tokyo"), locale = Locale.UK).lastSuccessText
+        )
+    }
+
+    @Test
+    fun theLastUploadTimestampUsesTheInjectedLocale() {
+        val status = TelemetryStatus(lastSuccessMs = 1_700_000_000_000L)
+        assertNotEquals(
+            view(status = status, zone = ZoneId.of("UTC"), locale = Locale.UK).lastSuccessText,
+            view(status = status, zone = ZoneId.of("UTC"), locale = Locale.JAPAN).lastSuccessText
+        )
     }
 
     // ── FIX 5: gaps that would otherwise force computation into the composable ─

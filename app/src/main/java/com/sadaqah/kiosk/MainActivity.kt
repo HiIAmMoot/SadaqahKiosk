@@ -69,6 +69,8 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 import java.math.BigDecimal
+import java.time.ZoneId
+import java.util.Locale
 import java.util.concurrent.Executors
 
 private const val INACTIVITY_BOUNCE_MS = 5L * 60 * 1000 // 5 min on settings / custom-amount → back to donation
@@ -605,7 +607,12 @@ class MainActivity : FragmentActivity() {
                     // analyticsSnapshot/analyticsNowMs, refreshed by the entry points
                     // above rather than read here. See AnalyticsSnapshot's KDoc.
                     analyticsView = AnalyticsPresenter.view(
-                        settings, analyticsSnapshot?.config, analyticsSnapshot?.status ?: TelemetryStatus(), analyticsNowMs
+                        settings,
+                        analyticsSnapshot?.config,
+                        analyticsSnapshot?.status ?: TelemetryStatus(),
+                        analyticsNowMs,
+                        ZoneId.systemDefault(),
+                        Locale.getDefault()
                     ),
                     analyticsTestState = analyticsTestState,
                     onAnalyticsToggleEnabled = { enabled -> onSettingsChange(settings.copy(analyticsEnabled = enabled)) },
@@ -1076,6 +1083,18 @@ class MainActivity : FragmentActivity() {
         }
         SumUpState.init(this)
         val sumupLogin = SumUpLogin.builder(affiliateKey).build()
+        // If openLoginActivity ever returns without launching, the watchdog
+        // below arms a label that finishActivity cannot clear — and the next
+        // genuine login failure then reports as self-inflicted. Whether the SDK
+        // can do that is unknowable from this repo, and this does not need to
+        // know: every genuine code-1 result comes from a launch, and every
+        // launch now clears first.
+        //
+        // One case it does not cover: a re-entrant authenticate while a login is
+        // still outstanding erases a legitimately armed label, so a synthetic
+        // close reads as genuine. That is the safe direction — a missing
+        // discriminator, not a false one.
+        syntheticCloseLogin = null
         SumUpAPI.openLoginActivity(this@MainActivity, sumupLogin, 1)
         if (silent) {
             // Reinit / scheduled refresh: keep pinning, rely on cached SumUp credentials
@@ -1097,13 +1116,8 @@ class MainActivity : FragmentActivity() {
                 // above returns, the same ordering that closed the analogous gap
                 // on the code-2 side (isConnectingCardReader moved past
                 // openCardReaderPage), so a throw from the call itself can never
-                // arm it. What that ordering does not cover, and what the code-2
-                // side does not need to worry about: it assumes a normal return
-                // from openLoginActivity always means an activity actually
-                // launched. isConnectingCardReader is a state flag the callback
-                // itself clears, so it can't go stale that way; a fixed-delay
-                // watchdog has no callback to lean on. Not verifiable from this
-                // repo — SumUp's SDK behaviour on that point is unknown.
+                // arm it. The no-launch case is covered by the clear right before
+                // openLoginActivity above.
                 syntheticCloseLogin = "login_watchdog"
                 finishActivity(1)
             }

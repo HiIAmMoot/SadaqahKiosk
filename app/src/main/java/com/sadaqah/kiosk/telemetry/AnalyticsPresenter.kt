@@ -1,6 +1,11 @@
 package com.sadaqah.kiosk.telemetry
 
 import com.sadaqah.kiosk.model.Settings
+import java.time.Instant
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.time.format.FormatStyle
+import java.util.Locale
 
 /** Why "Test connection" is unavailable right now, so the screen can explain
  *  *before* the press rather than after. Null on [AnalyticsView.testUnavailable]
@@ -40,6 +45,7 @@ data class AnalyticsView(
     val queued: Int,
     val neverUploaded: Boolean,
     val lastSuccessMs: Long,
+    val lastSuccessText: String,
     val error: String?,
     val backingOff: Boolean,
     /** Seconds, not millis: the screen shows seconds, and converting in the
@@ -68,11 +74,16 @@ object AnalyticsPresenter {
      *  would make the app that vendor's only. */
     private const val PUBLISHABLE_KEY_PREFIX = "sb_publishable_"
 
+    private val TIMESTAMP_FORMAT: DateTimeFormatter =
+        DateTimeFormatter.ofLocalizedDateTime(FormatStyle.SHORT)
+
     fun view(
         settings: Settings,
         config: TelemetryConfig?,
         status: TelemetryStatus,
-        nowMs: Long
+        nowMs: Long,
+        zone: ZoneId,
+        locale: Locale
     ): AnalyticsView {
         val neverUploaded = status.lastSuccessMs == 0L
         val effectiveBackoffUntilMs = status.effectiveBackoffUntilMs(nowMs)
@@ -104,6 +115,13 @@ object AnalyticsPresenter {
             queued = status.queued,
             neverUploaded = neverUploaded,
             lastSuccessMs = status.lastSuccessMs,
+            /** Formatted here rather than in the composable: the screen cannot be
+             *  unit-tested, so a computation left inside it is a computation
+             *  nothing checks. The neverUploaded branch stays a screen concern —
+             *  rendering it needs a Strings member the presenter must not reach
+             *  for. */
+            lastSuccessText = TIMESTAMP_FORMAT.withLocale(locale).withZone(zone)
+                .format(Instant.ofEpochMilli(status.lastSuccessMs)),
             // Shown while any table is backed off, whatever the timestamps — or
             // the table — say: a sibling's success now advances lastSuccessMs
             // past a retained lastErrorAtMs, and suppressing on that comparison

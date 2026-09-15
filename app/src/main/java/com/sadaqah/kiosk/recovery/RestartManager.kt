@@ -84,6 +84,9 @@ class RestartManager(
     }
 
     val restartCount: Int get() = store.getInt(KEY_RESTART_COUNT)
+    // Read by tests only, and deliberately kept: two of them assert that a
+    // card-reader failure does not move the reinit count, an invariant
+    // RestartResult cannot express.
     val cardReaderFailures: Int get() = store.getInt(KEY_CARD_READER_FAILURES)
     val reinitFailures: Int get() = store.getInt(KEY_REINIT_FAILURES)
 
