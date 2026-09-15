@@ -6,59 +6,60 @@ This is the queue half of 3d. The send half shipped as 3d-i.
 
 ## What recon changed about this phase's scope
 
-The phase was inherited from 3d-i's "Required of 3d-ii" list, written before anyone had read this code closely. Two of its four items do not survive contact with the source, and a third problem it never named is larger than any of them. This section is the argument; the requirements follow.
+The phase was inherited from 3d-i's "Required of 3d-ii" list, written before anyone had read this code closely. Two of its four items do not survive contact with the source, and a third problem it never named is larger than any of them.
 
 ### The finding that reorders the phase: every append is O(queue)
 
-`TelemetryOutbox.append` is `synchronized(lock)` over a body that ends in `compactIfNeeded`, and `compactIfNeeded` opens with an unconditional `readAll()` (`TelemetryOutbox.kt:97`). `readAll` reads every line of the file and JSON-parses each one (`:118-121`).
+`TelemetryOutbox.append` is `synchronized(lock)` over a body ending in `compactIfNeeded` (`:58`), and `compactIfNeeded` opens with an unconditional `readAll()` (`:109`). `readAll` reads every line and JSON-parses each one (`:132-135`).
 
 So **every append reads and parses the entire queue**, holding the lock, on the path a donation travels. At the 5000-row cap that is 5000 `JsonParser.parseString` calls to append one row.
 
-The method's own KDoc says it "reclaims in batches rather than on every append" and that rewriting each time "would put a full read-and-write on the donation path". Only the *write* was ever batched. The read is on every call, and the comment reads as though it is not — which is why this survived three phases.
+The method's KDoc (`:103-107`) says it "reclaims in batches rather than on every append" and that rewriting each time "would put a full read-and-write on the donation path". Only the *write* was ever batched. The read is on every call, and the comment reads as though it is not — which is why this survived three phases.
 
-This matters more on this app than the complexity would suggest: **a kiosk runs unattended for days, months, or years without a restart.** Anything O(n) per append with a growing n is a cost that compounds for the life of the deployment, and anything whose bound depends on a process restart does not have a bound.
+**A kiosk runs unattended for days, months, or years without a restart.** Anything O(n) per append with a growing n compounds for the life of the deployment, and anything whose bound depends on a process restart does not have a bound. That lens governs every decision below.
 
 ### Re-scoped: the crash handler's "bounded write"
 
-The inherited requirement was a bounded write with a lock timeout, after three earlier spec reviews found Criticals in that design.
+The inherited requirement was a bounded write with a lock timeout, after three earlier spec reviews found Criticals in that design. **Declined**, but not for the reason first drafted.
 
-The premise does not hold as stated. Both `TelemetryOutbox` instances point at the same file (`MainActivity.kt:146`, `:381`) and `lockFor` keys the monitor on the canonical path (`:182-188`), so they share one monitor. The longest anyone holds it is one compaction over a queue capped at 5000 rows — sub-second, not unbounded. `MainActivity.kt:377` already reasons exactly this way: the drop callback "can delay the chain but never break it."
+The first draft argued that once appends stop reading, "the lock is held for an `appendText` and nothing else." **That is false.** `peek`, `remove` and `size` all still call `readAll` under the same monitor (`:66-72`, `:75-78`, `:80`), and `remove` writes the whole file. A crash handler can still arrive while a flush holds the lock across a full read.
 
-A `tryLock` timeout would be a mechanism guarding against a wait whose real cause is the O(n) read above. **Fix the cause.** Once an append no longer reads the queue, the lock is held for an `appendText` and nothing else, and the crash handler's worst wait collapses on its own — for every caller, not just the dying one.
+The argument that does hold: **no network call ever happens inside the lock.** `TelemetryManager` peeks, releases, uploads, and only then re-acquires to remove. So the longest any thread can hold the monitor is one local file read-and-write over a queue the count cap bounds at 5000 rows — sub-second on device storage, and bounded by construction rather than by hope. `MainActivity.kt:377` already reasons this way: the drop callback "can delay the chain but never break it."
 
-This also disposes of three of the four named traps: no byte ceiling to justify, no `tryLock` interrupt-flag restore, no lock-field rename to force `withLock`, because no timed acquisition is introduced. The fourth trap — compaction must not run on the main thread — is absorbed by the design below rather than needing a separate rule.
+A `tryLock` timeout would add a mechanism three reviews found dangerous, to shorten a wait that is already bounded. It stays declined. This also disposes of three of the four inherited traps — no byte ceiling to justify, no interrupt-flag restore, no lock-field rename to force `withLock` — because no timed acquisition is introduced.
 
 ### Declined: `CrashContext.onOutboxDropped` retaining an Activity
 
-The inherited requirement was to move the status store to process scope so the slot need not hold a bound Activity method.
+The inherited requirement was to move the status store to process scope so the slot need not hold a bound Activity method. **Declined**, on one argument rather than the two first drafted.
 
-Under the long-uptime lens that governs this phase, the question is whether anything *accumulates*. This does not. The slot is repointed on every `onCreate` (`MainActivity.kt:379`), so it always holds the newest instance and older ones become collectable; `CrashContext.kt:21-27` documents why it must not be cleared in `onDestroy`. The retention is one instance, fixed, for the life of the process.
+The argument that holds: it does not accumulate. The slot is repointed on every `onCreate` (`MainActivity.kt:379`), so it always holds the newest instance and older ones become collectable; `CrashContext.kt:21-27` documents why it must not be cleared in `onDestroy`. The retention is one instance, fixed, for the life of the process — which is the only question the long-uptime lens asks.
 
-The proposed fix introduces a failure mode the status quo does not have: a named process-scope holder has an initialisation window, and a drop landing before it is initialised loses `droppedCount` silently — the operator's only view of telemetry loss. Trading a bounded non-growing reference for a silent-loss window is the wrong direction.
+The argument that does **not** hold, and is withdrawn: the first draft claimed the proposed fix would introduce a silent-loss window that the status quo lacks. The status quo has the same window — `MainActivity.kt:382` invokes through `CrashContext.onOutboxDropped?.invoke(it)`, a null-safe call that silently drops the count if the slot is unset. It is closed only by the construction order at `:379-383`. A process-scope holder would need the same care, no more.
 
-**Closed, not deferred.** It comes off the debt register with this reasoning attached, so it is not rediscovered a fourth time.
+**Closed, not deferred**, so it is not rediscovered a fourth time.
 
 ---
 
 ## Non-negotiables
 
-1. **The outbox is the only copy of a donation.** Nothing is deleted that the uploader did not name, and eviction never destroys a donation while a non-donation row is available to destroy instead.
-2. **The donation flow is not altered.** No change to `makePayment` or any path a payment travels. Appending telemetry *is* on that path, so the append must get cheaper, never more expensive.
-3. **Caps are enforced during indefinite uptime.** Any trigger that only fires at process start is not a bound. A kiosk that runs for a year must still shed rows.
+1. **The outbox is the only copy of a donation.** Nothing is deleted that the uploader did not name, and eviction never destroys a protected row while an unprotected one remains.
+2. **The donation flow is not altered.** Appending telemetry *is* on that path, so the append must get cheaper, never more expensive.
+3. **Caps are enforced during indefinite uptime.** Any trigger that only fires at process start is not a bound. So is any trigger that only fires under load — see the age-cap dependents below.
 4. **No new third-party dependency**, no gradle file touched, JUnit 4 only.
 5. **No new `Strings` member**, and therefore no copy in eight languages.
 6. **A kiosk with `analyticsEnabled` off writes nothing identified to disk.**
-7. **Nothing may be read back into memory that the queue cap does not bound.** A fix that replaces an O(n) read with an O(n) cache has moved the cost, not removed it.
+7. **Nothing is held in memory that the queue cap does not bound.** Replacing an O(n) read with an O(n) cache moves the cost, it does not remove it.
+8. **The outbox keeps knowing nothing about event types.** `TelemetryOutbox.kt:20-22` states this as a design property. Protection is configured into it, never hardcoded inside it.
 
 ---
 
 ## What already exists and is NOT rebuilt
 
-- `writeAll`'s temp-file-plus-atomic-move, so a crash mid-compaction leaves the previous queue intact (`:124-130`).
-- `parseLine`'s skip-on-failure, so one unreadable line never costs the queue (`:133-149`).
+- `writeAll`'s temp-file-plus-atomic-move (`:124-130`).
+- `parseLine`'s skip-on-failure (`:133-149`).
 - The `PLAUSIBLE_EPOCH_FLOOR_MS` guard, which stops a dead-RTC kiosk aging out its own queue once the clock is corrected (`:104-113`).
-- The path-keyed lock (`:182-188`). This phase extends its idiom; it does not replace it.
-- `peek`'s exclusion parameter and everything 3d-i shipped on the send path.
+- The path-keyed lock (`:182-188`). This phase extends its idiom.
+- Everything 3d-i shipped on the send path.
 
 ---
 
@@ -66,47 +67,86 @@ The proposed fix introduces a failure mode the status quo does not have: a named
 
 ### Shared, path-keyed queue state
 
-An in-memory count cannot live on the instance: two `TelemetryOutbox` objects exist over the same file, and per-instance counts would diverge the moment either appended. They already share a monitor keyed on canonical path, so the count is keyed the same way and guarded by that same monitor.
+An in-memory count cannot live on the instance: two `TelemetryOutbox` objects exist over the same file (`MainActivity.kt:146`, `:381`), and per-instance counts would diverge the moment either appended. They already share a monitor keyed on canonical path, so the state is keyed the same way and guarded by that same monitor.
 
 ```kotlin
     private class QueueState {
-        var rows: Int = -1          // -1 = not yet known, load on first use
-        var nonDonationRows: Int = 0
+        var rows: Int = UNKNOWN          // sentinel; a real count is never negative
+        var unprotectedRows: Int = 0
+        var lastCompactionMs: Long = 0L
     }
 ```
 
-`rows` is the total line count. `nonDonationRows` is how many of them belong to a table other than `TelemetryTables.DONATIONS` — enough to answer "is there something evictable that is not a donation?" without a scan, which is what Part 2 needs.
+Read and written only under the path-keyed monitor, so no field needs volatility of its own.
 
-Both fields are read and written only under the path-keyed monitor, so they need no volatility of their own.
+**Every entry point loads before it uses.** `append`, `size`, `peek` and `remove` each begin with the same guard: if `rows == UNKNOWN`, do one `readAll` and populate all three fields from it. This is not optional and not implicit — the first draft of this spec described the load in prose and then omitted it from the `append` code block, which would have left `rows` incrementing from the sentinel, `size()` reporting near-zero while donations sat on disk, and `TelemetryGate` reporting `EMPTY_QUEUE` forever.
 
-**First use loads once.** The first `append`, `size`, `peek` or `remove` after process start finds `rows == -1` and does a single `readAll` to initialise. Every subsequent append is a counter increment. That one read is unavoidable — the file outlives the process — but it happens once per process rather than once per append.
+That one read per process is unavoidable: the file outlives the process.
 
-### `append` becomes O(1) plus the write
+### `append`
 
 ```kotlin
     fun append(id: String, table: String, payload: String): Unit = synchronized(lock) {
         val now = clock()
+        loadStateIfUnknown()
         file.parentFile?.mkdirs()
         file.appendText(serialise(QueuedEvent(id, table, payload, now)))
         state.rows += 1
-        if (table != TelemetryTables.DONATIONS) state.nonDonationRows += 1
-        compactIfOverCap(now)
+        if (table !in protectedTables) state.unprotectedRows += 1
+        compactIfDue(now)
     }
 ```
 
-`compactIfOverCap` compares `state.rows` against `maxEvents + compactSlack` — an integer comparison, no read — and returns immediately in the overwhelmingly common case. When it does fire it performs the existing `readAll` / `applyCaps` / `writeAll` and refreshes the counts from the result.
+If `appendText` throws, the counts are not bumped — the increments follow the write, so a failed append cannot inflate them. The file and the count stay consistent.
 
-The existing comment about batching is corrected to describe what the code now actually does.
+### `compactIfDue` — two O(1) triggers, and why the second is not optional
+
+```kotlin
+    private fun compactIfDue(now: Long) {
+        val overCap = state.rows > maxEvents + compactSlack
+        val overdue = now - state.lastCompactionMs >= compactIntervalMs
+        if (overCap || overdue) compactNow(now)
+    }
+```
+
+The count trigger is the obvious one. **The time trigger is load-bearing, and the first draft of this spec omitted it — which would have shipped a data-stranding bug.**
+
+Two places in this codebase depend, in writing, on the age cap retiring a row that nothing else will:
+
+- `TelemetryUploader.kt:217-227` — a genuinely bad row at the head of the queue "block[s] the rows behind them until the outbox's 30-day age cap retires them." The same comment already notes the weakness: "on a low-volume kiosk a stall can outlast 30 days by a wide margin."
+- `HttpPoster.kt:48-50` — an unconfirmable 409 is deliberately kept retryable rather than deleted, because "a stall that the 30-day age cap eventually retires is visible and reversible; a wrongful delete is neither."
+
+A count-only trigger turns "outlasts 30 days by a wide margin" into **never**. A low-volume kiosk with one poison row at the head would stop uploading permanently, donations included, with no mechanism left to clear it. The age cap is not a housekeeping nicety; it is the only automatic escape from a stalled head.
+
+`compactIntervalMs` defaults to 24 hours. The age cap's precision is 30 days, so a day's granularity is immaterial, and it bounds the cost of the age sweep to one queue read per day rather than one per append — which is the entire point of this phase. `lastCompactionMs` is part of the shared state, so the interval is per-file, not per-instance.
+
+### `compactNow`
+
+Does the existing `readAll` / `applyCaps` / `writeAll`, then refreshes all three counters **from the list it just computed**, and stamps `lastCompactionMs`.
+
+Three rules the first draft got wrong or left unsaid:
+
+- **Refresh the counters on the no-write path too.** When nothing is droppable, `writeAll` is skipped — but the counters and `lastCompactionMs` must still be refreshed from the read. Otherwise an overdue compaction that finds nothing to drop leaves `lastCompactionMs` stale, re-fires on the very next append, and the O(n) read returns permanently and silently.
+- **Refresh only after `Files.move` succeeds.** If the atomic move throws, the file still holds the pre-compaction contents and the counters must describe that, not the list that was never installed.
+- **No `writeAll` and no `onDropped(0)` when nothing is droppable.** Otherwise every overdue compaction rewrites the whole queue for nothing.
+
+### `remove` and `clear` maintain the counts
+
+`remove` currently reads, filters and writes (`:75-78`). It must refresh the counters from the list it writes. **This is not optional:** `remove` runs on every successful flush, so counters that ignore it drift upward without limit, and `TelemetryManager.status()` reports `queued` straight from `outbox.size()` (`:79`) to the operator's screen. A kiosk uploading normally for months would show a growing queue depth that does not exist.
+
+`clear` resets `rows` and `unprotectedRows` to zero and leaves the state loaded, rather than returning it to the sentinel.
+
+### The counters trigger compaction. They never size an eviction.
+
+This separation is the rule that keeps the cache safe, and stating it is what stops the whole class of bug where a cached number decides how many rows to delete.
+
+`applyCaps` receives a list and computes everything it needs from that list. The counters are consulted only by `compactIfDue`, to decide *whether* to read. A counter that has drifted can therefore cause a redundant compaction or a slightly delayed one — never a wrong deletion.
 
 ### What this costs, stated rather than buried
 
-**Age-based eviction becomes opportunistic.** Today the 30-day cap is evaluated on every append, because every append reads the queue. After this change it is evaluated only when a compaction runs, and compactions are triggered by the count. On a low-volume kiosk that never approaches 5000 rows, rows older than 30 days persist.
+**A queue mutated outside this process would desynchronise the counters.** Nothing does that today; the file is in app-private storage. Every compaction refreshes from a real read, so the state is self-healing at the only points it could matter.
 
-This is acceptable and the reason is that the age cap was never the binding constraint: the count cap bounds the queue either way, rows are deleted when they upload, and 3d-i's per-table backoff means a table the backend refuses no longer holds the whole queue hostage. What the age cap actually protects against — a permanently misconfigured kiosk hoarding year-old rows — is bounded by the count cap at 5000 rows regardless.
-
-`applyCaps` still applies both rules whenever it runs, so an age sweep happens on every compaction. Nothing weakens the rule; only its schedule changes.
-
-**A queue mutated outside this process would desynchronise the count.** Nothing does that today — the file lives in app-private storage. `clear()` resets the counts, and any compaction refreshes them from a real read, so the state is self-healing at every point it could matter.
+**Two instances constructed with different caps over the same path would share one `lastCompactionMs` and one count.** Today both are constructed with the defaults (`MainActivity.kt:146`, `:381`), so this is theoretical — but the state is keyed by path, so a future caller passing a different `maxEvents` would get the other instance's schedule. Noted rather than guarded, because guarding it costs more than the case is worth.
 
 ---
 
@@ -116,27 +156,44 @@ This is acceptable and the reason is that the age cap was never the binding cons
 
 `applyCaps` ends in `takeLast(maxEvents)` (`:113`), which keeps the newest rows regardless of table. That destroys a donation whenever donations are **older** than the diagnostics behind them.
 
-That ordering is exactly what 3c-ii created. A kiosk takes donations through the day; the card reader then dies in the evening and `checkout_no_reader` — deliberately unthrottled, because each row is a donor who tried to give and could not — floods the queue. The donations are now the oldest rows in the file, and the next append evicts one of them while keeping a diagnostic minutes old.
+That ordering is exactly what 3c-ii created. A kiosk takes donations through the day; the card reader dies in the evening; `checkout_no_reader` — deliberately unthrottled, because each row is a donor who tried to give and could not — floods the queue. The donations are now the oldest rows in the file, and the next eviction takes one while keeping a diagnostic minutes old.
 
 ### The rule
 
-> **No donation is evicted while any non-donation row remains.**
+> **No protected row is evicted while any unprotected row remains.**
 
-Stated as an invariant rather than a heuristic, because every "prefer the bigger table" formulation fails this case — that was the Critical that split 3d in the first place.
+Stated as an invariant rather than a preference, because every "prefer the larger table" formulation fails the case above — that was the Critical that split 3d in the first place.
 
-### The tie-break, stated because it is the steady state
+### Protection is injected, not hardcoded
 
-When the cap is exceeded and **every** row is a donation, there is no alternative: evict oldest-first, exactly as today. That is the only case where a donation is destroyed, and it means the kiosk has 5000 undelivered donations, which is a different emergency.
+`TelemetryOutbox` keeps knowing nothing about event types (`:20-22`), so it gains a constructor parameter:
 
-When non-donation rows exist, evict oldest-first **among non-donations only**, until either the queue is under the cap or no non-donation rows remain — at which point the first rule takes over.
+```kotlin
+    private val protectedTables: Set<String> = emptySet(),
+```
 
-### Single pass, because this runs inside the lock
+`MainActivity` passes `setOf(TelemetryTables.DONATIONS)` at both construction sites. Defaulting to empty means every existing test keeps today's behaviour unless it opts in.
 
-`applyCaps` must not sort, group, or make a second pass. It already knows `nonDonationRows`; the number of rows to shed is `rows - maxEvents`. One forward pass dropping the oldest non-donations up to that number, falling through to oldest-first if it runs out, satisfies both rules and preserves queue order for everything kept.
+**`telemetry_activations` is deliberately not protected.** An activation row is regenerated by pressing "Test connection"; a donation is not regenerable at all. Diagnostics and activations are both evictable, and only donations are not.
 
-### `compactNow` skips a write it does not need
+### Sizing the eviction, from the list and not from a counter
 
-The inherited note stands: a compaction that finds nothing droppable must not call `writeAll`, or a boot-time sweep rewrites the whole queue for no reason. It must also not call `onDropped` with zero.
+```
+aged     = events filtered by the age rule (epoch-floor guard unchanged)
+if aged.size <= maxEvents: return aged            // nothing to shed
+shed     = aged.size - maxEvents
+unprot   = count of aged rows whose table is not protected
+dropUnprotected = min(shed, unprot)
+dropProtected   = shed - dropUnprotected
+```
+
+Every quantity comes from `aged`, the list actually being capped. The first draft computed `shed` as `rows - maxEvents` from the cached counters, which describe the file *before* the age filter — so on any queue with aged-out rows it would have over-evicted, deleting donations nobody named. That is the deletion the outbox exists to prevent.
+
+`dropProtected` is non-zero only when the queue is entirely, or almost entirely, protected rows. That is the stated tie-break: with 5000 undelivered donations and nothing else, oldest-first is the only option, and the kiosk has a different emergency.
+
+Then one forward pass over `aged`, dropping the first `dropUnprotected` unprotected rows and the first `dropProtected` protected rows it meets, keeping everything else in order. Computing the two budgets up front is what makes the result exact — a "drop unprotected, fall through when exhausted" pass leaves the queue over cap when `shed` exceeds `unprot`.
+
+Two passes over `aged` — one to count, one to filter — are fine. The single-pass constraint in the inherited requirements existed because `applyCaps` ran on every append. It no longer does.
 
 ---
 
@@ -148,26 +205,44 @@ The inherited note stands: a compaction that finds nothing droppable must not ca
 
 ## Testing
 
+### The read-counting seam
+
+The tests below assert how many times the queue is read, and no such seam exists today. `TelemetryOutbox` seams `clock` and `onDropped` the same way, so the read joins them:
+
+```kotlin
+    private val readLines: (File) -> List<String> = File::readLines,
+```
+
+`readAll` calls it instead of `file.readLines()`. No dependency, no production behaviour change, and a test can count invocations with a plain counter.
+
+**The shared state must be resettable for tests.** It is keyed by canonical path in a companion map that outlives any instance, so a test that seeds a file and constructs a fresh outbox would inherit the previous test's counts. `TemporaryFolder` gives each test a distinct path, which covers most cases, but an explicit internal reset is specified so that a test reusing a path is not silently wrong.
+
 ### JVM-tested
 
 **The append cost:**
-- Appending to a queue of N rows performs **one** file read across the whole sequence, not N. Assert on a counting seam over the read, not on wall-clock time — a timing test on a build machine proves nothing.
-- The count survives across two `TelemetryOutbox` instances over the same file: append through one, and the other's `size()` is correct without a re-read.
-- First use on an existing file loads the count once; a second append does not re-read.
+- Appending N rows to a loaded queue performs **one** read in total, not N. This is the phase's headline; assert on the seam, never on wall-clock time.
+- The count survives across two instances over the same file: append through one, and the other's `size()` is right without a second read.
+- A failed `appendText` does not bump the counters.
+
+**The triggers:**
+- Crossing `maxEvents + compactSlack` compacts.
+- **An overdue interval compacts even when the queue is far below the cap.** This is the poison-row escape; without it a low-volume kiosk never sheds an aged row. **Mutation-check**: delete the `overdue` term and confirm this test fails.
+- A compaction that finds nothing droppable still refreshes `lastCompactionMs`, so the next append does not immediately re-read. **Mutation-check**: skip the refresh on the no-write path and confirm the read-count test fails.
+- Counters are not refreshed when `writeAll` throws.
 
 **Eviction:**
-- **A donation older than every diagnostic is not the row evicted.** The case that motivates the phase. **Mutation-check**: restore `takeLast(maxEvents)` and confirm this test fails.
-- With only donations queued, eviction is oldest-first.
-- Mixed queue: non-donations are shed oldest-first until the queue is under the cap, and queue order is preserved among survivors.
-- Shedding stops at the cap rather than draining every non-donation.
-- `onDropped` reports exactly the number removed.
+- **A donation older than every diagnostic is not the row evicted.** The case that motivates the phase. **Mutation-check**: restore `takeLast(maxEvents)` and confirm this fails.
+- `shed` exceeding the unprotected count evicts the remainder from protected rows and leaves the queue exactly at the cap — not over it.
+- With only protected rows queued, eviction is oldest-first.
+- With `protectedTables` empty — the default — behaviour is exactly today's.
+- Queue order is preserved among survivors, and `onDropped` reports exactly the number removed.
+- Activations are evictable.
 
-**Compaction:**
-- Nothing droppable ⇒ no `writeAll` and no `onDropped`. **Mutation-check**: remove the guard and confirm the test fails.
-- An age sweep still happens when a compaction runs for a count reason.
-- `clear()` resets the counts, and a following `size()` is 0 without a read.
+**`remove` and `clear`:**
+- `remove` refreshes the counters, and a following `size()` is right without a read. **Mutation-check**: omit the refresh and confirm `size()` drifts.
+- `clear` zeroes the counters without a re-read.
 
-**Unchanged behaviour that must stay unchanged:** `parseLine` still skips an unreadable line without losing the queue; the epoch-floor guard still protects a dead-RTC kiosk; `writeAll` still stages through the temp file.
+**Existing tests that change, and must be updated rather than deleted:** `ageCap_dropsEventsPastTheWindow` (`TelemetryOutboxTest.kt:158`) and `droppingEventsOverTheAgeCapReportsHowManyWereLost` (`:363`) both rely on the age sweep running on the append that crosses the threshold. Under the new triggers they must drive a compaction explicitly — by crossing the cap, or by advancing the injected clock past the interval. Both still assert the same behaviour; only what provokes it changes.
 
 ### Not unit-testable, and labelled as such
 
@@ -175,30 +250,37 @@ The crash handler's shortened wait. It is a consequence of the append no longer 
 
 ### Device checks
 
-1. Fill the queue past the cap with a mix of old donations and newer diagnostics, then take a donation: the donation is still in the queue afterwards, and the diagnostics count has dropped.
-2. Leave a kiosk running with analytics pointed at a dead endpoint until the queue saturates: donation throughput does not degrade as the queue grows. This is the O(n) fix, and it is only observable at scale.
-3. Crash the app with a saturated queue: the crash row is written and the process still dies promptly.
-4. Carried and still unverified: everything on 3d-i's list, plus 3c-ii's restart, synthetic-close and checkout checks.
+1. Fill the queue past the cap with old donations under newer diagnostics, then take a donation: the donation is still queued afterwards and the diagnostics count has fallen.
+2. Run with analytics pointed at a dead endpoint until the queue saturates: donation throughput does not degrade as the queue grows. The O(n) fix, observable only at scale.
+3. Leave a low-volume kiosk running for longer than the compaction interval with a poison row at the head: the row is retired and the queue behind it drains.
+4. Crash the app with a saturated queue: the crash row is written and the process still dies promptly.
+5. Carried and still unverified: everything on 3d-i's list, plus 3c-ii's restart, synthetic-close and checkout checks.
 
 ---
 
 ## Limitations, stated rather than buried
 
-**Age eviction is opportunistic**, as argued in Part 1. A low-volume kiosk holds rows past 30 days until a count-triggered compaction sweeps them.
+**The age sweep runs on a schedule rather than continuously.** A row crosses 30 days and survives until the next compaction — at most `compactIntervalMs` later, one day by default. The uploader's stall comment should be updated to say so, since it currently describes an unbounded wait that this phase bounds.
 
-**The count is process-local state over a file.** It is reconstructed on first use and refreshed by every compaction, so it cannot drift far, but it is a second representation of something the file already knows. The alternative — reading the file to learn its length — is the cost this phase exists to remove.
+**The counters are process-local state over a file.** Reconstructed on first use, refreshed by every compaction and every `remove`, and never used to size a deletion. The alternative — reading the file to learn its length — is the cost this phase exists to remove.
+
+**Two instances with different caps over one path share one schedule.** Theoretical today; noted rather than guarded.
 
 ---
 
 ## Decisions
 
-**Fix the append's cost, not the crash handler's wait.** The wait is a symptom. A lock timeout would have added a mechanism that three reviews found dangerous, and left every other caller paying the same O(n).
+**Fix the append's cost, not the crash handler's wait.** The wait is bounded by construction because no network call happens inside the lock. A timeout would add a mechanism three reviews found dangerous to shorten a bounded wait.
 
-**Counts are keyed by path, not held per instance.** Two instances exist over one file. The lock already solves this problem the same way.
+**Two triggers, not one.** The count trigger bounds storage. The time trigger is the only automatic escape from a stalled queue head, and two files depend on it in writing.
 
-**Eviction is an invariant, not a preference.** "Never a donation while a non-donation remains" is checkable; "prefer the larger table" is a heuristic that fails the realistic case.
+**Counters trigger compaction; they never size an eviction.** A drifted counter can cause a redundant read. It can never cause a wrong deletion.
 
-**The retained-Activity item is closed, not deferred.** It does not accumulate, and the proposed fix introduces a silent-loss window.
+**Protection is injected.** The outbox's stated design property is that it knows nothing about event types, and a hardcoded table name inside it would be the first violation.
+
+**Only donations are protected.** An activation is regenerated by pressing a button; a donation is gone.
+
+**The retained-Activity item is closed, not deferred** — on the accumulation argument alone. The silent-loss argument was wrong and is withdrawn.
 
 ---
 
