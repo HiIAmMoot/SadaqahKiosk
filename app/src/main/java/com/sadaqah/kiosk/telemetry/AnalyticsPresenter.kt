@@ -45,6 +45,8 @@ data class AnalyticsView(
     val queued: Int,
     val neverUploaded: Boolean,
     val lastSuccessMs: Long,
+    /** Meaningless when [neverUploaded] is true — formats epoch 0 in that case.
+     *  The screen picks [neverUploaded]'s own string instead of rendering this. */
     val lastSuccessText: String,
     val error: String?,
     val backingOff: Boolean,
@@ -115,11 +117,11 @@ object AnalyticsPresenter {
             queued = status.queued,
             neverUploaded = neverUploaded,
             lastSuccessMs = status.lastSuccessMs,
-            /** Formatted here rather than in the composable: the screen cannot be
-             *  unit-tested, so a computation left inside it is a computation
-             *  nothing checks. The neverUploaded branch stays a screen concern —
-             *  rendering it needs a Strings member the presenter must not reach
-             *  for. */
+            // Formatted here rather than in the composable: the screen cannot be
+            // unit-tested, so a computation left inside it is a computation
+            // nothing checks. The neverUploaded branch stays a screen concern —
+            // rendering it needs a Strings member the presenter must not reach
+            // for.
             lastSuccessText = TIMESTAMP_FORMAT.withLocale(locale).withZone(zone)
                 .format(Instant.ofEpochMilli(status.lastSuccessMs)),
             // Shown while any table is backed off, whatever the timestamps — or

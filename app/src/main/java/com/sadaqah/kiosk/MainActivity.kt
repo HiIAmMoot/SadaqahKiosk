@@ -122,7 +122,10 @@ class MainActivity : FragmentActivity() {
      *  Armed ONLY when that activity is actually outstanding. finishActivity is a
      *  no-op otherwise, and an arm with no callback coming would survive to
      *  mislabel the next genuine failure — which is exactly what resetScreensaver
-     *  would do on every screensaver dismissal. */
+     *  would do on every screensaver dismissal. The login slot is additionally
+     *  cleared immediately before each openLoginActivity launch (see authenticate()),
+     *  closing that window for request code 1; the reader slot has no such clear
+     *  and relies on isConnectingCardReader instead. */
     private var syntheticCloseReader: String? = null   // request code 2
     private var syntheticCloseLogin: String? = null    // request code 1
 
@@ -1081,20 +1084,22 @@ class MainActivity : FragmentActivity() {
         } else {
             startPairingUnpin()
         }
-        SumUpState.init(this)
-        val sumupLogin = SumUpLogin.builder(affiliateKey).build()
         // If openLoginActivity ever returns without launching, the watchdog
         // below arms a label that finishActivity cannot clear — and the next
         // genuine login failure then reports as self-inflicted. Whether the SDK
         // can do that is unknowable from this repo, and this does not need to
         // know: every genuine code-1 result comes from a launch, and every
-        // launch now clears first.
+        // launch now clears first — placed ahead of init/builder too, so a throw
+        // from either still leaves no stale label (though also no launch, so no
+        // result to mislabel either way).
         //
         // One case it does not cover: a re-entrant authenticate while a login is
         // still outstanding erases a legitimately armed label, so a synthetic
         // close reads as genuine. That is the safe direction — a missing
         // discriminator, not a false one.
         syntheticCloseLogin = null
+        SumUpState.init(this)
+        val sumupLogin = SumUpLogin.builder(affiliateKey).build()
         SumUpAPI.openLoginActivity(this@MainActivity, sumupLogin, 1)
         if (silent) {
             // Reinit / scheduled refresh: keep pinning, rely on cached SumUp credentials
