@@ -2,7 +2,9 @@
 
 **Goal:** An operator who points this kiosk at a telemetry destination is told, in their own language, exactly what it will send and what it will never send.
 
-17.2 of the customer terms makes this disclosure a contractual commitment. It is the only part of the telemetry work that exists because of an obligation rather than an engineering need, and that changes how it should be judged: the copy being *accurate* matters more than the screen being *elegant*.
+**This screen is a signpost, not the disclosure itself.** The document that discharges clause 17.2 is the one the operator publishes at the privacy-policy and terms URLs — the thing behind the QR code. The app points at it; it does not contain it.
+
+That distinction sets the standard for everything below. The screen's copy is ordinary UI text and is held to ordinary UI standards. What has to be right is that the URLs shown are the ones stored, that the QR encodes exactly the URL printed beside it, and that the summary of what is and is not sent does not contradict what the code actually does.
 
 ## What recon changed
 
@@ -62,7 +64,9 @@ The destination URL, the privacy URL and the terms URL are rendered from setting
 
 Each renders as: the label, the URL as selectable text, and a QR code beside it. The QR encodes the URL exactly as stored — no shortening, no tracking parameters, nothing added.
 
-If a URL is blank, its block is omitted entirely rather than rendering an empty QR. `AnalyticsPresenter` already computes `policyUrlsMissing` for the settings screen; the same condition governs here.
+If a URL is blank, its block is omitted entirely rather than rendering an empty QR. `AnalyticsPresenter` already computes `policyUrlsMissing` (`:154`) for the settings screen; the same condition governs here.
+
+**A known gap, put to the founder on 2026-09-15 and deliberately left as it is.** Nothing gates reporting on those URLs existing. `policyUrlsMissing`'s only consumer is a warning line at `AnalyticsSettingsScreen.kt:352-354`; `TelemetryGate` has no check on it and neither does `TelemetryManager`. So a kiosk configured with a destination and no privacy URL collects and sends donation data with no published disclosure anywhere. Options offered were: say so on this screen, gate the flush, block the save, or keep the warning line. **The founder chose the warning line** — gating would silently stop reporting on any already-deployed kiosk in that state the moment it updated. Recorded here so it is not rediscovered as a defect, and carried to `docs/known-debt.md`.
 
 ---
 
@@ -76,13 +80,11 @@ After a destination is saved — `onAnalyticsSaveDestination` in `MainActivity.k
 
 ---
 
-## The translations, and an honest caveat
+## The translations
 
-Seven languages beyond English: Dutch, German, French, Spanish, Italian, Turkish, Arabic.
+Seven languages beyond English: Dutch, German, French, Spanish, Italian, Turkish, Arabic. Machine-produced, held to the same standard as the 241 members already in `Translations.kt` — this is UI copy, not the binding text, because the binding text lives behind the URL.
 
-**These will be machine-produced, and for a contractual disclosure that is worth stating rather than glossing.** The English copy is the authoritative text and should be written first and reviewed as the thing the obligation attaches to. The translations should be accurate — but "accurate enough to ship" and "accurate enough to be the contractual statement in a Dutch court" are not the same standard, and only the founder can decide which one applies here.
-
-Recommendation: ship the translations, and flag in the PR that a native check on the Dutch and Arabic is cheap insurance if any customer in those markets is on the vendor deployment rather than a fork.
+The one thing translation must not do is change meaning in the exclusions list. "Card data is never sent" has to stay an absolute in every language; a translation that softens it into "card data is not normally sent" would make the screen contradict the code.
 
 ---
 
