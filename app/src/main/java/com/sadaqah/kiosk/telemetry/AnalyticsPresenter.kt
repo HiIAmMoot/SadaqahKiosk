@@ -76,6 +76,7 @@ object AnalyticsPresenter {
     ): AnalyticsView {
         val neverUploaded = status.lastSuccessMs == 0L
         val effectiveBackoffUntilMs = status.effectiveBackoffUntilMs(nowMs)
+        val isBackedOff = effectiveBackoffUntilMs > nowMs
         val testUnavailable = when {
             config == null -> TestUnavailable.NOT_CONFIGURED
             !settings.analyticsEnabled -> TestUnavailable.ANALYTICS_OFF
@@ -103,20 +104,27 @@ object AnalyticsPresenter {
             queued = status.queued,
             neverUploaded = neverUploaded,
             lastSuccessMs = status.lastSuccessMs,
-            // Shown while any table is backed off, whatever the timestamps say:
-            // a sibling's success now advances lastSuccessMs past a retained
-            // lastErrorAtMs, and suppressing on that comparison alone would
-            // leave the operator reading a failure count with no failure beside
-            // it. The comparison still decides the case where nothing is backed
-            // off — an error a later success genuinely superseded.
+            // Shown while any table is backed off, whatever the timestamps — or
+            // the table — say: a sibling's success now advances lastSuccessMs
+            // past a retained lastErrorAtMs, and suppressing on that comparison
+            // alone would leave the operator reading a failure count with no
+            // failure beside it. The comparison still decides the case where
+            // nothing is backed off — an error a later success genuinely
+            // superseded. Because lastError is one global field, the text shown
+            // while backed off can name a table that has since recovered (e.g.
+            // diagnostics fails, donations fails later and overwrites lastError,
+            // donations recovers, diagnostics is still stuck) — backingOff,
+            // backoffRemainingSeconds and consecutiveFailures stay correct
+            // alongside it, so the operator is never told everything is fine,
+            // just possibly about the wrong table.
             //
             // Queue depth is not evidence of a success either: flush can empty
             // the outbox by permanently rejecting rows in the same flush that
             // records a retryable failure.
             error = status.lastError?.takeIf {
-                effectiveBackoffUntilMs > nowMs || status.lastSuccessMs <= status.lastErrorAtMs
+                isBackedOff || status.lastSuccessMs <= status.lastErrorAtMs
             },
-            backingOff = effectiveBackoffUntilMs > nowMs,
+            backingOff = isBackedOff,
             backoffRemainingSeconds =
                 (effectiveBackoffUntilMs - nowMs).coerceAtLeast(0L).let { (it + 999) / 1000 },
             consecutiveFailures = status.consecutiveFailuresByTable.values.maxOrNull() ?: 0,

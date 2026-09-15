@@ -359,7 +359,8 @@ class AnalyticsPresenterTest {
                 lastError = "HTTP 400 bad column",
                 lastErrorAtMs = at - 5_000,
                 lastSuccessMs = at - 1_000,   // the sibling's success, later than the error
-                backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to at + 30_000)
+                backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to at + 30_000),
+                consecutiveFailuresByTable = mapOf(TelemetryTables.DIAGNOSTICS to 3)
             ),
             now = at
         )
@@ -392,5 +393,33 @@ class AnalyticsPresenterTest {
             now = at
         )
         assertEquals("HTTP 503 down", result.error)
+    }
+
+    /**
+     * Pins that the presenter treats "backed off" via TelemetryGate's fail-open
+     * guard (TelemetryStatus.effectiveBackoffUntilMs), not a raw maximum over
+     * backoffUntilMsByTable. A deadline further out than TelemetryGate.MAX_BACKOFF_MS
+     * cannot have come from this app's own backoff schedule — only from a corrupt
+     * value or a clock that has since jumped — so the guard discounts it rather
+     * than let it pin the screen indefinitely. Reading the map directly here would
+     * pass every other test in this file while silently dropping that guard from
+     * the error and backingOff fields the operator actually sees.
+     */
+    @Test
+    fun aDeadlineBeyondTheBackoffCeilingDoesNotPinTheErrorOnScreen() {
+        val at = 10_000L
+        val result = view(
+            status = TelemetryStatus(
+                lastError = "HTTP 400 bad column",
+                lastErrorAtMs = at - 5_000,
+                lastSuccessMs = at - 1_000,   // later than the error, as above
+                backoffUntilMsByTable = mapOf(
+                    TelemetryTables.DIAGNOSTICS to at + TelemetryGate.MAX_BACKOFF_MS + 1_000
+                )
+            ),
+            now = at
+        )
+        assertFalse(result.backingOff)
+        assertEquals(null, result.error)
     }
 }
