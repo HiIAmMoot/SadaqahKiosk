@@ -80,4 +80,7 @@ dependencies {
     // Palette (logo colour extraction for the colour picker)
     implementation(libs.androidx.palette)
 
+    // QR encoding for the disclosure screen
+    implementation(libs.zxing.core)
+
 }
