@@ -103,13 +103,19 @@ object AnalyticsPresenter {
             queued = status.queued,
             neverUploaded = neverUploaded,
             lastSuccessMs = status.lastSuccessMs,
-            // An error is shown unless a success has happened since it was
-            // recorded. Queue depth is not evidence of that: TelemetryManager.flush
-            // can empty the outbox by permanently rejecting rows (deleting the
-            // donations) in the same flush that records a retryable failure, so
-            // an empty queue beside a fresh error is exactly the case that must
-            // still be shown, not the case this used to suppress.
-            error = status.lastError?.takeIf { status.lastSuccessMs <= status.lastErrorAtMs },
+            // Shown while any table is backed off, whatever the timestamps say:
+            // a sibling's success now advances lastSuccessMs past a retained
+            // lastErrorAtMs, and suppressing on that comparison alone would
+            // leave the operator reading a failure count with no failure beside
+            // it. The comparison still decides the case where nothing is backed
+            // off — an error a later success genuinely superseded.
+            //
+            // Queue depth is not evidence of a success either: flush can empty
+            // the outbox by permanently rejecting rows in the same flush that
+            // records a retryable failure.
+            error = status.lastError?.takeIf {
+                effectiveBackoffUntilMs > nowMs || status.lastSuccessMs <= status.lastErrorAtMs
+            },
             backingOff = effectiveBackoffUntilMs > nowMs,
             backoffRemainingSeconds =
                 (effectiveBackoffUntilMs - nowMs).coerceAtLeast(0L).let { (it + 999) / 1000 },

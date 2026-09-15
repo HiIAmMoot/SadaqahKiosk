@@ -3,6 +3,7 @@ package com.sadaqah.kiosk.telemetry
 import com.sadaqah.kiosk.model.Settings
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -342,5 +343,54 @@ class AnalyticsPresenterTest {
     @Test
     fun droppedEventsAreSurfaced() {
         assertEquals(7, view(status = TelemetryStatus(droppedCount = 7)).dropped)
+    }
+
+    /**
+     * The store keeps a live error while a table is backed off, but the screen
+     * is what the operator reads — and "Failed attempts: 3" beside a blank
+     * error line is the outcome the retention rule exists to prevent. An
+     * assertion on the store would pass with the screen empty.
+     */
+    @Test
+    fun anErrorStaysOnScreenWhileATableIsBackedOffEvenAfterASiblingSucceeds() {
+        val at = 10_000L
+        val result = view(
+            status = TelemetryStatus(
+                lastError = "HTTP 400 bad column",
+                lastErrorAtMs = at - 5_000,
+                lastSuccessMs = at - 1_000,   // the sibling's success, later than the error
+                backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to at + 30_000)
+            ),
+            now = at
+        )
+        assertEquals("HTTP 400 bad column", result.error)
+    }
+
+    @Test
+    fun anErrorIsSuppressedOnceNoTableIsBackedOffAndASuccessFollowedIt() {
+        val at = 10_000L
+        val result = view(
+            status = TelemetryStatus(
+                lastError = "HTTP 400 bad column",
+                lastErrorAtMs = at - 5_000,
+                lastSuccessMs = at - 1_000
+            ),
+            now = at
+        )
+        assertNull(result.error)
+    }
+
+    @Test
+    fun aFreshErrorWithNoSuccessSinceIsStillShown() {
+        val at = 10_000L
+        val result = view(
+            status = TelemetryStatus(
+                lastError = "HTTP 503 down",
+                lastErrorAtMs = at - 1_000,
+                lastSuccessMs = at - 5_000
+            ),
+            now = at
+        )
+        assertEquals("HTTP 503 down", result.error)
     }
 }
