@@ -79,6 +79,82 @@ class TelemetryManager(
     fun status(): TelemetryStatus = statusStore.read().copy(queued = outbox.size())
 
     /**
+     * The one place per-table failure state is written.
+     *
+     * Shared by the throw path and the outcome path, which differ only in where
+     * the table sets come from — a transport-level throw has no table
+     * attribution, so it names every table in the batch.
+     */
+    private fun recordOutcome(
+        failedTables: Set<String>,
+        succeededTables: Set<String>,
+        /** Whether the uploader named any row as settled — sent or permanently
+         *  refused. Kept separate from [succeededTables] because the existing
+         *  success branch guarded on `uploadedIds.isNotEmpty() ||
+         *  rejectedIds.isNotEmpty()` and documented a refusal to assume the
+         *  uploader cannot produce rejections without uploads. That refusal is
+         *  preserved here. What per-table state such an outcome would clear is
+         *  a question it cannot answer — it names no tables — so it clears
+         *  none, and only the global fields move. Note this does advance
+         *  [TelemetryStatus.lastSuccessMs], where the old retryable branch did
+         *  not — matching what the old *success* branch did on the same shape,
+         *  which is the branch this one stands in for. */
+        anyRowsSettled: Boolean,
+        errorText: String?,
+        finishedAt: Long
+    ) {
+        // Nothing happened, so nothing is recorded. Deliberately not folded into
+        // the loops below: with both sets empty they run zero times, and the
+        // lastError rule would still evaluate and clear an error no flush
+        // disproved.
+        if (failedTables.isEmpty() && succeededTables.isEmpty() && !anyRowsSettled) return
+
+        // FIX (I4): transform the value the store hands back, not a snapshot
+        // taken before the network call — anything written during the upload (an
+        // outbox eviction's droppedCount, chiefly) must survive this write.
+        statusStore.update { fresh ->
+            val counts = fresh.consecutiveFailuresByTable.toMutableMap()
+            val deadlines = fresh.backoffUntilMsByTable.toMutableMap()
+
+            for (table in failedTables) {
+                val failures = (counts[table] ?: 0) + 1
+                counts[table] = failures
+                deadlines[table] = finishedAt + TelemetryGate.backoffDelayMs(failures)
+            }
+            // Failure wins: a table in both sets has rows that did not send, and
+            // clearing it here would retry them on the very next flush — a tight
+            // loop against a broken link.
+            for (table in succeededTables - failedTables) {
+                counts.remove(table)
+                deadlines.remove(table)
+            }
+
+            // Judged on the state this write produces, not the one it replaces:
+            // that is the state the operator will be looking at.
+            val anyBackedOff = deadlines.any { TelemetryGate.isTableBackedOff(it.value, finishedAt) }
+
+            fresh.copy(
+                consecutiveFailuresByTable = counts,
+                backoffUntilMsByTable = deadlines,
+                // A donations success must not wipe the schema error that
+                // explains why diagnostics are stuck.
+                lastError = when {
+                    errorText != null -> errorText
+                    anyBackedOff -> fresh.lastError
+                    else -> null
+                },
+                // Only advanced when a non-null error is actually written, so a
+                // retained error keeps the timestamp that explains it.
+                lastErrorAtMs = if (errorText != null) finishedAt else fresh.lastErrorAtMs,
+                // "Something reached the backend" is true, and it is what the
+                // field means.
+                lastSuccessMs =
+                    if (succeededTables.isEmpty() && !anyRowsSettled) fresh.lastSuccessMs else finishedAt
+            )
+        }
+    }
+
+    /**
      * Writes the activation row and sends it immediately. This doubles as the
      * configuration smoke test: a successful insert is the operator's confirmation
      * that the destination is real, so a mistyped endpoint surfaces at the bench.
@@ -240,33 +316,18 @@ class TelemetryManager(
             // this line, so the queue is intact — but without this, a throwing
             // flush would leave every table's failure state untouched, and a
             // failing kiosk would retry in a tight loop forever.
-            val finishedAt = clock()
-            // FIX (I4): transform against the value the store hands it, not
-            // `before` — anything written to the store during the upload above
-            // (an outbox eviction's droppedCount, chiefly) must survive this
-            // write rather than being overwritten by a copy of a snapshot taken
-            // before that write ever happened.
-            statusStore.update { fresh ->
-                // Every table, not just the batch's: this task keeps the whole
-                // flush moving in lockstep (that changes in Task 3), and a batch
-                // almost never holds all three tables, so attributing failure to
-                // it alone would let backoff narrow to individual tables three
-                // commits early — under a task that claims to change nothing.
-                val failures = TelemetryTables.ALL.associateWith { table ->
-                    (fresh.consecutiveFailuresByTable[table] ?: 0) + 1
-                }
-                fresh.copy(
-                    // Never the exception's message: it could carry a row value
-                    // (a donation amount, a stack trace fragment) that never went
-                    // through the redactor.
-                    lastError = t::class.java.name,
-                    lastErrorAtMs = finishedAt,
-                    consecutiveFailuresByTable = failures,
-                    backoffUntilMsByTable = failures.mapValues { (_, count) ->
-                        finishedAt + TelemetryGate.backoffDelayMs(count)
-                    }
-                )
-            }
+            recordOutcome(
+                // A transport-level throw is table-agnostic, so it names the
+                // tables actually attempted rather than all three.
+                failedTables = batch.map { it.table }.toSet(),
+                succeededTables = emptySet(),
+                anyRowsSettled = false,
+                // Never the exception's message: it could carry a row value (a
+                // donation amount, a stack trace fragment) that never went
+                // through the redactor.
+                errorText = t::class.java.name,
+                finishedAt = clock()
+            )
             return FlushBlock.NONE
         }
 
@@ -281,56 +342,13 @@ class TelemetryManager(
         // or on a slow link, minutes — stale by the time a backoff deadline is
         // computed from it.
         val finishedAt = clock()
-        when {
-            outcome.retryableTables.isNotEmpty() -> {
-                // FIX (I4): as above — transform the fresh value the store hands
-                // back, not `before`. A `before.copy(...)` here would silently
-                // discard a droppedCount bump (or anything else) written during
-                // the network round trip above.
-                statusStore.update { fresh ->
-                    // Every table, not just the batch's — see the throw branch
-                    // above for why. Task 3 replaces this block wholesale; it
-                    // exists only so the suite stays green and this commit is
-                    // genuinely behaviour-preserving.
-                    val failures = TelemetryTables.ALL.associateWith { table ->
-                        (fresh.consecutiveFailuresByTable[table] ?: 0) + 1
-                    }
-                    fresh.copy(
-                        lastError = outcome.lastError,
-                        // Only advanced when a non-null error is actually written —
-                        // outcome.lastError is nullable in principle even though
-                        // every reachable path in TelemetryUploader that adds to
-                        // retryableTables also sets it.
-                        lastErrorAtMs = if (outcome.lastError != null) finishedAt else fresh.lastErrorAtMs,
-                        consecutiveFailuresByTable = failures,
-                        backoffUntilMsByTable = failures.mapValues { (_, count) ->
-                            finishedAt + TelemetryGate.backoffDelayMs(count)
-                        },
-                        // A partial success still moves the marker: rows did land, and
-                        // an operator reading "last upload: never" while data arrives
-                        // would chase a problem that is not there.
-                        lastSuccessMs = if (outcome.uploadedIds.isEmpty()) fresh.lastSuccessMs else finishedAt
-                    )
-                }
-            }
-            // Evidence of a real outcome, not just the absence of a retryable one:
-            // an outcome that uploaded or rejected nothing is not proof of success,
-            // whatever the uploader says about retryableTables. This is currently
-            // unreachable for a non-empty batch (see UploadOutcome's own contract
-            // note), but this class's whole charter is to never re-derive the
-            // uploader's judgement, so it does not assume that shape either.
-            outcome.uploadedIds.isNotEmpty() || outcome.rejectedIds.isNotEmpty() -> {
-                statusStore.update { fresh ->
-                    fresh.copy(
-                        lastError = null,
-                        consecutiveFailuresByTable = emptyMap(),
-                        backoffUntilMsByTable = emptyMap(),
-                        lastSuccessMs = finishedAt
-                    )
-                }
-            }
-            else -> Unit // Nothing happened. Status is left exactly as it was.
-        }
+        recordOutcome(
+            failedTables = outcome.retryableTables,
+            succeededTables = outcome.succeededTables,
+            anyRowsSettled = outcome.uploadedIds.isNotEmpty() || outcome.rejectedIds.isNotEmpty(),
+            errorText = outcome.lastError,
+            finishedAt = finishedAt
+        )
 
         lastUploadOutcome = outcome
         return FlushBlock.NONE

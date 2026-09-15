@@ -46,6 +46,14 @@ class TelemetryManagerTest {
         }
     }
 
+    /** Answers by URL rather than by call order — the shape
+     *  [TelemetryUploaderTest.oneTableFailingDoesNotLoseAnotherTablesSuccess] uses
+     *  (`RecordingPoster` there is private to that file) — for tests that need one
+     *  table to fail while a sibling in the same batch succeeds. */
+    private class PerTablePoster(private val respond: (String) -> HttpResponse) : HttpPoster {
+        override fun post(url: String, headers: Map<String, String>, body: String): HttpResponse = respond(url)
+    }
+
     private fun manager(
         outbox: TelemetryOutbox,
         poster: HttpPoster,
@@ -718,5 +726,228 @@ class TelemetryManagerTest {
             555L,
             store.read().lastErrorAtMs
         )
+    }
+
+    // ── Task 3: per-table accounting ────────────────────────────────────────
+
+    private fun diagnosticsFailsDonationsSucceed() = PerTablePoster { url ->
+        if (url.endsWith("/diagnostic_events")) HttpResponse(503, "down") else HttpResponse(201, null)
+    }
+
+    @Test
+    fun aRefusedDiagnosticsTableLeavesDonationsClear() {
+        val store = InMemoryStatusStore()
+        val outbox = outboxWithRows("a" to TelemetryTables.DONATIONS, "x1" to TelemetryTables.DIAGNOSTICS)
+
+        manager(outbox, diagnosticsFailsDonationsSucceed(), statusStore = store).flush()
+
+        val status = store.read()
+        assertTrue(TelemetryTables.DIAGNOSTICS in status.backoffUntilMsByTable)
+        assertFalse(TelemetryTables.DONATIONS in status.backoffUntilMsByTable)
+        assertTrue(TelemetryTables.DIAGNOSTICS in status.consecutiveFailuresByTable)
+        assertFalse(TelemetryTables.DONATIONS in status.consecutiveFailuresByTable)
+    }
+
+    @Test
+    fun aSuccessClearsItsTableInTheSameFlushWhereASiblingFails() {
+        val store = InMemoryStatusStore()
+        // No deadlines seeded (the seeding rule): a live deadline on either table
+        // would exclude it from this flush and the assertion below would be about
+        // a table that was never attempted.
+        store.write(store.read().copy(
+            consecutiveFailuresByTable = mapOf(
+                TelemetryTables.DONATIONS to 2,
+                TelemetryTables.DIAGNOSTICS to 2
+            )
+        ))
+        val outbox = outboxWithRows("a" to TelemetryTables.DONATIONS, "x1" to TelemetryTables.DIAGNOSTICS)
+
+        manager(outbox, diagnosticsFailsDonationsSucceed(), statusStore = store).flush()
+
+        val status = store.read()
+        assertFalse(TelemetryTables.DONATIONS in status.consecutiveFailuresByTable)
+        assertFalse(TelemetryTables.DONATIONS in status.backoffUntilMsByTable)
+        assertEquals(3, status.consecutiveFailuresByTable[TelemetryTables.DIAGNOSTICS])
+    }
+
+    /**
+     * Mutation check: change `succeededTables - failedTables` in `recordOutcome`
+     * to plain `succeededTables` and this test must fail — the mutated code would
+     * remove DIAGNOSTICS from both maps in the same pass that just added it,
+     * leaving `backoffUntilMsByTable` without it.
+     */
+    @Test
+    fun aTableInBothSetsBacksOff() {
+        val store = InMemoryStatusStore()
+        val outbox = outboxWithRows("x1" to TelemetryTables.DIAGNOSTICS)
+
+        val result = manager(
+            outbox,
+            ConstantPoster(HttpResponse(201, null)),
+            statusStore = store,
+            upload = { _, batch ->
+                UploadOutcome(
+                    uploadedIds = batch.map { it.id }.toSet(),
+                    rejectedIds = emptySet(),
+                    retryableTables = setOf(TelemetryTables.DIAGNOSTICS),
+                    succeededTables = setOf(TelemetryTables.DIAGNOSTICS),
+                    lastError = "HTTP 503 down"
+                )
+            }
+        ).flush()
+
+        assertEquals(FlushBlock.NONE, result)
+        assertTrue(TelemetryTables.DIAGNOSTICS in store.read().backoffUntilMsByTable)
+    }
+
+    @Test
+    fun aThrowBacksOffEveryTableInTheBatchAndNoOther() {
+        val store = InMemoryStatusStore()
+        val outbox = outboxWithRows("a" to TelemetryTables.DONATIONS, "x1" to TelemetryTables.DIAGNOSTICS)
+
+        manager(
+            outbox,
+            ConstantPoster(HttpResponse(201, null)),
+            statusStore = store,
+            upload = { _, _ -> throw IllegalStateException("boom") }
+        ).flush()
+
+        val status = store.read()
+        assertTrue(TelemetryTables.DONATIONS in status.backoffUntilMsByTable)
+        assertTrue(TelemetryTables.DIAGNOSTICS in status.backoffUntilMsByTable)
+        assertFalse("a table absent from the batch must not be touched", TelemetryTables.ACTIVATIONS in status.backoffUntilMsByTable)
+        assertFalse(TelemetryTables.ACTIVATIONS in status.consecutiveFailuresByTable)
+    }
+
+    @Test
+    fun perTableCountsDrivePerTableDelaysIndependently() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(
+            consecutiveFailuresByTable = mapOf(
+                TelemetryTables.DIAGNOSTICS to 4,
+                TelemetryTables.DONATIONS to 1
+            )
+        ))
+        val outbox = outboxWithRows("a" to TelemetryTables.DONATIONS, "x1" to TelemetryTables.DIAGNOSTICS)
+
+        manager(outbox, ConstantPoster(HttpResponse(503, "down")), statusStore = store).flush()
+
+        val status = store.read()
+        val diagnosticsDeadline = status.backoffUntilMsByTable.getValue(TelemetryTables.DIAGNOSTICS)
+        val donationsDeadline = status.backoffUntilMsByTable.getValue(TelemetryTables.DONATIONS)
+        assertTrue(
+            "backoffDelayMs(5) must be strictly further out than backoffDelayMs(2)",
+            diagnosticsDeadline > donationsDeadline
+        )
+    }
+
+    @Test
+    fun activateClearsEveryTable() {
+        val store = InMemoryStatusStore()
+        store.write(store.read().copy(
+            consecutiveFailuresByTable = TelemetryTables.ALL.associateWith { 3 },
+            backoffUntilMsByTable = TelemetryTables.ALL.associateWith { now + 30_000 }
+        ))
+        val outbox = TelemetryOutbox(temp.newFile())
+        val poster = ConstantPoster(HttpResponse(201, null))
+
+        val result = manager(outbox, poster, statusStore = store).activate()
+
+        assertEquals(ActivationResult.Succeeded, result)
+        assertTrue(store.read().consecutiveFailuresByTable.isEmpty())
+        assertTrue(store.read().backoffUntilMsByTable.isEmpty())
+    }
+
+    @Test
+    fun aFlushThatNeitherUploadedNorRejectedAnythingLeavesStatusAlone() {
+        val store = InMemoryStatusStore()
+        val seeded = store.read().copy(
+            lastError = "HTTP 503 down",
+            lastErrorAtMs = now - 5_000,
+            consecutiveFailuresByTable = mapOf(TelemetryTables.DIAGNOSTICS to 3),
+            // Past, per the seeding rule: a live deadline would exclude the row
+            // below and the seam would never run at all.
+            backoffUntilMsByTable = mapOf(TelemetryTables.DIAGNOSTICS to now - 1)
+        )
+        store.write(seeded)
+        val outbox = outboxWithRows("x1" to TelemetryTables.DIAGNOSTICS)
+
+        manager(
+            outbox,
+            ConstantPoster(HttpResponse(201, null)),
+            statusStore = store,
+            upload = { _, _ -> UploadOutcome(emptySet(), emptySet(), emptySet(), emptySet(), null) }
+        ).flush()
+
+        assertEquals("nothing named by the outcome must change status at all", seeded, store.read())
+    }
+
+    /**
+     * A healthy donations table must not erase the schema error that explains
+     * why diagnostics are stuck — it is the only evidence an operator has.
+     *
+     * Two flushes, deliberately. In a single flush where diagnostics fails, the
+     * error arrives as `errorText` and the first arm of recordOutcome's `when`
+     * returns it regardless — so the retention rule is never exercised and
+     * deleting it changes nothing. The rule only fires on a LATER flush, where
+     * the healthy table succeeds and the broken one contributes no error
+     * because it is excluded and never attempted.
+     *
+     * Mutation check: delete the `anyBackedOff -> fresh.lastError` arm and this
+     * test must fail.
+     */
+    @Test
+    fun aSiblingSuccessDoesNotClearLastErrorWhileATableIsBackedOff() {
+        val store = InMemoryStatusStore()
+        val outbox = outboxWithRows("a1" to TelemetryTables.DONATIONS, "x1" to TelemetryTables.DIAGNOSTICS)
+
+        // Flush 1: diagnostics 503, donations 201 — records the error and the
+        // diagnostics deadline. a1 is removed; x1 (retryable) stays queued.
+        manager(outbox, diagnosticsFailsDonationsSucceed(), statusStore = store).flush()
+        val diagnosticsError = store.read().lastError
+        assertEquals("HTTP 503 down", diagnosticsError)
+
+        // Flush 2 (same `now`, so the deadline is still live): queue only a
+        // donation, everything 201. x1 is excluded and never attempted.
+        outbox.append("a2", TelemetryTables.DONATIONS, """{"id":"a2"}""")
+        manager(outbox, ConstantPoster(HttpResponse(201, null)), statusStore = store).flush()
+
+        assertEquals(
+            "a donations success must not wipe the schema error explaining why diagnostics are stuck",
+            diagnosticsError,
+            store.read().lastError
+        )
+    }
+
+    /**
+     * The other half of the rule. Note flush 3 must answer **201 for diagnostics
+     * too** — the operator fixed the backend.
+     *
+     * A 503 deletes nothing, so flush 1's diagnostics row is still queued.
+     * Flush 2 does not see it because the deadline excludes it; advancing the
+     * clock past that deadline is exactly what stops excluding it, so a flush 3
+     * that still answered 503 would re-attempt the same row, set errorText
+     * again, and leave lastError non-null — asserting the opposite of what this
+     * test is named for.
+     */
+    @Test
+    fun lastErrorClearsOnceNoTableIsBackedOff() {
+        val store = InMemoryStatusStore()
+        val outbox = outboxWithRows("a1" to TelemetryTables.DONATIONS, "x1" to TelemetryTables.DIAGNOSTICS)
+
+        manager(outbox, diagnosticsFailsDonationsSucceed(), statusStore = store).flush() // flush 1
+        outbox.append("a2", TelemetryTables.DONATIONS, """{"id":"a2"}""")
+        manager(outbox, ConstantPoster(HttpResponse(201, null)), statusStore = store).flush() // flush 2
+
+        // backoffDelayMs(1) == 60_000ms; this clears the diagnostics deadline
+        // flush 1 set, so x1 is no longer excluded on flush 3.
+        now += 61_000
+
+        manager(outbox, ConstantPoster(HttpResponse(201, null)), statusStore = store).flush() // flush 3
+
+        val status = store.read()
+        assertNull(status.lastError)
+        assertTrue(status.consecutiveFailuresByTable.isEmpty())
+        assertTrue(status.backoffUntilMsByTable.isEmpty())
     }
 }
