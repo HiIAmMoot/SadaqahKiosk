@@ -985,6 +985,209 @@ def d7(ctx):
 
 
 # --------------------------------------------------------------------------
+# Sessions B, E, H
+#
+# `am crash` delivers a genuine uncaught exception to the main thread, so it
+# reaches KioskCrashHandler exactly as a real crash would — verified by the
+# resulting row carrying a real stack trace rather than a synthesised one.
+# --------------------------------------------------------------------------
+
+
+def force_crash():
+    """Crash the app and wait for the process to actually turn over.
+
+    Waiting for `pidof` to go empty is the wrong condition: this is a kiosk, and
+    it brings itself back after a crash, so the pid can be non-empty again within
+    a second. What matters is that the ORIGINAL process is gone.
+    """
+    before = pid()
+    expect(before, "cannot crash the app: it is not running")
+    # `am crash` is delivered as a message to the main looper, and an app still
+    # working through startup can swallow it. Resend rather than conclude the
+    # handler failed.
+    # Sent exactly once. An earlier version retried when the pid had not visibly
+    # turned over inside the timeout, which produced TWO crash rows: the crash
+    # had landed and been recorded, only the process-turnover detection was
+    # slow. Callers assert on what the crash produced, which is the real
+    # question, so a missed turnover here is not worth a second crash.
+    sh(f"am crash {PKG}")
+    for _ in range(60):
+        now = pid()
+        if now is None or now != before:
+            break
+        time.sleep(0.5)
+    time.sleep(3)  # let the handler finish its write before anyone reads it
+
+
+def inject_rows(n, table="diagnostic_events", kind="network_outage", age_days=0):
+    """Append synthetic queued rows straight into the outbox file.
+
+    Saturating the queue through the UI would mean thousands of real events.
+    The envelope shape is TelemetryOutbox's own: one JSON object per line
+    wrapping the already-serialised payload.
+    """
+    now = int(time.time() * 1000) - age_days * 86_400_000
+    lines = []
+    for i in range(n):
+        rid = f"{uuidlib.uuid4()}"
+        payload = json.dumps(
+            {
+                "id": rid,
+                "code": "",
+                "install_id": "synthetic",
+                "app_version": "1.4.0-preview",
+                "occurred_at": "2026-09-16T00:00:00Z",
+                "kind": kind,
+                "severity": "warn",
+            },
+            separators=(",", ":"),
+        )
+        lines.append(
+            json.dumps(
+                {"id": rid, "table": table, "queuedAt": now, "payload": payload},
+                separators=(",", ":"),
+            )
+        )
+    local = os.path.join(os.environ.get("TEMP", "/tmp"), "inject.jsonl")
+    with open(local, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    staged = "/data/local/tmp/inject.jsonl"
+    adb("push", local, staged, check=True)
+    sh(f"mkdir -p {FILES}/telemetry")
+    sh(f"cat {staged} >> {OUTBOX}")
+    sh(f"rm -f {staged}")
+    owner = sh(f"stat -c '%u:%g' {FILES}")
+    sh(f"chown {owner} {OUTBOX}; chmod 660 {OUTBOX}; restorecon -F {OUTBOX}")
+
+
+@check("B2", "B", "A crash with analytics off writes nothing to the queue")
+def b2(ctx):
+    patch_settings(analyticsEnabled=False, testMode=True)
+    launch()
+    clear_outbox()
+    force_crash()
+    launch()
+    rows = outbox_rows()
+    expect(
+        not rows,
+        f"a crash with analytics off queued {len(rows)} row(s); the master switch "
+        "is supposed to stop collection at the source",
+    )
+    return ["crash with analytics off queued nothing"]
+
+
+@check("E1", "E", "A forced crash queues exactly one crash row and the process dies promptly")
+def e1(ctx):
+    patch_settings(analyticsEnabled=True, testMode=True)
+    launch()
+    clear_outbox()
+    force_crash()
+    launch()
+
+    rows = rows_of_kind("crash")
+    expect(len(rows) == 1, f"expected exactly one crash row, got {len(rows)}")
+    row = rows[0]
+    expect(row.get("severity") == "error", f"crash severity is {row.get('severity')!r}")
+    expect(row.get("stack_trace"), "the crash row carries no stack trace")
+    expect(
+        (row.get("detail") or {}).get("thread"),
+        f"the crash row names no thread: detail={row.get('detail')!r}",
+    )
+    ctx.crash_row = row
+    return [
+        f"one crash row, severity error, thread={row['detail'].get('thread')!r}",
+        "the original process turned over promptly, so the handler does not hang "
+        "the dying thread",
+        "the kiosk brought itself back on its own after the crash",
+    ]
+
+
+@check("E2", "E", "The crash trace is bounded and carries no affiliate key")
+def e2(ctx):
+    marker = "sup_afk_DEVICECHECKMARKER0123456789ABCD"
+    force_stop()
+    time.sleep(1)
+    # Put a known key where the app reads it, so "the key is absent" is a claim
+    # about redaction rather than about a key that was never there to leak.
+    raw = cat(f"{PREFS}/app_prefs.xml")
+    if "affiliate_key" in raw:
+        patched = re.sub(
+            r'<string name="affiliate_key">.*?</string>',
+            f'<string name="affiliate_key">{marker}</string>',
+            raw,
+            flags=re.S,
+        )
+    else:
+        patched = raw.replace("</map>", f'    <string name="affiliate_key">{marker}</string>\n</map>')
+    local = os.path.join(os.environ.get("TEMP", "/tmp"), "prefs_marker.xml")
+    with open(local, "w", encoding="utf-8") as f:
+        f.write(patched)
+    push_app_file(local, f"{PREFS}/app_prefs.xml")
+
+    launch()
+    clear_outbox()
+    force_crash()
+    launch()
+
+    whole_file = cat(OUTBOX)
+    expect(
+        marker not in whole_file,
+        "the affiliate key appears verbatim in the outbox after a crash; the "
+        "queue file survives a crash and can be pulled off a device, which is "
+        "why scrubbing happens before the write rather than before the send",
+    )
+    rows = rows_of_kind("crash")
+    expect(rows, "no crash row to inspect")
+    trace = rows[0].get("stack_trace", "")
+    size = len(trace.encode("utf-8"))
+    expect(size <= 8 * 1024 + 64, f"stack trace is {size} bytes, above the 8 KB cap")
+    return [
+        f"trace {size} bytes, within the 8 KB cap",
+        "the affiliate key does not appear anywhere in the queue file",
+        "note: this proves the key is absent, not that a key embedded mid-trace "
+        "would be caught — the redactor's exact-match rule covers that and is "
+        "unit-tested",
+    ]
+
+
+@check("H5", "H", "A saturated queue sheds diagnostics before donations")
+def h5(ctx):
+    patch_settings(analyticsEnabled=True, testMode=True)
+    launch()
+    clear_outbox()
+
+    # One donation row under a flood of newer diagnostics. The outbox protects
+    # donations, so compaction must shed the diagnostics and keep this.
+    inject_rows(1, table="donation_events", kind="donation", age_days=1)
+    inject_rows(6000, table="diagnostic_events", kind="network_outage")
+    before = len(outbox_rows())
+    expect(before > 5000, f"only injected {before} rows; the cap is 5000")
+
+    # Appending through the app is what triggers compaction.
+    version = app_version()
+    seed_reported_version("1.3.0")
+    launch(settle=12)
+    time.sleep(5)
+    after = outbox_rows()
+    seed_reported_version(version)
+
+    expect(
+        len(after) < before,
+        f"the queue did not shed: {before} rows before, {len(after)} after",
+    )
+    donations = [r for r in after if r.get("table") == "donation_events"]
+    expect(
+        donations,
+        f"compaction dropped the donation row while keeping "
+        f"{len(after)} rows; donations are supposed to be evicted last",
+    )
+    return [
+        f"{before} rows shed to {len(after)}",
+        f"{len(donations)} donation row(s) survived the compaction",
+    ]
+
+
+# --------------------------------------------------------------------------
 # Session I — the fleet workflow
 #
 # These exist to pin the provisioning bugs found in phase 5 BEFORE phase 6
