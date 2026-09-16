@@ -60,6 +60,32 @@ The command is order-free except for one hard pair:
 
 Everything else can run in any order.
 
+### The device PIN — last, and after the restart
+
+```
+cmd lock_settings set-pin <pin>
+```
+
+Native, and **no app change is needed for the gate**: `MainActivity.kt:2047` already builds its prompt with `setAllowedAuthenticators(BIOMETRIC_WEAK or DEVICE_CREDENTIAL)`, so a device PIN protects the settings screen the moment it exists.
+
+**It must be the final step, after the provisioning restart.** A PIN makes the device secure, and a secure device withholds `ACTION_BOOT_COMPLETED` until someone unlocks. Setting it before the restart would strand provisioning itself.
+
+**Once a PIN exists, every later `lock_settings` command requires `--old <pin>`.** Re-provisioning a device that already has one must pass it or every call fails with `Credential can't be null or empty`. The script takes the old PIN as an optional argument for that case.
+
+#### The accepted cost, stated plainly
+
+**A power cut takes the kiosk offline until someone attends it.**
+
+`BootReceiver` is not `directBootAware` (`AndroidManifest.xml:73-80`), so on a secure device it is not delivered `ACTION_BOOT_COMPLETED` until the lock screen is dismissed. The app never starts; the kiosk never takes the donation.
+
+Lock-task keyguard suppression does not rescue this. Lock task disables the keyguard by default — `setLockTaskFeatures` is never called, so features default to `LOCK_TASK_FEATURE_NONE` and the keyguard is among them — but the app has to be *running* to enter lock task, and it cannot start.
+
+What is **not** affected, contrary to a first reading: nothing in the app reboots the device. `hardRestart` (`MainActivity.kt:1839-1846`) restarts the app process with `startActivity` + `Runtime.exit(0)`, and auto-update replaces the APK through `PackageInstaller`. Neither touches the keyguard. The watchdog, the nightly update and every crash recovery continue to work with a PIN set. The exposure is a genuine device power-on and nothing else.
+
+**Ruled acceptable on 2026-09-17**, weighed against protecting a tablet standing in a public room. Reversible on a bench with `cmd lock_settings clear --old <pin>`. Worth pairing with a UPS or a supply that rides out brief outages, since that removes the only failure this introduces.
+
+The alternative — marking `BootReceiver` and `MainActivity` `directBootAware` and moving what they need at boot into device-protected storage — is its own phase. Settings, the affiliate key and the telemetry queue all live in credential-encrypted storage and would be unreadable before unlock.
+
 ### Data reduction
 
 Some kiosks run on a metered connection, so background traffic from apps that have nothing to do with taking donations is a running cost. This is handled in two layers, deliberately separated by how much they can break.

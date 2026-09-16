@@ -83,7 +83,12 @@ param(
     [string]$Password,
     [string]$KioskCode,
     [string]$KioskName,
-    [string]$Logo
+    [string]$Logo,
+    # Set as the very last step, after the app has provisioned and restarted.
+    [string]$Pin,
+    # Required only when re-provisioning a device that already has a PIN:
+    # every lock_settings command refuses without the existing credential.
+    [string]$OldPin
 )
 
 $ErrorActionPreference = "Stop"
@@ -1057,6 +1062,37 @@ if ($Payload) {
     # operator can retry with a corrected password without re-pushing.
     Adb shell "rm -f $REMOTE_DIR/kiosk.json $REMOTE_DIR/logo $REMOTE_DIR/provision-result.json" | Out-Null
 }
+
+# --- device PIN -----------------------------------------------------------
+# LAST, and deliberately after the app has provisioned and restarted. A PIN
+# makes the device secure, and a secure device withholds ACTION_BOOT_COMPLETED
+# until someone unlocks it — setting this any earlier would strand provisioning
+# itself behind a lock screen.
+#
+# The app needs no change to use it: MainActivity.kt:2047 already builds its
+# prompt with BIOMETRIC_WEAK or DEVICE_CREDENTIAL, so the settings screen is
+# protected the moment a credential exists.
+if ($Pin) {
+    Step "setting the device PIN"
+    # Every lock_settings command refuses once a credential exists, so
+    # re-provisioning a device that already has one must pass the old value.
+    $oldArg = if ($OldPin) { "--old $OldPin " } else { "" }
+    $r = Adb shell "cmd lock_settings set-pin $oldArg$Pin"
+    if ($r -notmatch "Pin set to") {
+        if ($r -match "Credential can't be null or empty|old credential") {
+            Die "this device already has a lock credential — pass -OldPin to replace it"
+        }
+        Die "could not set the PIN: $r"
+    }
+    Ok "PIN set — the settings screen now requires it"
+
+    Write-Host ""
+    Write-Host "  NOTE: this device is now secure, so a POWER CUT will leave the" -ForegroundColor Yellow
+    Write-Host "  kiosk on a lock screen and it will not take donations until" -ForegroundColor Yellow
+    Write-Host "  someone attends it and types the PIN. App restarts, the watchdog" -ForegroundColor Yellow
+    Write-Host "  and auto-update are unaffected — none of them reboot the device." -ForegroundColor Yellow
+    Write-Host "  Undo on a bench with: adb shell cmd lock_settings clear --old $Pin" -ForegroundColor Yellow
+}
 ```
 
 - [ ] **Step 2: Produce a payload to test with**
@@ -1089,6 +1125,8 @@ Each of these must exit non-zero with a clear message, not hang or report succes
 2. Omit `-KioskCode` → refused before anything is pushed
 3. Corrupt payload (`echo nonsense > bad.json`) → `provisioning failed: malformed`
 4. Run twice in a row with the same arguments → the second run must also succeed, proving the force-stop makes the trigger repeatable. **This is the check for the defect that made the first design unworkable.**
+5. With `-Pin 1234`: the run completes, and `adb shell cmd lock_settings get-disabled` afterwards fails with `Credential can't be null or empty` — which is what a set credential looks like from the shell. Re-run with `-Pin 1234` and no `-OldPin` → the script must refuse with the "already has a lock credential" message rather than failing obscurely. Re-run with `-Pin 5678 -OldPin 1234` → succeeds.
+6. Clean up the bench device afterwards: `adb shell cmd lock_settings clear --old 5678`, then confirm `get-disabled` reads `true` again. **Leaving a test PIN on an emulator makes every later device check fail in ways that look unrelated.**
 
 - [ ] **Step 5: Commit**
 
