@@ -12,8 +12,8 @@ android {
         applicationId = "com.sadaqah.kiosk"
         minSdk = 30
         targetSdk = 35
-        versionCode = 15
-        versionName = "1.3.6-preview"
+        versionCode = 16
+        versionName = "1.4.0-preview"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
