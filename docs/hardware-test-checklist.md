@@ -10,6 +10,27 @@ Four checks are marked **settles debt** — they are the only way to close their
 
 ---
 
+## Run the automated ones first
+
+Sixteen of these no longer need a human. They run against an attached device or an emulator:
+
+```bash
+python tools/kiosk-check/run.py              # every runnable check
+python tools/kiosk-check/run.py --session D  # one session
+python tools/kiosk-check/run.py --list       # what exists, and what is skipped
+python tools/kiosk-check/run.py --out results.md
+```
+
+Needs adb on `PATH` (or `ANDROID_HOME` set), one device attached, and either root (`adb root`, available on a non-Play-Store emulator image) or a debuggable build. `--session D` additionally needs `opencv-python-headless` to decode the QR codes.
+
+**The runner reports `SKIP` with a reason for everything it cannot do**, rather than quietly leaving it out. A run that omitted the nine card-reader checks and still printed all-green would be worse than no runner at all, so the skip list is part of the output and the reason is always stated.
+
+Checks below carrying a **`[auto]`** marker are covered. The rest need hands, hardware, or your eyes.
+
+**A caution that cost an hour to learn.** The runner writes settings into app-private storage over adb. Pushing a file there as root gives it a root-derived SELinux label, and Android does not report the resulting `EACCES` — `SharedPreferencesImpl` logs a warning and hands the app an *empty* map, so it silently runs on defaults and every check built on a patched setting passes for the wrong reason. `push_app_file` restores the label and verifies it against the parent directory. Do not bypass it.
+
+---
+
 ## What you need
 
 | Item | Needed for |
@@ -29,8 +50,11 @@ Four checks are marked **settles debt** — they are the only way to close their
 
 Destructive, so it goes first. Factory reset, then install.
 
-- [ ] **A1. First install on a wiped device produces no `update_installed`.** A fresh install is not an update, and reporting one would put a phantom upgrade in every new kiosk's history. *(3b.5)*
-- [ ] **A2 — settles debt. `installId` is minted exactly once.** Note the install ID on the analytics screen. Force-stop, reopen, restart the device, reopen. The ID must be identical every time, and must not be blank. This is the only way to cover `SettingsBootstrap`'s call site without an instrumented harness, and a regression there produces rows that identify nothing. *(known-debt: "`SettingsBootstrap`'s call site is untested")*
+- [x] `[auto]` **A1. First install on a wiped device produces no `update_installed`.** A fresh install is not an update, and reporting one would put a phantom upgrade in every new kiosk's history. *(3b.5)*
+- [x] `[auto]` **A2 — settles debt. `installId` is minted exactly once.** Note the install ID on the analytics screen. Force-stop, reopen, restart the device, reopen. The ID must be identical every time, and must not be blank. This is the only way to cover `SettingsBootstrap`'s call site without an instrumented harness, and a regression there produces rows that identify nothing. *(known-debt: "`SettingsBootstrap`'s call site is untested")*
+
+- [x] `[auto]` **A3. A real device row's columns match the schema published in README.md.** Added in phase 6: the published schema is asserted against actual device output rather than against a constructed object.
+- [x] `[auto]` **A4. `testMode` pre-authenticates on a cold start.** Added in phase 6 after the device run found `MainActivity` reading `settings.testMode` twelve lines before settings were loaded, so a test kiosk opened SumUp's real login screen instead of coming up ready.
 
 ---
 
@@ -39,7 +63,7 @@ Destructive, so it goes first. Factory reset, then install.
 Provision as device owner. Configure normally but leave **Send analytics** off. Every check here asserts a negative, so record the queue depth before each one.
 
 - [ ] **B1. A donation appends nothing.** *(3a.2)*
-- [ ] **B2. A forced crash leaves queue depth unchanged**, and restart behaviour is exactly as it is today. *(3b.3)*
+- [x] `[auto]` **B2. A forced crash leaves queue depth unchanged**, and restart behaviour is exactly as it is today. *(3b.3)*
 - [ ] **B3. A Bluetooth outage and a network outage both append nothing.** *(3c-i.6)*
 - [ ] **B4. A forced restart leaves queue depth unchanged and the marker store empty afterwards.** The marker store is what this check measures: with analytics off the queue never moves, so queue depth alone proves nothing. *(3c-ii.9)*
 
@@ -62,20 +86,20 @@ Stand the backend up from the README rather than from memory. If the published s
 
 ## Session D — the disclosure screen
 
-- [ ] **D1. Saving a destination shows the disclosure**, stating the endpoint just entered, and it dismisses. *(4.1)*
-- [ ] **D2. Saving a destination again shows it again.** There is no stamp suppressing it, by design. *(4.2)*
-- [ ] **D3. Reopening from the analytics screen shows the same content.** *(4.3)*
-- [ ] **D4. Both QR codes scan, with a long URL, not a short one.** Each must resolve to exactly the URL printed beside it. Use a realistic privacy-policy URL of 150 characters or more: the original sizing defect passed on short URLs and failed on long ones, which is exactly how it hid. *(4.4)*
-- [ ] **D5. Arabic renders correctly.** Copy is Arabic, layout is left-to-right by decision, nothing clipped. *(4.5)*
-- [ ] **D6. Saving with no privacy-policy URL shows no disclosure at all.** Then add a URL and save: it appears. *(phase 5)*
-- [ ] **D7. Clearing the endpoint stops reporting and deletes the queue**, and the disclosure's claim about that is true. *(4.6)*
+- [x] `[auto]` **D1. Saving a destination shows the disclosure**, stating the endpoint just entered, and it dismisses. *(4.1)*
+- [x] `[auto]` **D2. Saving a destination again shows it again.** There is no stamp suppressing it, by design. *(4.2)*
+- [x] `[auto]` **D3. Reopening from the analytics screen shows the same content.** *(4.3)*
+- [x] `[auto]` **D4. Both QR codes scan, with a long URL, not a short one.** Each must resolve to exactly the URL printed beside it. Use a realistic privacy-policy URL of 150 characters or more: the original sizing defect passed on short URLs and failed on long ones, which is exactly how it hid. *(4.4)*
+- [x] **D5. Arabic renders correctly.** Reviewed on an emulator screenshot and accepted 2026-09-16: nothing clipped, text right-aligned, layout left-to-right as ruled. Translations accepted as they stand. Both the RTL layout and the machine translations are now entries in `docs/known-debt.md`. Re-check only if the disclosure copy or layout changes. *(4.5)*
+- [x] `[auto]` **D6. Saving with no privacy-policy URL shows no disclosure at all.** Then add a URL and save: it appears. *(phase 5)*
+- [x] `[auto]` **D7. Clearing the endpoint stops reporting and deletes the queue**, and the disclosure's claim about that is true. *(4.6)*
 
 ---
 
 ## Session E — crash, update, rollback
 
-- [ ] **E1. A forced uncaught exception restarts the app exactly as it does today.** The handler changes nothing an operator can see. *(3b.1)*
-- [ ] **E2. That crash produces one more queued row, with a scrubbed trace.** Read the trace and confirm no affiliate key appears in it. *(3b.2)*
+- [x] `[auto]` **E1. A forced uncaught exception restarts the app exactly as it does today.** The handler changes nothing an operator can see. *(3b.1)*
+- [x] `[auto]` **E2. That crash produces one more queued row, with a scrubbed trace.** Read the trace and confirm no affiliate key appears in it. *(3b.2)*
 - [ ] **E3. Installing a build with a different `versionName` produces exactly one `update_installed`**, with correct `from` and `to`. Restarting again produces no second one. *(3b.4)*
 - [ ] **E4. A deliberately corrupt APK produces one `update_install_failed` with a `reason`.** *(3c-i.5)*
 - [ ] **E5. A forced watchdog rollback with a backup APK present produces both an `update_rollback` and an `update_installed`**, rollback first, joinable on the version pair. *(3b.6)*
@@ -118,7 +142,7 @@ Needs a backend you can break deliberately.
 - [ ] **H2. Let the broken table's rows exceed a batch and sit at the head, then take a donation. The donation still uploads.** The head-of-line check, and the reason phase 3d-i exists. *(3d-i.2)*
 - [ ] **H3. Fix the backend and press Test connection: backoff clears for every table at once.** *(3d-i.3)*
 - [ ] **H4. Upgrading a kiosk mid-backoff keeps it backing off** rather than resetting. *(3d-i.4)*
-- [ ] **H5. Fill the queue past the cap with old donations under newer diagnostics, then take a donation.** The donation is still queued afterwards and the diagnostics count has fallen. *(3d-ii.1)*
+- [x] `[auto]` **H5. Fill the queue past the cap with old donations under newer diagnostics, then take a donation.** The donation is still queued afterwards and the diagnostics count has fallen. *(3d-ii.1)*
 - [ ] **H6. Point analytics at a dead endpoint until the queue saturates: donation throughput does not degrade as the queue grows.** The O(n) fix, observable only at scale. *(3d-ii.2)*
 - [ ] **H7. Leave a low-volume kiosk running past the compaction interval with a poison row at the head: the row is retired and the queue behind it drains.** *(3d-ii.3)*
 - [ ] **H8. Crash the app with a saturated queue: the crash row is written and the process still dies promptly.** *(3d-ii.4)*
@@ -130,8 +154,8 @@ Needs a backend you can break deliberately.
 This session exists to confirm the three provisioning bugs found in phase 5 before phase 6 fixes them, so the fix has a before and an after.
 
 - [ ] **I1. Export settings from a configured kiosk, import onto a second one.** Expected today: the second kiosk arrives with the affiliate key but **no reporting destination**, and silently never reports. Confirm that is what happens. *(phase 5, finding 3)*
-- [ ] **I2. After that import, read the second kiosk's code.** Expected today: it carries the **first kiosk's code**, so both report under one identity. *(phase 5, finding 5)*
-- [ ] **I3. Type a kiosk code with a trailing space and save.** Expected today: no warning, and the space is stored and shipped on every row. *(phase 5, finding 4)*
+- [x] `[auto]` **I2. An imported kiosk code is flagged on screen, and the flag clears when edited.** The code still travels by design; what phase 6 added is a warning that it may be shared, which disappears the moment an operator types their own. *(was: confirm the fleet reports under one identity)*
+- [x] `[auto]` **I3. A kiosk code is trimmed before it is stored and before it ships.** Phase 6 gave `KioskCode.normalize` its missing call site. *(was: confirm the untrimmed code reaches the wire)*
 
 ---
 
