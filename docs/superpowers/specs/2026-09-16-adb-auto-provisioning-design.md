@@ -91,6 +91,17 @@ pm list packages -U              # uid -> package name
 
 Provision a kiosk, leave it on the bench for a day on the real network, then map usage to packages and cut from evidence.
 
+**Try restriction before removal.** Two per-app levers are gentler than unlinking a package and fully reversible:
+
+```
+am set-standby-bucket <pkg> restricted             # jobs and alarms heavily limited
+cmd appops set <pkg> RUN_ANY_IN_BACKGROUND deny    # hard stop on background execution
+```
+
+Undone with `set-standby-bucket <pkg> active` and `appops set <pkg> RUN_ANY_IN_BACKGROUND allow`. Nothing is unlinked, so a wrong call here cannot boot-loop the device — which makes this the right first move on anything the day's measurements flag.
+
+**Battery Saver is not one of these levers, despite looking like the obvious one.** It is rejected for two independent reasons. It **turns itself off while the device is charging**, and a kiosk is permanently plugged in — so it would read as enabled on the bench and be inactive for the entire deployed life of the unit. And were it ever active, it defers jobs and alarms indiscriminately, which is precisely the telemetry flush, the 02:00 SumUp reinit, the update watchdog and the Bluetooth watchdog. It would restrict this app's own recovery mechanisms alongside the bloat's. Per-app restriction is both narrower and actually in force.
+
 **Removal uses `pm uninstall --user 0 <package>`**, which despite the name does not delete anything: it unlinks the package for user 0 and leaves the APK in `/system`. `pm install-existing <package>` restores it, and a factory reset restores everything. That reversibility is why this is the mechanism rather than `pm disable-user`.
 
 **Two traps, both worth stating before anyone starts cutting.**
