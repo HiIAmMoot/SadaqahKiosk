@@ -180,35 +180,109 @@ The cost is that it appears in the bench machine's shell history and process lis
 ## The trigger
 
 ```
-am start -n com.sadaqah.kiosk/.MainActivity \
+adb shell am force-stop com.sadaqah.kiosk
+adb shell am start -n com.sadaqah.kiosk/.MainActivity \
+  --es provision_run_id '<uuid>' \
   --es provision_password '<password>' \
-  --es provision_kiosk_code '<code>'
+  --es provision_kiosk_code '<code>' \
+  --es provision_kiosk_name '<name>'
 ```
 
-**No new exported component.** `MainActivity` is already the exported launcher; reading extras from the intent that started it adds no surface that was not already there. A broadcast receiver would have added a new one.
+**No new exported component.** `MainActivity` is already the exported launcher; reading extras from the intent that started it adds no surface that was not already there. A broadcast receiver would have added one.
 
-An extra alone does nothing: the payload must also be present in a directory only adb or the app can write. Both conditions together mean physical access with debugging enabled.
+An extra alone does nothing: the payload must also be present in a directory only adb or the app can write. Both together mean physical access with debugging enabled.
 
-`provision_kiosk_code` is optional. When present it overrides whatever code the shared payload carried, and is recorded as **locally set** rather than imported — so it does not raise the imported-code warning. That warning exists to flag a code shared across a fleet by accident; a code supplied per kiosk at provisioning time is the opposite of that, and warning about it would train operators to ignore the warning.
+### The force-stop is mandatory, not hygiene
+
+`MainActivity` is declared with **no `android:launchMode`** (`AndroidManifest.xml:50-61`), so it is `standard`, and there is **no `onNewIntent` override** in the codebase. `am start` carries `FLAG_ACTIVITY_NEW_TASK`; against an already-running app it brings the existing task to the front and **discards the intent, extras and all**. `onCreate` does not re-run.
+
+So a trigger against a running kiosk silently does nothing. No result, no failure, no reason — and lock task guarantees the app is always running after the first launch.
+
+This project has already been bitten by this. `tools/kiosk-check/run.py:127-131` carries the note: *"`monkey` merely foregrounded an already-running task so onCreate never re-ran."*
+
+The script therefore force-stops before every trigger. `onNewIntent` is deliberately **not** added: it would make provisioning reachable on a live, configured kiosk, which is the one thing the bench-only model exists to prevent.
+
+### The extras are consumed once
+
+After reading them, the app calls `setIntent(Intent(intent).apply { replaceExtras(Bundle()) })`.
+
+`getIntent()` otherwise returns the launching intent for the life of the Activity **and across every recreation** — configuration change, locale change, task restore after process death. `onCreate` is written to run again on recreation (see the guards at `MainActivity.kt:382-384`). Without consuming them, the first rotation after a successful provision re-enters `onCreate` with `provision_password` still set, finds the payload deleted, and overwrites the `applied` result with `failed / no_payload`.
+
+### Required overrides
+
+`provision_kiosk_code` and `provision_kiosk_name` are **required whenever the payload carries a non-blank value for them**. The script refuses to run otherwise.
+
+Both name the physical unit, and the whole model is one payload cloned across a fleet:
+
+- `kioskCode` — `Settings.kt:51-63` already spells out the consequence: every unit reports under the golden kiosk's code, and `code` + `install_id` permanently emits the signal reserved for a re-provisioned unit.
+- `kioskName` — worse, and previously unnoticed. `MainActivity.kt:1355-1356` uses it as the SumUp checkout title and `:1377-1378` attaches it to **every payment** as `KioskNaam`. A cloned fleet attributes every transaction in the merchant's records to the golden kiosk. It also satisfies the setup-status checklist row (`SetupStatusScreen.kt:41,84`), so nothing on the device flags it.
+
+Making them optional would build the machine that produces those outcomes and then make the mitigation opt-in. Provisioning is the one path where the operator always knows the per-unit values.
+
+A code supplied this way is recorded as **locally set**, so it does not raise the imported-code warning — it genuinely is this kiosk's own.
+
+### `provision_run_id`
+
+Echoed back in the result file. Without it a stale `provision-result.json` — from a previous attempt, another device, or an interrupted run — is indistinguishable from this run's, and the script reports someone else's outcome. The `"at"` timestamp cannot rescue this: a factory-reset tablet with no network has an unsynced clock.
+
+The script also deletes any existing result before triggering. Both, because either alone leaves a window.
 
 ---
 
 ## What the app gains
 
+### Provision, then restart
+
+**The import runs on a background thread, and the app restarts itself when it finishes.** It does not apply settings into a live `onCreate` sequence.
+
+Two independent reasons, either sufficient:
+
+**Key derivation cannot run on the main thread.** `SecretsCrypto.kt:35` sets `ITERATIONS = 600_000`. Both existing entry points are documented *"Runs key derivation, so call it off the UI thread"* (`MainActivity.kt:1936-1938`, `:1963-1965`), and the only real caller obeys it — `SettingsScreen.kt:711-712` wraps the import in `withContext(Dispatchers.Default)`. On a Lenovo M9 this is seconds. Inline in `onCreate` it is a guaranteed ANR on the one boot that matters, and an ANR-killed process leaves settings possibly written and the result certainly not.
+
+**There is no correct insertion point.** `onCreate` reads `settings` into seven consumers with contradictory requirements. `SettingsBootstrap` (`:365-371`) must run *after* provisioning or it mints an `installId` that provisioning then overwrites; `authenticate(affiliateKey)` (`:343-353`) must run *after* or the freshly imported key is never authenticated this boot; `LogoColorExtractor.refresh` (`:358`) must run after or it extracts swatches from the old logo; and `RestartManager`, `NetworkRecoveryManager` and `UpdateManager` (`:472-491`) each snapshot `settings` **by value** at construction and never re-read, so anything applied after them is inert until the next boot. No single slot satisfies all of them.
+
+Restarting dissolves the problem rather than solving it. Boot 2 is an ordinary startup that reads provisioned settings from disk in the normal order, with no special cases anywhere in `onCreate`.
+
+It also fixes a problem that would otherwise be invisible. `MainActivity.kt:441-465` decides whether to reset `autoUpdateEnabled`, `autoUpdateTargetVersion`, `autoUpdateGraceDays`, `updateRepoUrl` and `analyticsEnabled` by string-matching the **stored JSON** read at `:315`. Applied mid-`onCreate`, those migrations would read the pre-provisioning string and overwrite values provisioning had just set. After a restart the stored JSON already contains them, so the migrations correctly see them present.
+
+The app already restarts itself — `hardRestart` exists and the crash path uses it — so no new mechanism is needed.
+
+### The flow
+
+Boot 1, when `provision_run_id` and `provision_password` are both present:
+
+1. Consume the extras (`setIntent`), so a recreation cannot re-enter this path.
+2. Show a minimal "Provisioning…" surface. No translations: this is only ever seen on a bench, by one person, in English.
+3. On `Dispatchers.Default`: read the payload, call `ProvisioningLoader.decide`.
+4. On `Apply` — **route through `importSettings`**, not a parallel apply path. See below.
+5. Apply the `kioskCode` / `kioskName` overrides, marking the code locally set.
+6. Copy the logo into internal storage; point `logoUri` at the copy.
+7. Run `SettingsBootstrap.apply` so `installId` exists before the result names it.
+8. Write `provision-result.json`, echoing `provision_run_id`.
+9. Delete the payload and the pushed image — on success only.
+10. Restart the process.
+
+On `Failed`: write the result with the reason, **keep** the payload, and restart anyway so the kiosk is not left sitting on a provisioning screen.
+
+### Why step 4 says "route through `importSettings`"
+
+`importSettings` (`MainActivity.kt:1953-1994`) does three things a fresh apply path would plausibly miss, and one of them is a security defect:
+
+- `:1975-1976` stores the affiliate key in prefs.
+- **`:1979` sets `CrashContext.affiliateKey`**, with the comment: *"A stale key here disarms the crash handler's exact-match scrub for exactly the key that was just imported."* `KioskCrashHandler` reads it through the supplier at `KioskCrashHandler.kt:15,40`. Skip it and every provisioned kiosk ships its payment credential into crash reports in the clear, fleet-wide.
+- `:1972` calls `TranslationManager.setLanguage` for the imported language.
+
+The spec's whole payload argument is reuse. That argument has to extend to the apply path, not stop at the parser.
+
 ### `ProvisioningLoader` — the decision unit
 
-A pure unit that decides what provisioning should do, and does no I/O. `MainActivity` is unreachable from unit tests, so a decision made there is a decision nothing checks — the same reason `DisclosurePresenter` and `AnalyticsPresenter` exist.
+Pure, does no I/O. `MainActivity` is unreachable from unit tests, so a decision made there is a decision nothing checks.
 
 ```kotlin
 sealed class ProvisioningOutcome {
-    /** No payload present. The overwhelmingly common case: every normal boot. */
-    data object Nothing : ProvisioningOutcome()
     data class Apply(
         val settings: Settings,
-        val affiliateKey: String?,
-        val telemetryUrl: String?,
-        val telemetryKey: String?,
-        val logoSource: String?
+        val secrets: Map<String, String>
     ) : ProvisioningOutcome()
     data class Failed(val reason: String) : ProvisioningOutcome()
 }
@@ -219,102 +293,159 @@ object ProvisioningLoader {
         payloadJson: String?,
         password: String?,
         kioskCodeOverride: String?,
-        logoPresent: Boolean
+        kioskNameOverride: String?
     ): ProvisioningOutcome
 }
 ```
 
-`decide` takes the payload as a **string**, not a path — file reading belongs to the caller, so every branch is testable without a filesystem.
+`decide` takes the payload as a **string**, not a path, so every branch is reachable without a filesystem. It returns the secrets map rather than named credential fields — the caller hands it to `importSettings`, which already knows the key names.
 
-### The wiring in `MainActivity`
-
-**Provisioning is attempted only when the launching intent carries `provision_password`.** Not on every startup that happens to find a payload.
-
-That distinction matters. A payload is deliberately kept when provisioning fails, so the operator can retry with the right password. If the app also scanned for payloads on ordinary boots, a kiosk that failed once would re-fail on every boot afterwards, rewriting the result file each time and never succeeding, because the password only ever arrives with the trigger. Gating on the extra makes a leftover payload inert: it does nothing until someone deliberately triggers again.
-
-The normal-boot cost is therefore zero — not even a `File.exists()`, because the extra is absent.
-
-When the extra is present:
-
-1. Read the payload, call `decide`.
-2. On `Apply`: persist the merged settings, copy the logo, restore credentials through `telemetryCredentials.save()` so an imported URL faces the same validation a typed one does, write the result, delete the payload and the pushed image.
-3. On `Failed`: write the result with the reason and **keep the payload**, so the operator can retry with a corrected password rather than re-pushing.
-4. On `Nothing`: carry on.
-
-**The script clears the directory when it finishes**, whichever way it went — payload, logo and result. That is what actually bounds how long an encrypted credential sits on a device: the app deletes on success, and the script deletes whatever survived a failure once it has read the reason. Neither alone is sufficient, because the app cannot know whether the operator still wants to retry and the script cannot know what the app consumed.
+There is no `Nothing` outcome: the caller gates on the extras before reading anything, so `decide` is only called when provisioning was actually requested. A payload that is absent at that point is a `Failed`, not a no-op — the operator asked for provisioning and silence would read as success.
 
 ### The logo
 
-**Copied into internal storage, not referenced where it lands.**
+Copied into internal storage, not referenced where it lands.
 
-`logoUri` is a URI the app resolves at render time. Pointing it at a file in the provisioning directory would mean the logo vanishes the moment that directory is cleaned — and the provisioning flow deletes from that directory by design.
+`logoUri` is resolved at render time. Pointing it at the provisioning directory would mean the logo vanishes when that directory is cleaned — which this flow does by design.
 
-So the pushed image is copied to a **fixed** path, `filesDir/logo/kiosk-logo.<ext>`, and `logoUri` points at the copy. Only then is the pushed file deleted.
+The destination is `filesDir/logo/kiosk-logo` with **no extension**, and the directory's contents are deleted before the copy. A preserved extension defeats the fixed name: re-provisioning a `.png` over a `.jpg` would leave the `.jpg` behind, unreferenced, forever. `LogoColorExtractor.decode` infers format from content, not from the name.
 
-The name is fixed rather than carried over from the pushed file so that re-provisioning with a different image replaces the old one instead of accumulating logos in internal storage that nothing will ever reference again. The extension is preserved from the source, since the decoder infers format from content rather than name but a correct extension keeps the directory legible to anyone who pulls it.
+Sturdier than the existing path, too: a logo chosen through the settings screen arrives as a `content://` SAF URI depending on a persisted permission grant that can be revoked. A `file://` URI into our own storage cannot.
 
-This is also sturdier than the existing path. A logo chosen through the settings screen arrives as a `content://` URI from the SAF picker, which depends on a persisted permission grant that can be revoked or lost. A `file://` URI into the app's own storage cannot.
-
-`SettingsImport.merge` continues to null `logoUri` on import. That stays correct — the URI in the payload describes the golden kiosk's filesystem and means nothing here. The provisioning path sets it afterwards, from the image it just copied.
+`SettingsImport.merge` continues to null `logoUri`. That stays correct — the URI in the payload describes the golden kiosk's filesystem. Provisioning sets it afterwards from the image it just copied.
 
 ---
 
 ## The result file
 
-`/sdcard/Android/data/com.sadaqah.kiosk/files/provisioning/provision-result.json`
+`…/files/provisioning/provision-result.json`
 
 ```json
 {
+  "runId": "9f2c…",
   "status": "applied",
   "at": "2026-09-16T11:02:31Z",
   "appVersion": "1.4.0-preview",
   "installId": "…",
   "kioskCode": "nl-gld-arnhem-nour_al_houda-07",
+  "kioskName": "Nour Al Houda — hal",
   "destinationConfigured": true,
   "affiliateKeyRestored": true,
-  "logoApplied": true
+  "logoApplied": true,
+  "logoDecodable": true
 }
 ```
 
-On failure, `"status": "failed"` and `"reason"` naming which step. The script polls for this file and exits non-zero on failure.
+On failure, `"status": "failed"` and `"reason"` naming the step.
 
-**This is the difference between a provisioning tool and a hopeful one.** The import happens inside the app, after the adb command has exited. Without a result the operator's only signal is that nothing visibly broke — and a wrong password produces a kiosk that boots, looks perfect, and reports nowhere.
+**This is the difference between a provisioning tool and a hopeful one.** The import happens inside the app, after the adb command has exited. Without a result, a wrong password produces a kiosk that boots, looks perfect, and reports nowhere.
 
-**No secret goes in the result.** `installId` and the kiosk code identify the unit; the destination and key are reported as booleans, never values.
+**`logoDecodable` is separate from `logoApplied`** because copying bytes proves nothing about them. `LogoColorExtractor.decode` returns null and merely logs on a corrupt image (`LogoColorExtractor.kt:62-66`), so a kiosk can report a logo applied and render none.
+
+**No secret appears in the result.** `installId`, code and name identify the unit; the destination and key are booleans.
+
+### What the script requires before it reports success
+
+`status == "applied"` **and** `runId` matching the one it sent **and** `affiliateKeyRestored` **and** `destinationConfigured`, unless the operator explicitly asked for a settings-only provision.
+
+`SettingsExportFile.parse` returns `Success` with an empty secrets map when there is no `secrets` block (`SettingsExportFile.kt:63-66`), and `build` omits that block entirely when no password was given (`:51-53`). So a golden export taken without ticking "include keys" yields `applied` with both credentials absent — twenty kiosks that boot, look configured, take no payments and report nowhere, with the script exiting 0.
 
 ---
 
-## Failure modes, and what each does
+## Failure modes
 
 | Failure | Behaviour |
 |---|---|
-| No trigger extra | Normal boot. Provisioning is not attempted at all. |
-| Trigger extra, no payload | `failed`, reason `no_payload`. The operator asked for provisioning and nothing was there to apply — silence would read as success. |
-| Wrong password | `failed`, reason `wrong_password`, payload kept. |
-| Malformed payload | `failed`, reason `malformed`, payload kept. |
-| Payload present, no password given | `failed`, reason `password_required`. |
-| Logo named but missing | Settings still applied; `logoApplied: false`. A missing image is not a reason to discard a correct configuration. |
-| Imported telemetry URL rejected | Settings applied, `destinationConfigured: false`, reason recorded. The previous destination is left alone rather than half-replaced. |
-| Result file cannot be written | Logged. The import is not rolled back — it succeeded, and undoing it would be worse than an unreported success. |
+| No trigger extras | Normal boot. Provisioning is not attempted. |
+| Trigger, no payload | `failed` / `no_payload`. The operator asked; silence would read as success. |
+| Wrong password | `failed` / `wrong_password`, payload kept. |
+| Malformed payload | `failed` / `malformed`, payload kept. |
+| Payload has no secrets block | `applied`, both credential flags false. **Script exits non-zero.** |
+| Required override missing | Script refuses before triggering. Never reaches the app. |
+| Imported URL rejected by validation | `applied`, `destinationConfigured: false`. Previous destination untouched — `TelemetryCredentials.save` returns early at `:121`/`:123` and writes nothing. |
+| Credential store unusable | `failed` / `credential_store_failed`. **The previous destination is destroyed**, not preserved: `TelemetryCredentials.kt:128-131` calls `clear()` on a storage failure, removing both keys. Real on a freshly reset tablet where the Keystore is not yet usable. Script treats it as fatal. |
+| Logo named but missing | Settings applied, `logoApplied: false`. A missing image is not a reason to discard a correct configuration. |
+| Logo present but undecodable | `applied`, `logoApplied: true`, `logoDecodable: false`. |
+| Result cannot be written | Logged; import not rolled back. It succeeded, and undoing it would be worse than an unreported success. |
+| App crashes or never starts | No result. **The script's poll needs a timeout** or it hangs forever. |
+| `dpm set-device-owner` refused | Two distinct causes: an account exists, or setup wizard completed (`user_setup_complete=1`). Same opaque error, different fix. The script reports both. |
+| Wi-Fi association fails | `cmd wifi connect-network` returns before association completes, so a wrong passphrase exits 0. The script asserts connectivity **before** triggering. |
+
+---
+
+## Ordering
+
+Only `pm install` → `dpm set-device-owner` is forced by the platform, but **the trigger has more dependencies than anything else and must come last**:
+
+- **After `dpm set-device-owner`** — `MainActivity.kt:289-308` runs `setLockTaskPackages` and the silent `ACCESS_FINE_LOCATION` / `NEARBY_WIFI_DEVICES` grants only `if (dpm.isDeviceOwnerApp(packageName))` at the moment `onCreate` runs. Trigger first and the app misses both until the next boot.
+- **After Wi-Fi is associated** — `:312-313` reads `isNetworkAvailable` once at startup and the `authenticate()` path at `:351` is network-gated, so the freshly imported affiliate key would not be authenticated. And `SettingsBootstrap` anchors `donationStatsStartedAtMs` to the clock, which on a factory-reset tablet with no network is whatever the RTC said — an anchor that `SettingsImport.kt:30-35` explains never self-heals.
+- **After `svc bluetooth enable`** — or `:511-514` seeds the Bluetooth watchdog into recovery on a device that is fine.
+
+The script also creates the payload directory before pushing: `/sdcard/Android/data/com.sadaqah.kiosk/` does not exist until the app first calls `getExternalFilesDir`, and provisioning pushes to a package that has never run. `adb shell mkdir -p …/files/provisioning` first.
+
+**Do not use `run.py`'s `push_app_file` helper for this.** It exists for `/data/data` and does `chown`/`restorecon` against the parent, which is wrong for the FUSE-backed external path. A plain `adb push` is correct here.
+
+---
+
+## Security
+
+The payload carries a payment credential. What holds, and what does not:
+
+**Holds — the payload location.** `/sdcard/Android/data/com.sadaqah.kiosk/files/` is writable by adb without root (verified against an unrooted shell), readable by the app with no storage permission, and since Android 11 untouchable by any other app. `/data/local/tmp` fails the second test; plain `/sdcard` fails the third.
+
+**Holds — the encrypted-at-rest window.** The payload is AES-GCM encrypted under a PBKDF2 key and is deleted on success.
+
+**Corrected — the password on disk.** An earlier draft asserted the password "is never written to disk". That was checked: after `am start` with a `--es` extra, the app's persisted task file (`/data/system_ce/0/recent_tasks/*_task.xml`) contains no trace of it. Plain extras live in the Intent's Bundle, which is not persisted; only a `PersistableBundle` would be. The password reaches the bench machine's shell history and process list, and nothing else.
+
+**Accepted, and named rather than hidden — the affiliate key at rest.** `importSettings:1976` stores it in plaintext `app_prefs.xml`, unlike the telemetry credentials which go to the Keystore. `AndroidManifest.xml:41` sets `allowBackup="true"` and both `backup_rules.xml` and `data_extraction_rules.xml` are untouched templates with every rule commented out, so nothing is excluded. This predates provisioning, but provisioning turns it from one bench device into every deployed unit. **`app_prefs.xml` should be excluded from backup as part of this work** — it is two lines of XML and the alternative is shipping the payment credential to cloud backup on every kiosk.
 
 ---
 
 ## Testing
 
-**`ProvisioningLoader` gets a unit test per outcome**: no payload, no password, wrong password, malformed, valid, valid with code override, valid with logo, logo named but absent. Every branch is reachable because `decide` takes strings.
+### `ProvisioningLoader` — unit tests per outcome
 
-**One device check in `tools/kiosk-check/run.py`**, covering what no JVM test can: push a payload and a logo to the emulator, trigger, and assert the result file says applied, the destination is configured, the kiosk code is the overridden one, the logo file exists in internal storage, and **the payload is gone**.
+No payload, no password, wrong password, malformed, valid, valid with code override, valid with name override, valid with both, payload with no secrets block.
 
-**A mutation the implementer must run**: make the loader return `Apply` for a wrong password and confirm a test fails. A provisioning path that silently accepts a bad password would configure nothing and report success.
+**A mutation the implementer must run:** make the loader return `Apply` for a wrong password and confirm a test fails. A provisioning path that silently accepts a bad password configures nothing and reports success.
+
+### The round-trip test
+
+Provision a device from a known payload, export from the provisioned device, and compare. This is the only check that exercises the payload, the guards, the credential layer and the result file together.
+
+**A raw file comparison fails on a correct provisioning**, for structural reasons. It must be a decoded, field-level comparison against a declared exclusion set, asserting **both** directions: excluded fields differ, everything else is identical.
+
+**Compare decrypted secrets, never the envelope.** `salt`, `iv` and `ciphertext` are regenerated per export from `SecureRandom`, so they differ even for identical plaintext.
+
+**Excluded because `merge` guards them:** `installId`, `logoUri`, `donationStatsStartedAtMs`, `analyticsActivatedAtMs`, `skipApkSignatureCheckOnce`, `testMode`.
+
+**Excluded because the provisioning flow changes them:** `kioskCode`, `kioskName`, `kioskCodeFromImport`, and `telemetryUrl` — which round-trips through `TelemetryUrl.check`, lowercasing the scheme and stripping a trailing slash (`TelemetryCredentials.kt:85-86`), so a source URL written `HTTPS://…/` will not match.
+
+**Run only against a freshly reset or reinstalled device.** On a device with pre-existing stored settings the `onCreate` migrations (`MainActivity.kt:431-465`) also touch `longDowntimeThresholdSec`, `autoUpdateEnabled`, `autoUpdateTargetVersion`, `autoUpdateGraceDays`, `updateRepoUrl` and `analyticsEnabled`, and the diff becomes unexplainable. On a clean device only the `longDowntimeThresholdSec` floor applies.
+
+**Everything else must match exactly**, including every colour, `patternAlpha`, `language`, `currency`, both policy URLs, and the decrypted `affiliateKey` and `telemetryKey`.
+
+#### The exclusion list is derived, not written
+
+A hand-maintained list is the thing that drifts: the next device-scoped field added to `merge` will not appear in it, the test keeps passing, and the fleet-wide leak it exists to catch is what gets through.
+
+1. **Derive the guard set by reflection.** Build two `Settings` with every field distinct, run `SettingsImport.merge(a, b)`, and reflect over `Settings::class.memberProperties` to compute which properties took `a`'s value. Assert that set equals the declared exclusions. Adding or removing a guard without updating the test then fails immediately.
+2. **Fail on unclassified fields.** Assert every property of `Settings` appears in exactly one of {guarded, provisioning-mutated, migration-mutated, must-match}. A new field then cannot be added without someone deciding which bucket it is in — which is exactly the decision nobody made for `kioskName`.
+
+#### The payload must come from the app's own exporter
+
+Not from a Python reimplementation of PBKDF2 and AES-GCM in `run.py`. A second implementation of `SecretsCrypto` can drift from the first, and a drift makes the check pass against a format the app no longer writes. Export from a configured device, or build the fixture with `SettingsExportFile.build` from a JVM test.
+
+#### And the device check must force-stop first
+
+`run.py:117-118` has `force_stop()`; `launch()` at `:125` documents why a foregrounded process never re-runs `onCreate`.
 
 ---
 
 ## Out of scope
 
-- **Field re-provisioning.** The whole security argument rests on bench-only. Extending to the field is a different spec.
-- **Unattended factory reset.** `dpm set-device-owner` needs a device with no accounts; getting it there is a manual step.
-- **Battery protection**, until the settings diff above identifies a key — and a configurable 40–60% window, which the evidence says is unlikely to exist on this hardware at all.
-- **Removing bloat packages.** Layer 2 above: measured on a real device over a day, then landed as a checked-in list with per-package recovery and a completed test payment. Not part of this command.
-- **Disabling core system services.** Deliberately deferred to a bench session on real hardware, for the same reason: a wrong call here is only recoverable with physical access, and this spec's whole model is that the field has none.
-- **Provisioning more than one device at once.** The script takes one serial; running it in parallel is the operator's business.
+- **Field re-provisioning.** The whole security argument rests on bench-only. `onNewIntent` is deliberately not implemented for the same reason.
+- **Unattended factory reset.** `dpm set-device-owner` needs a device with no accounts and no completed setup wizard; getting it there is manual.
+- **Battery protection**, until the settings diff identifies a key — and a configurable percentage window, which the API 35 evidence says does not exist.
+- **Removing bloat packages** and **disabling core services.** Measured on real hardware over a day, then landed as a checked-in list with per-package recovery and a completed test payment.
 - **Rotating credentials on deployed kiosks.** That is what the export/import path on the settings screen is for.
