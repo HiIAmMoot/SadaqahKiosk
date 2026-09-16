@@ -103,7 +103,21 @@ So Layer 2 produces a **checked-in list with a per-package undo**, built from on
 
 ### Not determinable from here
 
-**Battery protection has no AOSP settings key, and a 40–60% window is probably not available at all.**
+**There is no universal Android interface for charge limiting. Verified against the API 35 SDK, not assumed.**
+
+Three classes were checked in `platforms/android-35/android.jar`, which is the newest installed platform and this app's `targetSdk`:
+
+- `BatteryManager` exposes six `BATTERY_PROPERTY_*` constants — capacity, charge counter, current now, current average, energy counter, status. Every one is read-only telemetry. There is no `CHARGING_POLICY` constant and no `setChargingPolicy`.
+- `DevicePolicyManager` contains **no** battery or charging symbols at all, so device owner confers no lever here either.
+- `PowerManager` offers only `getBatteryDischargePrediction` and `isIgnoringBatteryOptimizations`, both about this app's own background scheduling rather than the charger.
+
+The reason is structural: the charge ceiling is enforced by the charger IC and vendor kernel, and AOSP's health HAL only reports battery state upward. There is no downward call for a public API to bind to, which is why every vendor implements this privately.
+
+**Where it exists on real hardware**, in descending order of reachability: a vendor settings key (Samsung's `protect_battery`, reachable from adb); a vendor sysfs node (`charge_control_limit`, `store_mode`, needing root, so unavailable on a production kiosk); or a vendor app feature with no external interface, which cannot be automated at any price.
+
+**A specific percentage window is unlikely regardless.** Where OEMs ship this it is normally a boolean behind a vendor-chosen ceiling — Samsung caps around 85%, Lenovo's tablet "Battery protection" around 60% when kept plugged in. The intent (don't hold the cell at 100% indefinitely) is achievable; a configurable range is not.
+
+**If the device turns out to have no reachable key, the concept is still achievable outside Android.** A permanently plugged-in kiosk sits at 100% continuously, which is the degradation being avoided; a timer or smart plug cycling the supply reaches the same outcome without the tablet's cooperation. That belongs in deployment guidance rather than in this command, but it means an unreachable key is not a dead end.
 
 Nothing matching `batt` or `charg` exists in the emulator's `global`, `secure` or `system` tables, and the four common vendor keys (`protect_battery`, `battery_protection`, `adaptive_charging_enabled`, `charging_limit`) all read `null`. The emulator's `/sys/class/power_supply/battery` carries no `charge_control_limit`, `store_mode` or `slate_mode` node either.
 
