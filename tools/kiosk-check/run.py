@@ -962,7 +962,46 @@ def d7(ctx):
 # --------------------------------------------------------------------------
 
 
-@check("I3", "I", "A kiosk code keeps its trailing whitespace, and ships it on every row")
+@check("I2", "I", "An imported kiosk code is flagged, and the flag clears when edited")
+def i2(ctx):
+    # The flag is set by SettingsImport.merge, which is covered by JVM tests. What
+    # only a device can show is that the warning actually reaches the screen, and
+    # that editing the field clears it -- the property that stops the warning
+    # outliving the condition it describes.
+    patch_settings(
+        kioskCode="nl-gld-arnhem-nour_al_houda-01",
+        kioskCodeFromImport=True,
+        analyticsEnabled=True,
+    )
+    goto_analytics()
+    scroll_to("Kiosk code")
+    warning = find("came from an imported file")
+    expect(
+        warning,
+        "no imported-code warning shown for a code that arrived from a file; "
+        f"visible: {labels()[:25]}",
+    )
+
+    # Typing here is the operator claiming the code for this kiosk.
+    set_field("Kiosk code", "nl-gld-arnhem-nour_al_houda-07")
+    dismiss_keyboard()
+    time.sleep(2)
+    expect(
+        not (settings_json() or {}).get("kioskCodeFromImport", True),
+        "editing the kiosk code did not clear the imported flag, so the warning "
+        "would outlive the condition it describes",
+    )
+    expect(
+        not find("came from an imported file"),
+        "the warning is still on screen after the operator typed their own code",
+    )
+    return [
+        "imported code warned about on screen",
+        "editing the field cleared both the flag and the warning",
+    ]
+
+
+@check("I3", "I", "A kiosk code is trimmed before it is stored, and before it ships")
 def i3(ctx):
     # Start from a known-empty field via prefs rather than by deleting through
     # the IME: clearing a whitespace-only field with KEYCODE_DEL is unreliable,
@@ -979,9 +1018,9 @@ def i3(ctx):
     stored = (settings_json() or {}).get("kioskCode", "")
     expect(stored.strip(), f"kiosk code did not persist at all (read {stored!r})")
     expect(
-        stored != stored.strip(),
-        f"kiosk code was stored as {stored!r}, already trimmed -- this check needs "
-        "an untrimmed value to be meaningful",
+        stored == dirty.strip(),
+        f"kiosk code was stored as {stored!r}; KioskCode.normalize should have "
+        f"trimmed it to {dirty.strip()!r} at the persist site",
     )
 
     # The stored value is only half of it. What matters is that the untrimmed
@@ -1031,12 +1070,6 @@ for _cid, _title, _why in [
         "export goes through a SAF file picker (ActivityResultContracts.CreateDocument), "
         "so the round trip needs a human to drive the system Documents UI. The pure "
         "half belongs in a JVM test on SettingsExportFile instead.",
-    ),
-    (
-        "I2",
-        "An imported kiosk carries the source kiosk's code",
-        "same SAF round trip as I1. SettingsImport.merge is a pure function, so the "
-        "reset belongs in a JVM test rather than here.",
     ),
     (
         "D5",
