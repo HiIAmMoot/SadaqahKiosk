@@ -81,8 +81,16 @@ ADB = adb_path()
 
 
 def adb(*args, check=False, timeout=120):
+    # UTF-8 explicitly. `text=True` decodes with the system locale, which on a
+    # Windows host is cp1252 -- every non-ASCII string the device returns then
+    # arrives as mojibake, and comparisons against it fail for reasons that have
+    # nothing to do with the device. The Arabic checks depend on this.
     r = subprocess.run(
-        [ADB, *args], capture_output=True, text=True, timeout=timeout, errors="replace"
+        [ADB, *args],
+        capture_output=True,
+        timeout=timeout,
+        encoding="utf-8",
+        errors="replace",
     )
     if check and r.returncode != 0:
         raise RuntimeError(f"adb {' '.join(args)} failed: {redact(r.stderr.strip())}")
@@ -286,6 +294,252 @@ def reinstall_clean(apk):
 
 
 # --------------------------------------------------------------------------
+# UI driving
+#
+# Compose exposes its semantics tree to accessibility, so uiautomator sees real
+# labels rather than opaque boxes. Nodes are matched on visible text, which
+# means these helpers read like the screen does.
+# --------------------------------------------------------------------------
+
+NODE_RE = re.compile(r"<node\b([^>]*)/?>")
+ATTR_RE = re.compile(r'(\S+?)="([^"]*)"')
+BOUNDS_RE = re.compile(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]")
+
+
+def ui_nodes():
+    sh("uiautomator dump /sdcard/ui.xml >/dev/null 2>&1")
+    xml = cat("/sdcard/ui.xml")
+    nodes = []
+    for m in NODE_RE.finditer(xml):
+        attrs = dict(ATTR_RE.findall(m.group(1)))
+        b = BOUNDS_RE.search(attrs.get("bounds", ""))
+        if not b:
+            continue
+        x1, y1, x2, y2 = (int(g) for g in b.groups())
+        nodes.append(
+            {
+                "text": attrs.get("text", ""),
+                "desc": attrs.get("content-desc", ""),
+                "cls": attrs.get("class", ""),
+                "clickable": attrs.get("clickable") == "true",
+                "center": ((x1 + x2) // 2, (y1 + y2) // 2),
+                "bounds": (x1, y1, x2, y2),
+            }
+        )
+    return nodes
+
+
+def field_below(label, nodes=None):
+    """The editable field belonging to a label.
+
+    Coordinates must be resolved at the moment of use, never cached: this screen
+    relaunches itself as state changes -- saving a destination masks the key,
+    which reflows everything under it -- so a position read one action ago
+    silently addresses the wrong field.
+    """
+    nodes = nodes or ui_nodes()
+    anchor = None
+    for n in nodes:
+        if label.lower() in (n["text"] or n["desc"]).lower():
+            anchor = n
+            break
+    if anchor is None:
+        raise Failure(f"no label matching {label!r}; visible: {[n['text'] for n in nodes if n['text']][:30]}")
+    # Compose draws a TextField's label inside the field's own box and emits it
+    # as a sibling AFTER the EditText, so "the field below the label" finds the
+    # wrong one. Nearest by vertical centre is what actually matches.
+    fields = [n for n in nodes if "EditText" in n["cls"]]
+    if not fields:
+        raise Failure(f"no EditText on screen while looking for {label!r}")
+    ay = anchor["center"][1]
+    best = min(fields, key=lambda n: abs(n["center"][1] - ay))
+    if abs(best["center"][1] - ay) > 120:
+        raise Failure(f"no EditText near {label!r} (nearest is {abs(best['center'][1]-ay)}px away)")
+    return best
+
+
+def dismiss_keyboard():
+    """Close the IME without navigating.
+
+    KEYCODE_BACK would dismiss it too, but falls through to a screen
+    transition when no keyboard is up, which silently leaves the flow.
+    """
+    if "mInputShown=true" in sh("dumpsys input_method | grep mInputShown"):
+        sh("input keyevent 111")  # ESCAPE: closes the IME, never navigates
+        time.sleep(1)
+
+
+def scroll_to(label, tries=8):
+    """Bring `label` and its field on-screen, scrolling either way."""
+    for direction in ("down", "up"):
+        for _ in range(tries):
+            nodes = ui_nodes()
+            try:
+                field_below(label, nodes)
+                return nodes
+            except Failure:
+                pass
+            if direction == "down":
+                sh("input swipe 400 1000 400 500 300")
+            else:
+                sh("input swipe 400 500 400 1000 300")
+            time.sleep(1)
+    raise Failure(f"could not bring {label!r} and its field on-screen")
+
+
+def set_field(label, value):
+    """Type into the field under `label`, and confirm it actually took."""
+    dismiss_keyboard()
+    scroll_to(label)
+    f = field_below(label)
+    tap_xy(*f["center"])
+    sh("input keyevent KEYCODE_MOVE_END")
+    for _ in range(90):
+        sh("input keyevent KEYCODE_DEL")
+    sh("input text " + value.replace(" ", "%s"))
+    time.sleep(1.5)
+    after = field_below(label)
+    got = after["text"]
+    # A masked field (the publishable key) never reads back what was typed, so
+    # "all bullets and the right length" is the strongest confirmation available.
+    masked = got and all(ch in "•*•●" for ch in got)
+    if masked:
+        if len(got) < 8:
+            raise Failure(f"{label!r} masked but only {len(got)} chars; typing likely failed")
+        return got
+    if value[:20] not in got:
+        raise Failure(
+            f"typing into {label!r} did not take: field reads {got!r}, expected "
+            f"something starting {value[:20]!r}"
+        )
+    return got
+
+
+def labels():
+    return [n["text"] or n["desc"] for n in ui_nodes() if n["text"] or n["desc"]]
+
+
+def find(text, exact=False):
+    t = text.lower()
+    for n in ui_nodes():
+        for field in (n["text"], n["desc"]):
+            if not field:
+                continue
+            if (field.lower() == t) if exact else (t in field.lower()):
+                return n
+    return None
+
+
+def tap_xy(x, y):
+    sh(f"input tap {x} {y}")
+    time.sleep(1)
+
+
+def tap(text, exact=False, timeout=15):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        n = find(text, exact)
+        if n:
+            tap_xy(*n["center"])
+            return n
+        time.sleep(1)
+    raise Failure(f"no on-screen element matching {text!r}; visible: {labels()}")
+
+
+def type_into(text_of_field, value):
+    tap(text_of_field)
+    sh("input keyevent KEYCODE_MOVE_END")
+    for _ in range(80):
+        sh("input keyevent KEYCODE_DEL")
+    sh("input text " + value.replace(" ", "%s").replace("&", "\\&"))
+    time.sleep(1)
+
+
+def wait_for_text(text, timeout=20):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if find(text):
+            return True
+        time.sleep(1)
+    return False
+
+
+def foreground_package():
+    # One pattern, no alternation: `\|` gets mangled passing through the host
+    # shell and adb, and the grep then silently matches nothing -- which reads
+    # as "no app is in the foreground" rather than as a broken command.
+    out = sh("dumpsys window | grep mCurrentFocus")
+    m = re.search(r"([a-zA-Z][\w.]+)/[\w.$]+}", out)
+    return m.group(1) if m else None
+
+
+def ensure_foreground():
+    """Never drive the UI unless our own app is on top.
+
+    Blind coordinate taps against whatever happens to be showing walk out into
+    the launcher and the system Settings app, and every later check then fails
+    describing someone else's screen.
+    """
+    if foreground_package() == PKG:
+        return
+    launch()
+    if foreground_package() != PKG:
+        raise Failure(
+            f"{PKG} is not in the foreground (top is {foreground_package()!r}); "
+            "refusing to tap blind"
+        )
+
+
+def goto_analytics():
+    ensure_foreground()
+    """Navigate from wherever the app is to the analytics settings screen.
+
+    The login step is unconditional because MainActivity.kt:315 reads
+    settings.testMode twelve lines before settings are loaded at :327, so the
+    testMode pre-authentication never fires on a cold start and the kiosk always
+    lands on the login screen. Pressing LOG IN reaches authenticate(), where
+    settings ARE loaded and the testMode branch works.
+    """
+    if find("What this kiosk reports") and find("Close"):
+        tap("Close")
+        time.sleep(2)
+    if find("Analytics &") and find("Save destination"):
+        return  # already there
+    # The app auto-detects UI language from the device locale, so the settings
+    # entry point is not reliably called "SETTINGS". Pin English rather than
+    # matching eight translations of every label.
+    s = settings_json()
+    if s and s.get("language") != "en":
+        patch_settings(language="en")
+    if find("LOG IN"):
+        tap("LOG IN")
+        time.sleep(3)
+    if not find("BRANDING"):
+        entry = find("SETTINGS") or find("Instellingen")
+        if entry:
+            tap_xy(*entry["center"])
+        else:
+            raise Failure(f'no settings entry point on screen; visible: {labels()[:15]}')
+        time.sleep(3)
+    for _ in range(10):
+        if find("Analytics &"):
+            tap("Analytics &")
+            time.sleep(2)
+            return
+        sh("input swipe 400 1000 400 300 300")
+        time.sleep(1)
+    raise Failure(f"could not reach analytics settings; visible: {labels()[:20]}")
+
+
+def screencap(local_path):
+    remote = "/sdcard/shot.png"
+    sh(f"screencap -p {remote}")
+    adb("pull", remote, local_path, check=True)
+    sh(f"rm -f {remote}")
+    return local_path
+
+
+# --------------------------------------------------------------------------
 # Check registry
 # --------------------------------------------------------------------------
 
@@ -478,6 +732,213 @@ def a2(ctx):
     return [
         f"installId {first[:8]}... stable across first launch, force-stop and reboot",
         "covers the SettingsBootstrap call site without an instrumented harness",
+    ]
+
+
+# --------------------------------------------------------------------------
+# Session D — the disclosure screen
+# --------------------------------------------------------------------------
+
+PRIVACY_URL = "https://nouralhouda.nl/privacy-policy-for-the-kiosk-fleet"
+TERMS_URL = "https://nouralhouda.nl/terms"
+
+
+def save_destination(url, key):
+    set_field("Project URL", url)
+    set_field("Publishable key", key)
+    dismiss_keyboard()
+    tap("Save destination")
+    time.sleep(2)
+
+
+def exit_analytics():
+    dismiss_keyboard()
+    tap("Back")
+    time.sleep(3)
+
+
+def clear_credentials():
+    """Clear via the confirmation dialog.
+
+    The red button only opens an AlertDialog; tapping the same spot again lands
+    outside that dialog and dismisses it, which looks exactly like a clear that
+    silently did nothing.
+    """
+    scroll_to("Terms URL")
+    btn = None
+    for n in ui_nodes():
+        if (n["text"] or n["desc"]) == "Clear credentials":
+            btn = n
+    if not btn:
+        raise Failure("no Clear credentials button on screen")
+    tap_xy(*btn["center"])
+    time.sleep(2)
+    confirm = [n for n in ui_nodes() if (n["text"] or n["desc"]) == "Clear credentials"]
+    if len(confirm) < 2:
+        raise Failure(f"confirmation dialog did not open; visible: {labels()}")
+    tap_xy(*confirm[-1]["center"])
+    time.sleep(3)
+
+
+def disclosure_showing():
+    return bool(find("What this kiosk reports")) and bool(find("Close"))
+
+
+def close_disclosure():
+    if disclosure_showing():
+        tap("Close")
+        time.sleep(2)
+
+
+def ensure_configured(url="https://configured00000.supabase.co", key="sb_publishable_CONFIGUREDKEY001"):
+    """Leave the kiosk with policy URLs and a saved destination.
+
+    Every D check calls this instead of inheriting whatever the previous one
+    left behind. D6 deliberately blanks the policy URLs, so a suite that shares
+    state has checks passing or failing on their neighbour's leftovers rather
+    than on the behaviour they name.
+    """
+    close_disclosure()
+    goto_analytics()
+    if not find(PRIVACY_URL):
+        set_field("Privacy policy URL", PRIVACY_URL)
+    if not find(TERMS_URL):
+        set_field("Terms URL", TERMS_URL)
+    if not find("supabase"):
+        save_destination(url, key)
+    dismiss_keyboard()
+
+
+@check("D1", "D", "Saving a destination shows the disclosure on exit, naming that endpoint")
+def d1(ctx):
+    goto_analytics()
+    if find("supabase"):
+        clear_credentials()
+    set_field("Privacy policy URL", PRIVACY_URL)
+    set_field("Terms URL", TERMS_URL)
+    save_destination("https://checkone11111.supabase.co", "sb_publishable_CHECKONEKEY000001")
+    exit_analytics()
+    expect(disclosure_showing(), f"no disclosure after exiting a save; visible: {labels()[:10]}")
+    expect(
+        find("https://checkone11111.supabase.co"),
+        "the disclosure does not name the endpoint just saved",
+    )
+    ctx.disclosure_labels = labels()
+    return ["disclosure appeared on exit and named the endpoint just entered"]
+
+
+@check("D2", "D", "Saving a second destination shows the disclosure again, with the new endpoint")
+def d2(ctx):
+    ensure_configured()
+    save_destination("https://checktwo22222.supabase.co", "sb_publishable_CHECKTWOKEY000002")
+    exit_analytics()
+    expect(disclosure_showing(), "no disclosure after a second save; there is no stamp suppressing it")
+    expect(
+        find("https://checktwo22222.supabase.co"),
+        "the disclosure still names the previous endpoint, not the one just saved",
+    )
+    return [
+        "second save showed the disclosure again, naming the new endpoint",
+        "note: re-saving requires re-entering the key, which is never redisplayed",
+    ]
+
+
+@check("D3", "D", "The disclosure is reachable again from the analytics screen")
+def d3(ctx):
+    ensure_configured()
+    scroll_to("Terms URL")
+    tap("What this kiosk reports")
+    time.sleep(3)
+    expect(disclosure_showing(), "the reopen row did not show the disclosure")
+    for needed in ("These reports identify this kiosk", "What is never sent", "Where it goes"):
+        expect(find(needed), f"disclosure is missing {needed!r}")
+    return ["reopened from settings with the same content"]
+
+
+@check("D4", "D", "Both QR codes decode to exactly the URLs shown beside them")
+def d4(ctx):
+    try:
+        import cv2
+    except ImportError:
+        raise Failure("opencv not installed; pip install opencv-python-headless")
+
+    if not disclosure_showing():
+        ensure_configured()
+        scroll_to("Terms URL")
+        tap("What this kiosk reports")
+        time.sleep(3)
+
+    shot = os.path.join(os.environ.get("TEMP", "/tmp"), "disclosure_qr.png")
+    screencap(shot)
+    img = cv2.imread(shot)
+    expect(img is not None, "screencap produced no readable image")
+
+    det = cv2.QRCodeDetector()
+    found = {}
+    # Decoded per-region: detectAndDecodeMulti reliably returns only one of the
+    # two on this layout, which reads as a failing QR when both are in fact fine.
+    h = img.shape[0]
+    for y0 in range(0, h - 200, 100):
+        crop = img[y0 : y0 + 320, :]
+        try:
+            s, pts, _ = det.detectAndDecode(crop)
+        except cv2.error:
+            continue
+        if s:
+            found[s] = True
+
+    for expected in (PRIVACY_URL, TERMS_URL):
+        expect(
+            expected in found,
+            f"no QR on screen decoded to {expected!r}; decoded: {sorted(found)}. "
+            "A QR that does not scan has failed at its only job, and a long URL "
+            "is where undersized modules show up first.",
+        )
+        expect(find(expected), f"{expected!r} is encoded but not printed as text beside the code")
+    return [f"decoded {len(found)} codes, both matching the text shown: {sorted(found)}"]
+
+
+@check("D6", "D", "With no privacy policy URL, no disclosure is shown at all")
+def d6(ctx):
+    close_disclosure()
+    goto_analytics()
+    clear_credentials()
+    set_field("Privacy policy URL", "")
+    set_field("Terms URL", "")
+    save_destination("https://nopolicy33333.supabase.co", "sb_publishable_NOPOLICYKEY00003")
+    expect(
+        find("No policy links set"),
+        "expected the missing-policy warning once both URLs are blank",
+    )
+    exit_analytics()
+    expect(
+        not disclosure_showing(),
+        "a disclosure was shown with no privacy policy URL configured; there "
+        "would be nothing honest to point at",
+    )
+    return ["destination saved with no policy URL, and no disclosure was shown"]
+
+
+@check("D7", "D", "Clearing the destination deletes the queue, as the disclosure claims")
+def d7(ctx):
+    close_disclosure()
+    # Put something in the queue so the deletion is observable.
+    version = app_version()
+    seed_reported_version("1.3.0")
+    launch()
+    expect(outbox_rows(), "could not queue a row to prove deletion against")
+    before = len(outbox_rows())
+
+    goto_analytics()
+    clear_credentials()
+
+    expect(not exists(OUTBOX), f"outbox file still present after clearing credentials")
+    expect(not outbox_rows(), "rows survived a credential clear")
+    expect(find("Enter a destination first"), "destination does not read as cleared")
+    seed_reported_version(version)
+    return [
+        f"{before} queued row(s) before, 0 after, and the outbox file is gone",
+        "the disclosure's 'deletes anything still queued' claim holds on device",
     ]
 
 
