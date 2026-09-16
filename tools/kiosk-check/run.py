@@ -959,7 +959,13 @@ for _cid, _title, _why in [
     ("F1", "Bluetooth off 5 min produces exactly one row", "emulator has no real Bluetooth adapter"),
     ("F2", "A second Bluetooth outage produces a second row", "emulator has no real Bluetooth adapter"),
     ("H6", "Donation throughput does not degrade at scale", "x86_64 emulator timings are not the ARM tablet's"),
-    ("D5", "Arabic renders correctly and nothing is clipped", "needs a human eye on the screenshot"),
+    (
+        "D5",
+        "Arabic renders correctly and nothing is clipped",
+        "reviewed and accepted 2026-09-16: nothing clipped, text right-aligned, "
+        "layout LTR as ruled. Translations accepted as-is; RTL layout judged not "
+        "worth doing. Re-run only if the disclosure copy or layout changes.",
+    ),
 ]:
     CHECKS.append((_cid, _cid[0], _title, None, _why))
 

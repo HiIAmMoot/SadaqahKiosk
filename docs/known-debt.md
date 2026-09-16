@@ -126,6 +126,56 @@ turn it into a redactor change with a concrete pattern to match.
 
 **Established in.** Phase 4 whole-branch review, 2026-09-16.
 
+## Arabic ships with a left-to-right layout
+
+**What.** Every screen, including the disclosure, arranges itself
+left-to-right in Arabic. Text is right-aligned correctly and nothing is
+clipped, but the layout mirrors the English arrangement: on
+`DisclosureScreen` the QR codes sit to the right of their labels rather than
+the left, which is not the convention for the script.
+
+**Why deferred.** Founder-ruled twice, most recently on 2026-09-16 after
+reviewing a screenshot of the Arabic disclosure on a device: implementing RTL
+is not worth it at this stage. It is a whole-app change rather than a
+per-screen one, and the app is legible in Arabic as it stands.
+
+**What it costs to leave.** An Arabic-reading operator gets a layout that
+reads as foreign, on every screen. Nothing is unreadable and no information is
+lost.
+
+**What fixing it needs.** Its own phase. Compose supports it through
+`LocalLayoutDirection`, but every screen would need reviewing for hardcoded
+start/end assumptions, and it wants a native reader on the result rather than
+a screenshot diff.
+
+**Established in.** Phase 4 spec, "Limitations"; re-affirmed after the phase 6
+device check D5, 2026-09-16.
+
+---
+
+## The translations are machine-produced
+
+**What.** All eight languages were produced without a native reader. Phase 4's
+review caught the Dutch using "gezondheidsgegevens", the GDPR term for
+*medical* data, in a sentence about kiosk health, and the Arabic saying "the
+next kiosk's startup" instead of "its next startup". Both were fixed; neither
+was found by a test.
+
+**Why deferred.** Accepted as adequate on 2026-09-16. This is UI copy rather
+than binding text, and the document behind the privacy URL is what actually
+discharges the disclosure obligation.
+
+**What it costs to leave.** A plausible-but-wrong translation reads as
+confident and correct. The two already found were both on the privacy screen,
+which is where being wrong matters most.
+
+**What fixing it needs.** A native read of the Dutch and Arabic disclosure
+copy. Cheap, and worth doing before any vendor deployment into those markets.
+
+**Established in.** Phase 4 spec, "Limitations"; re-affirmed 2026-09-16.
+
+---
+
 ## Resolved
 
 Items here have been closed; kept briefly so their history is findable.
