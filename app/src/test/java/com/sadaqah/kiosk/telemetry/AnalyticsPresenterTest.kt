@@ -23,6 +23,44 @@ class AnalyticsPresenterTest {
         locale: Locale = Locale.UK
     ) = AnalyticsPresenter.view(settings, config, status, now, zone, locale)
 
+    /** A code that arrived in an import may be shared with every other kiosk
+     *  provisioned from that export, and nothing else on the screen would say
+     *  so. */
+    @Test
+    fun anImportedKioskCodeIsFlaggedToTheOperator() {
+        val result = view(
+            settings = Settings(
+                analyticsEnabled = true,
+                kioskCode = "nl-gld-arnhem-nour_al_houda-01",
+                kioskCodeFromImport = true
+            )
+        )
+        assertTrue(result.kioskCodeFromImport)
+    }
+
+    /** A blank code cannot be shared with anything, so warning about one would
+     *  be noise on a screen an operator is meant to trust. */
+    @Test
+    fun aBlankCodeIsNeverFlaggedEvenWhenTheImportFlagIsSet() {
+        val result = view(
+            settings = Settings(analyticsEnabled = true, kioskCode = "", kioskCodeFromImport = true)
+        )
+        assertFalse(result.kioskCodeFromImport)
+    }
+
+    /** A code typed on this device is this kiosk's own, whatever its shape. */
+    @Test
+    fun aLocallyTypedCodeIsNotFlagged() {
+        val result = view(
+            settings = Settings(
+                analyticsEnabled = true,
+                kioskCode = "nl-gld-arnhem-nour_al_houda-01",
+                kioskCodeFromImport = false
+            )
+        )
+        assertFalse(result.kioskCodeFromImport)
+    }
+
     @Test
     fun anUnconfiguredKioskCannotBeTested() {
         val result = view(config = null)

@@ -324,6 +324,7 @@ interface Strings {
     val analyticsNotActivated: String
     val analyticsKioskCode: String
     val analyticsKioskCodeUnusual: String
+    val analyticsKioskCodeFromImport: String
     val analyticsPolicyUrls: String
     val analyticsPrivacyUrlLabel: String
     val analyticsTermsUrlLabel: String
@@ -606,6 +607,7 @@ object DutchStrings : Strings {
     override val analyticsNotActivated = "Rapporteert nog niet"
     override val analyticsKioskCode = "Kioskcode"
     override val analyticsKioskCodeUnusual = "Dit komt niet overeen met het gebruikelijke codeformaat. Wordt toch gebruikt."
+    override val analyticsKioskCodeFromImport = "Deze code komt uit een geïmporteerd bestand. Kiosken die uit dezelfde export zijn ingesteld, rapporteren allemaal onder deze code. Pas het veld aan om deze kiosk een eigen code te geven."
     override val analyticsPolicyUrls = "Beleidslinks"
     override val analyticsPrivacyUrlLabel = "URL privacybeleid"
     override val analyticsTermsUrlLabel = "URL voorwaarden"
@@ -806,6 +808,7 @@ object EnglishStrings : Strings {
     override val analyticsNotActivated = "Not yet reporting"
     override val analyticsKioskCode = "Kiosk code"
     override val analyticsKioskCodeUnusual = "This does not match the usual code format. It will still be used."
+    override val analyticsKioskCodeFromImport = "This code came from an imported file. Any kiosks set up from the same export are all reporting under it. Edit the field to give this kiosk its own."
     override val analyticsPolicyUrls = "Policy links"
     override val analyticsPrivacyUrlLabel = "Privacy policy URL"
     override val analyticsTermsUrlLabel = "Terms URL"
@@ -1090,6 +1093,7 @@ object GermanStrings : Strings {
     override val analyticsNotActivated = "Meldet noch nicht"
     override val analyticsKioskCode = "Kiosk-Code"
     override val analyticsKioskCodeUnusual = "Entspricht nicht dem üblichen Codeformat. Wird trotzdem verwendet."
+    override val analyticsKioskCodeFromImport = "Dieser Code stammt aus einer importierten Datei. Alle aus demselben Export eingerichteten Kioske melden unter diesem Code. Bearbeiten Sie das Feld, um diesem Kiosk einen eigenen Code zu geben."
     override val analyticsPolicyUrls = "Richtlinien-Links"
     override val analyticsPrivacyUrlLabel = "URL der Datenschutzerklärung"
     override val analyticsTermsUrlLabel = "URL der Nutzungsbedingungen"
@@ -1374,6 +1378,7 @@ object FrenchStrings : Strings {
     override val analyticsNotActivated = "Pas encore de transmission"
     override val analyticsKioskCode = "Code du kiosque"
     override val analyticsKioskCodeUnusual = "Ne correspond pas au format habituel. Sera quand même utilisé."
+    override val analyticsKioskCodeFromImport = "Ce code provient d'un fichier importé. Toutes les bornes configurées depuis le même export rapportent sous ce code. Modifiez le champ pour donner à cette borne son propre code."
     override val analyticsPolicyUrls = "Liens des politiques"
     override val analyticsPrivacyUrlLabel = "URL de la politique de confidentialité"
     override val analyticsTermsUrlLabel = "URL des conditions d'utilisation"
@@ -1658,6 +1663,7 @@ object SpanishStrings : Strings {
     override val analyticsNotActivated = "Aún no informa"
     override val analyticsKioskCode = "Código del kiosco"
     override val analyticsKioskCodeUnusual = "No coincide con el formato habitual. Se usará de todas formas."
+    override val analyticsKioskCodeFromImport = "Este código procede de un archivo importado. Todos los quioscos configurados desde la misma exportación informan con este código. Edite el campo para dar a este quiosco su propio código."
     override val analyticsPolicyUrls = "Enlaces de políticas"
     override val analyticsPrivacyUrlLabel = "URL de política de privacidad"
     override val analyticsTermsUrlLabel = "URL de términos"
@@ -1942,6 +1948,7 @@ object ItalianStrings : Strings {
     override val analyticsNotActivated = "Non ancora attivo"
     override val analyticsKioskCode = "Codice kiosk"
     override val analyticsKioskCodeUnusual = "Non corrisponde al formato consueto. Verrà comunque usato."
+    override val analyticsKioskCodeFromImport = "Questo codice proviene da un file importato. Tutti i chioschi configurati dalla stessa esportazione segnalano con questo codice. Modifica il campo per dare a questo chiosco un codice proprio."
     override val analyticsPolicyUrls = "Link alle norme"
     override val analyticsPrivacyUrlLabel = "URL informativa privacy"
     override val analyticsTermsUrlLabel = "URL termini di servizio"
@@ -2226,6 +2233,7 @@ object TurkishStrings : Strings {
     override val analyticsNotActivated = "Henüz rapor gönderilmiyor"
     override val analyticsKioskCode = "Kiosk kodu"
     override val analyticsKioskCodeUnusual = "Bu, olağan kod biçimine uymuyor. Yine de kullanılacak."
+    override val analyticsKioskCodeFromImport = "Bu kod içe aktarılan bir dosyadan geldi. Aynı dışa aktarmadan kurulan tüm kiosklar bu kodla raporluyor. Bu kioska kendi kodunu vermek için alanı düzenleyin."
     override val analyticsPolicyUrls = "Politika bağlantıları"
     override val analyticsPrivacyUrlLabel = "Gizlilik politikası URL'si"
     override val analyticsTermsUrlLabel = "Kullanım şartları URL'si"
@@ -2510,6 +2518,7 @@ object ArabicStrings : Strings {
     override val analyticsNotActivated = "لم يبدأ الإرسال بعد"
     override val analyticsKioskCode = "رمز الكشك"
     override val analyticsKioskCodeUnusual = "لا يطابق الصيغة المعتادة للرمز. سيُستخدم رغم ذلك."
+    override val analyticsKioskCodeFromImport = "هذا الرمز مأخوذ من ملف مُستورَد. جميع الأكشاك المُعدة من نفس الملف تُرسل بهذا الرمز. عدّل الحقل لإعطاء هذا الكشك رمزاً خاصاً به."
     override val analyticsPolicyUrls = "روابط السياسات"
     override val analyticsPrivacyUrlLabel = "رابط سياسة الخصوصية"
     override val analyticsTermsUrlLabel = "رابط الشروط"

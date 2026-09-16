@@ -686,7 +686,24 @@ class MainActivity : FragmentActivity() {
                         verdict
                     },
                     onAnalyticsTestConnection = ::onAnalyticsTestConnection,
-                    onAnalyticsKioskCodeChange = { code -> onSettingsChange(settings.copy(kioskCode = code)) },
+                    // Normalised on the way in, not just validated. KioskCode's
+                    // advisory check trims before matching, so an untrimmed code
+                    // "looks conventional", raises no warning, and then ships on
+                    // every row that kiosk sends — splitting one kiosk into two
+                    // groups for whoever queries the table, with nothing on
+                    // screen saying so.
+                    onAnalyticsKioskCodeChange = { code ->
+                        onSettingsChange(
+                            settings.copy(
+                                kioskCode = KioskCode.normalize(code),
+                                // Typing here is the operator claiming the code for
+                                // this kiosk, which is exactly the condition the
+                                // imported-code warning exists to flag. Clearing it
+                                // on edit is what stops the warning outliving it.
+                                kioskCodeFromImport = false
+                            )
+                        )
+                    },
                     onAnalyticsPolicyUrlsChange = { privacy, terms ->
                         onSettingsChange(settings.copy(analyticsPrivacyPolicyUrl = privacy, analyticsTermsUrl = terms))
                     },

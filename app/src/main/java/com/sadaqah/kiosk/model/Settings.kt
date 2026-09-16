@@ -48,6 +48,20 @@ data class Settings(
     val analyticsTermsUrl: String = "",
     /** Optional printed panel code. Advisory validation only — see KioskCode. */
     val kioskCode: String = "",
+    /** True when [kioskCode] arrived from an imported settings file rather than
+     *  being typed on this device.
+     *
+     *  The code travels on import so a replacement tablet keeps the kiosk's
+     *  printed code. The cost is that provisioning a fleet from one export
+     *  stamps every unit with the source kiosk's code, and `code` + `install_id`
+     *  then permanently emits the signal it reserves for a re-provisioned unit —
+     *  silently, because nothing on screen would otherwise say the value is
+     *  shared. This flag is what the analytics screen warns from.
+     *
+     *  Set by [SettingsImport.merge], cleared the moment an operator edits the
+     *  field on this device. That is what keeps the warning honest: it cannot
+     *  outlive the condition it describes. */
+    val kioskCodeFromImport: Boolean = false,
     /** Random UUID minted on first run. Never a hardware identifier: ANDROID_ID
      *  and friends carry restrictions and privacy baggage for no benefit here. */
     val installId: String = ""

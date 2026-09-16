@@ -13,6 +13,17 @@ object SettingsImport {
     fun merge(current: Settings, imported: Settings): Settings = imported.copy(
         // Minted once per device on first run. Never travels in an export.
         installId = current.installId,
+        // `kioskCode` deliberately DOES travel — a tablet swapped into an
+        // existing kiosk keeps that kiosk's printed code without retyping. The
+        // cost is that cloning a fleet from one export stamps every unit with
+        // the source code, and `code` + `install_id` then emits the signal it
+        // reserves for a re-provisioned unit, fleet-wide and silently.
+        //
+        // So record where the code came from rather than blocking it. The flag
+        // is set here and cleared the moment an operator types the field on this
+        // device, which is what makes the warning self-healing: it cannot
+        // outlive the condition it describes.
+        kioskCodeFromImport = imported.kioskCode.isNotBlank(),
         // A logo is a local file URI that means nothing on another device.
         logoUri = null,
         // Bootstrapped per device and used as the donation-throughput denominator

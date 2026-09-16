@@ -326,6 +326,12 @@ fun AnalyticsSettingsScreen(
                         if (view.kioskCodeLooksUnusual) {
                             Text(strings.analyticsKioskCodeUnusual, color = warningColor, fontSize = responsiveSp(11.0))
                         }
+                        // Shown alongside the unusual-shape warning rather than
+                        // instead of it: an imported code can also be malformed,
+                        // and they are different problems with different fixes.
+                        if (view.kioskCodeFromImport) {
+                            Text(strings.analyticsKioskCodeFromImport, color = warningColor, fontSize = responsiveSp(11.0))
+                        }
                     }
                 }
 
