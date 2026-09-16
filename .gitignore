@@ -51,3 +51,7 @@ CLAUDE.md
 
 # Subagent-driven-development scratch: ledgers, briefs, review packages.
 .superpowers/
+
+# Python bytecode from tools/
+__pycache__/
+*.pyc
