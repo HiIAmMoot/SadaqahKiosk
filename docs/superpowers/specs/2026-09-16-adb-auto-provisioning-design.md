@@ -171,7 +171,7 @@ So placing a payload requires being adb with physical access, or being this app.
 
 ### The password
 
-Passed as an argument to the provisioning script and handed to the app as an intent extra. It is never written to disk.
+Passed as an argument to the provisioning script and handed to the app as an intent extra. It reaches the bench machine's shell history and process list, and — verified, not assumed — does not reach the device's storage. See Security below.
 
 The cost is that it appears in the bench machine's shell history and process list. That is accepted: the bench is trusted, and the password protects a file that is itself deleted moments later.
 
