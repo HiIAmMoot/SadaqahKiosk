@@ -312,18 +312,6 @@ class MainActivity : FragmentActivity() {
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         isNetworkAvailable = isOnlineNow()
 
-        if (settings.testMode) {
-            isLoggedIn = true
-            isCardReaderConnected = true
-        } else {
-            val storedKey = prefs.getString("affiliate_key", null)
-            if (!storedKey.isNullOrEmpty()) {
-                affiliateKey = storedKey
-                CrashContext.affiliateKey = affiliateKey
-                authenticate(affiliateKey)
-            }
-        }
-
         val json = prefs.getString("settings", null)
         if (!json.isNullOrEmpty()) {
             settings = Gson().fromJson(json, Settings::class.java)
@@ -340,6 +328,28 @@ class MainActivity : FragmentActivity() {
             saveSettings(settings)
         } else {
             TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
+        }
+
+        // Deliberately below the settings load above, not beside the
+        // connectivity setup where it used to sit. `settings` is a field with a
+        // default initialiser, so reading settings.testMode before the stored
+        // JSON is parsed always saw `false`: the bypass never fired on a cold
+        // start, the else branch always ran, and authenticate() went out to
+        // SumUp for real — opening the SDK's own login activity on top of a
+        // kiosk that was supposed to be in test mode.
+        //
+        // authenticate() carries the same guard internally and was reading the
+        // same unloaded value, so neither layer caught it.
+        if (settings.testMode) {
+            isLoggedIn = true
+            isCardReaderConnected = true
+        } else {
+            val storedKey = prefs.getString("affiliate_key", null)
+            if (!storedKey.isNullOrEmpty()) {
+                affiliateKey = storedKey
+                CrashContext.affiliateKey = affiliateKey
+                authenticate(affiliateKey)
+            }
         }
 
         // Kick off logo colour extraction so the picker has swatches ready

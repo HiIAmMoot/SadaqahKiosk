@@ -659,6 +659,36 @@ def a1(ctx):
     ]
 
 
+@check("A4", "A", "testMode pre-authenticates on a cold start instead of opening SumUp's login")
+def a4(ctx):
+    # MainActivity.onCreate reads settings.testMode before it loads settings from
+    # disk, so the flag is always its default on a cold start: the branch is dead,
+    # the else path runs, and authenticate() is called for real. On a kiosk with a
+    # stored affiliate key that means the SumUp SDK's own email/password activity
+    # opens on top of the app every time it starts.
+    patch_settings(testMode=True)
+    sh(f"am force-stop {PKG}")
+    time.sleep(1)
+    launch(settle=10)
+
+    labels_now = labels()
+    sumup_login = any(
+        "Email address" in l or "Forgot password" in l for l in labels_now
+    )
+    expect(
+        not sumup_login,
+        "a cold start with testMode on opened SumUp's real login screen; "
+        "settings.testMode is read before settings are loaded, so the bypass "
+        "never fires",
+    )
+    expect(
+        not find("LOG IN"),
+        "a cold start with testMode on landed on the affiliate login screen; "
+        "a test kiosk should come up ready rather than waiting for a human",
+    )
+    return ["testMode kiosk came up authenticated, with no SumUp login activity"]
+
+
 @check("A3", "A", "A real device row matches the schema published in README.md")
 def a3(ctx):
     row = getattr(ctx, "sample_row", None)
