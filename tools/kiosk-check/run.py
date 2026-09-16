@@ -393,9 +393,21 @@ def set_field(label, value):
     scroll_to(label)
     f = field_below(label)
     tap_xy(*f["center"])
-    sh("input keyevent KEYCODE_MOVE_END")
-    for _ in range(90):
-        sh("input keyevent KEYCODE_DEL")
+    # Clear, then confirm it is actually empty. A partial clear leaves the old
+    # value in front of the new one, and the check that follows then fails on a
+    # string it never typed.
+    for attempt in range(4):
+        sh("input keyevent KEYCODE_MOVE_END")
+        for _ in range(60):
+            sh("input keyevent KEYCODE_DEL")
+        time.sleep(0.5)
+        if not field_below(label)["text"]:
+            break
+        tap_xy(*field_below(label)["center"])
+    else:
+        raise Failure(f"could not clear {label!r}; it still reads {field_below(label)['text']!r}")
+    if not value:
+        return ""
     sh("input text " + value.replace(" ", "%s"))
     time.sleep(1.5)
     after = field_below(label)
@@ -943,6 +955,60 @@ def d7(ctx):
 
 
 # --------------------------------------------------------------------------
+# Session I — the fleet workflow
+#
+# These exist to pin the provisioning bugs found in phase 5 BEFORE phase 6
+# fixes them, so the fix has a before and an after.
+# --------------------------------------------------------------------------
+
+
+@check("I3", "I", "A kiosk code keeps its trailing whitespace, and ships it on every row")
+def i3(ctx):
+    # Start from a known-empty field via prefs rather than by deleting through
+    # the IME: clearing a whitespace-only field with KEYCODE_DEL is unreliable,
+    # and a partial clear would leave the check asserting against a value it
+    # never typed. The typing itself still goes through the real UI, which is
+    # what exercises the persist site.
+    patch_settings(kioskCode="", analyticsEnabled=True)
+    goto_analytics()
+    dirty = "nl-gld-arnhem-test-01 "
+    set_field("Kiosk code", dirty)
+    dismiss_keyboard()
+    time.sleep(2)
+
+    stored = (settings_json() or {}).get("kioskCode", "")
+    expect(stored.strip(), f"kiosk code did not persist at all (read {stored!r})")
+    expect(
+        stored != stored.strip(),
+        f"kiosk code was stored as {stored!r}, already trimmed -- this check needs "
+        "an untrimmed value to be meaningful",
+    )
+
+    # The stored value is only half of it. What matters is that the untrimmed
+    # code reaches the wire, because that is what splits one kiosk into two
+    # groups for whoever queries the table.
+    patch_settings(analyticsEnabled=True)
+    clear_outbox()
+    version = app_version()
+    seed_reported_version("1.3.0")
+    launch()
+    rows = outbox_rows()
+    expect(rows, "no row produced to inspect the code field on")
+    payload = json.loads(rows[0]["payload"]) if isinstance(rows[0].get("payload"), str) else rows[0]
+    shipped = payload.get("code", "")
+    seed_reported_version(version)
+
+    expect(
+        shipped == shipped.strip(),
+        f"the wire carries code={shipped!r}, untrimmed. KioskCode.normalize exists "
+        "for exactly this and has no call site: MainActivity.kt:689 persists the "
+        "raw field. A self-hoster grouping by code gets two groups for one kiosk, "
+        "with nothing on screen saying so.",
+    )
+    return ["kiosk code is trimmed before it reaches the wire"]
+
+
+# --------------------------------------------------------------------------
 # Checks that cannot run here, declared rather than omitted
 # --------------------------------------------------------------------------
 
@@ -959,6 +1025,19 @@ for _cid, _title, _why in [
     ("F1", "Bluetooth off 5 min produces exactly one row", "emulator has no real Bluetooth adapter"),
     ("F2", "A second Bluetooth outage produces a second row", "emulator has no real Bluetooth adapter"),
     ("H6", "Donation throughput does not degrade at scale", "x86_64 emulator timings are not the ARM tablet's"),
+    (
+        "I1",
+        "An imported kiosk arrives with no reporting destination",
+        "export goes through a SAF file picker (ActivityResultContracts.CreateDocument), "
+        "so the round trip needs a human to drive the system Documents UI. The pure "
+        "half belongs in a JVM test on SettingsExportFile instead.",
+    ),
+    (
+        "I2",
+        "An imported kiosk carries the source kiosk's code",
+        "same SAF round trip as I1. SettingsImport.merge is a pure function, so the "
+        "reset belongs in a JVM test rather than here.",
+    ),
     (
         "D5",
         "Arabic renders correctly and nothing is clipped",
