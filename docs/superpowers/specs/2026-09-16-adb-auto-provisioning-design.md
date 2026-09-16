@@ -121,9 +121,7 @@ The reason is structural: the charge ceiling is enforced by the charger IC and v
 
 Nothing matching `batt` or `charg` exists in the emulator's `global`, `secure` or `system` tables, and the four common vendor keys (`protect_battery`, `battery_protection`, `adaptive_charging_enabled`, `charging_limit`) all read `null`. The emulator's `/sys/class/power_supply/battery` carries no `charge_control_limit`, `store_mode` or `slate_mode` node either.
 
-Where OEMs implement this at all, it is almost always **a boolean behind a vendor-chosen ceiling rather than a range you set**. Samsung's is `settings put global protect_battery 1` and caps around 85%. Lenovo's tablet "Battery protection" caps around 60% when the device is kept plugged in — close to the intent, but not configurable. A true adjustable window generally exists only through sysfs nodes that need root, which a production kiosk will not have.
-
-So the realistic outcome of the investigation below is a single on/off key, and the spec should not promise 40–60.
+The realistic outcome of the investigation below is therefore a single vendor on/off key, if anything reachable at all.
 
 The way to find out, run once on the real M9:
 
