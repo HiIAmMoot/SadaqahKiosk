@@ -178,21 +178,30 @@ private fun DisclosureBullet(text: String, color: Color) {
 @Composable
 private fun DisclosureUrlBlock(label: String, url: String, color: Color) {
     val matrix = remember(url) { QrEncoder.encode(url) }
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(responsiveDp(12.dp))
-    ) {
-        Column(modifier = Modifier.weight(1f)) {
-            DisclosureHeading(label, color)
-            SelectionContainer {
-                Text(url, color = color, fontSize = responsiveSp(12.0))
+    // BoxWithConstraints, not a plain Row, because the cap below needs the row's
+    // actual available width: Modifier.size on the Canvas is a fixed,
+    // non-weighted child, so Row measures it first against nearly the full
+    // incoming width and the weight(1f) text column only ever gets whatever is
+    // left over — on a narrow phone, nothing at all, unless something here
+    // knows how wide the row actually is and caps the code to a share of it.
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val availableWidth = maxWidth
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(responsiveDp(12.dp))
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                DisclosureHeading(label, color)
+                SelectionContainer {
+                    Text(url, color = color, fontSize = responsiveSp(12.0))
+                }
             }
-        }
-        // Null is a real, expected outcome (see QrEncoder.encode's KDoc) — these
-        // URLs are never validated, so silently drawing nothing beside the text
-        // is the correct behaviour here, not a fallback for an error case.
-        if (matrix != null) {
-            DisclosureQrCode(matrix = matrix, edge = QrModuleDp * matrix.width)
+            // Null is a real, expected outcome (see QrEncoder.encode's KDoc) — these
+            // URLs are never validated, so silently drawing nothing beside the text
+            // is the correct behaviour here, not a fallback for an error case.
+            if (matrix != null) {
+                DisclosureQrCode(matrix = matrix, edge = qrEdge(matrix, availableWidth))
+            }
         }
     }
 }
@@ -216,18 +225,51 @@ private val QrDark = Color(0xFF000000)
 // to 65x65 across the URL lengths this screen actually renders — the long
 // end is a 200-character URL, the length QrEncoderTest itself exercises. A
 // code held to a constant edge gets *less* readable as the payload grows,
-// which is backwards: it needs to grow with it. 6dp/module is chosen as a
-// floor a phone camera can resolve at arm's length under shop lighting; it
-// is deliberately not run through responsiveDp, since shrinking module size
-// on a small screen is the opposite of what scanning needs.
+// which is backwards: it needs to grow with it. 6dp/module (about 0.95mm, a
+// real physical size) is chosen as the target a phone camera can resolve at
+// arm's length under shop lighting; it is deliberately not run through
+// responsiveDp — dp is already density-independent, and the 0.5 factor would
+// shrink the module exactly where room is already tightest. This is the
+// *target*, not the final edge: see [qrEdge], which caps it.
 private val QrModuleDp = 6.dp
+
+// The policy and terms URLs are never validated anywhere (TelemetryUrl checks
+// only the Supabase endpoint), so an operator can type something far longer
+// than a real URL. QrModuleDp times a several-hundred-module symbol is well
+// over 1000dp — a tall white slab that pushes everything below it off screen.
+// Capped to half the row: the other half (minus spacing) is what the weighted
+// text column in DisclosureUrlBlock actually gets, since a Canvas's fixed
+// size is measured before a weighted sibling gets anything.
+private const val QrMaxWidthFraction = 0.5f
+
+// Below this, shrinking the code further to fit the available width buys
+// nothing — a symbol that small isn't reliably scannable at any width, so
+// past this point it is better to let it overflow its share of the row (and
+// crowd the text) than to shrink it into something no camera will read.
+private val QrMinEdge = 120.dp
+
+/**
+ * The on-screen edge for [matrix] in a row [availableWidth] wide: the
+ * module-count-derived target ([QrModuleDp] times the matrix's module count),
+ * capped to [QrMaxWidthFraction] of the row so the URL text beside it keeps
+ * some room — but never shrunk below [QrMinEdge], since a code that small has
+ * already stopped being worth rendering smaller still.
+ */
+private fun qrEdge(matrix: BitMatrix, availableWidth: Dp): Dp {
+    val target = QrModuleDp * matrix.width
+    val shareCap = availableWidth * QrMaxWidthFraction
+    return target.coerceAtMost(shareCap.coerceAtLeast(QrMinEdge))
+}
 
 /**
  * Draws [matrix] with one filled rect per dark module, scaled to [edge] — never
  * converted to a Bitmap (see QrEncoder.encode's KDoc on why: at pixel size this
  * would be ~130,000 draw calls per code instead of ~45 per side). The matrix
  * already carries its own quiet zone; drawing it edge-to-edge across [edge]
- * reproduces that margin instead of adding a second one on top of it.
+ * reproduces that margin instead of adding a second one on top of it. [edge] is
+ * whatever [qrEdge] computed, not necessarily [QrModuleDp] times the module
+ * count — on a narrow screen or an oversized URL it can be capped well below
+ * that, and the per-module pixel size drawn here shrinks with it accordingly.
  */
 @Composable
 private fun DisclosureQrCode(matrix: BitMatrix, edge: Dp) {

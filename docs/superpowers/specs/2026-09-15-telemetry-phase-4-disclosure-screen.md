@@ -57,7 +57,7 @@ Eight blocks of copy, each a `Strings` member so it translates:
 | `disclosureNeverHeading` | What is never sent |
 | `disclosureNeverBody` | Donor names, card numbers or any card data, and SumUp transaction identifiers. |
 | `disclosureDestinationHeading` | Where it goes |
-| `disclosureOffBody` | **Both** switches: analytics off stops the kiosk *recording*; clearing the destination stops it *sending* what it already recorded. `DonationEvents.eventFor` gates on `analyticsEnabled` alone (`:48`), so naming only the destination would tell an operator the wrong way to stop collection. |
+| `disclosureOffBody` | **Both** switches: analytics off stops the kiosk recording donation and health data, apart from a local note of a fault or rollback serious enough to restart it — kept until the next startup and sent only if analytics is on by then; clearing the destination stops it *sending* what it already recorded. `DonationEvents.eventFor` gates on `analyticsEnabled` alone (`:48`), so naming only the destination would tell an operator the wrong way to stop collection. |
 
 Plus `disclosurePrivacyLabel`, `disclosureTermsLabel`, `disclosureDismiss`, and `disclosureReopen` for the settings row. **Fifteen members across eight languages — 120 strings.**
 

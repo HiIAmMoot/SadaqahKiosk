@@ -1877,17 +1877,21 @@ class MainActivity : FragmentActivity() {
             closeAnalyticsSettings()
             // Load-bearing, not just consistent with the other two teardown
             // sites (the inactivity bounce, and activateScreensaver()):
-            // disclosureView and disclosurePendingUrl are only ever non-null
-            // while showAnalyticsSettings is true, which is itself nested
-            // inside isEditingSettings — so whenever the settings stack got
-            // torn down out from under the operator with one of these still
-            // set, this is one of the three places that clears it. Without
-            // that, a disclosure armed or shown during this visit would still
-            // be sitting in state the next time settings is opened, on a
-            // later, unrelated visit. Guarded by the enclosing
-            // `if (isScreensaverActive)`, so it can only run once the
-            // screensaver has actually taken over — never wiping a disclosure
-            // a still-present operator is looking at.
+            // disclosureView's own render branch (`disclosureView != null`)
+            // and disclosurePendingUrl's only arming site (onAnalyticsSaveDestination,
+            // reachable only while showAnalyticsSettings is true) both sit
+            // nested inside isEditingSettings — they are siblings, not one
+            // gated on the other, but neither can be non-null once
+            // isEditingSettings is false. isEditingSettings is set false a few
+            // lines above, so whenever the settings stack got torn down out
+            // from under the operator with one of these still set, this is
+            // one of the three places that clears it. Without that, a
+            // disclosure armed or shown during this visit would still be
+            // sitting in state the next time settings is opened, on a later,
+            // unrelated visit. Guarded by the enclosing `if
+            // (isScreensaverActive)`, so it can only run once the screensaver
+            // has actually taken over — never wiping a disclosure a
+            // still-present operator is looking at.
             disclosureView = null
             disclosurePendingUrl = null
             prepareCardReader()

@@ -636,7 +636,7 @@ object DutchStrings : Strings {
         "Namen van donateurs. Kaartnummers of andere kaartgegevens. SumUp-transactie-ID's."
     override val disclosureDestinationHeading = "Waar het naartoe gaat"
     override val disclosureOffBody =
-        "Analyse uitschakelen zorgt dat deze kiosk stopt met het registreren van donatie- en gezondheidsgegevens. Een storing met de kaartlezer of betaalterminal die een automatische herstart afdwingt kan daar nog lokaal een notitie van achterlaten tot de volgende opstart, die alleen wordt verstuurd als analyse dan weer aanstaat. De bestemming wissen zorgt dat hij stopt met versturen wat al geregistreerd is, en verwijdert wat nog in de wachtrij staat."
+        "Analyse uitschakelen zorgt dat deze kiosk stopt met het registreren van donatiegegevens en gegevens over de gezondheid van de kiosk zelf, afgezien van een lokale notitie van een storing of terugzetting die ernstig genoeg is om hem opnieuw te laten opstarten — bewaard tot de volgende opstart, en alleen verstuurd als analyse dan weer aanstaat. De bestemming wissen zorgt dat hij stopt met versturen wat al geregistreerd is, en verwijdert wat nog in de wachtrij staat."
     override val disclosurePrivacyLabel = "Privacybeleid"
     override val disclosureTermsLabel = "Voorwaarden"
     override val disclosureDismiss = "Sluiten"
@@ -836,7 +836,7 @@ object EnglishStrings : Strings {
         "Donor names. Card numbers or any card data. SumUp transaction identifiers."
     override val disclosureDestinationHeading = "Where it goes"
     override val disclosureOffBody =
-        "Switching analytics off stops this kiosk recording donation and health data. A card-reader or payment-terminal fault that forces an automatic restart may still leave a local note of that until the kiosk's next startup, sent only if analytics is back on by then. Clearing the destination stops it sending what it has already recorded, and deletes anything still queued."
+        "Switching analytics off stops this kiosk recording donation and health data, apart from a local note of a fault or rollback serious enough to restart it — kept until the next startup, and sent only if analytics is on by then. Clearing the destination stops it sending what it has already recorded, and deletes anything still queued."
     override val disclosurePrivacyLabel = "Privacy policy"
     override val disclosureTermsLabel = "Terms"
     override val disclosureDismiss = "Close"
@@ -1120,7 +1120,7 @@ object GermanStrings : Strings {
         "Namen von Spendern. Kartennummern oder sonstige Kartendaten. SumUp-Transaktionskennungen."
     override val disclosureDestinationHeading = "Wohin es geht"
     override val disclosureOffBody =
-        "Analyse ausschalten beendet die Aufzeichnung von Spenden- und Zustandsdaten durch diesen Kiosk. Ein Fehler am Kartenlesegerät oder Zahlungsterminal, der einen automatischen Neustart erzwingt, kann davon dennoch lokal einen Hinweis bis zum nächsten Start hinterlassen, der nur gesendet wird, wenn Analyse bis dahin wieder eingeschaltet ist. Das Ziel zu löschen beendet den Versand dessen, was bereits aufgezeichnet wurde, und löscht, was noch in der Warteschlange steht."
+        "Analyse ausschalten beendet die Aufzeichnung von Spenden- und Zustandsdaten dieses Kiosks, abgesehen von einem lokalen Hinweis auf einen Fehler oder ein Rollback, der schwerwiegend genug ist, um ihn neu zu starten — aufbewahrt bis zum nächsten Start und nur gesendet, wenn Analyse bis dahin wieder eingeschaltet ist. Das Ziel zu löschen beendet den Versand dessen, was bereits aufgezeichnet wurde, und löscht, was noch in der Warteschlange steht."
     override val disclosurePrivacyLabel = "Datenschutzerklärung"
     override val disclosureTermsLabel = "Nutzungsbedingungen"
     override val disclosureDismiss = "Schließen"
@@ -1404,7 +1404,7 @@ object FrenchStrings : Strings {
         "Les noms des donateurs. Les numéros de carte ou toute autre donnée de carte. Les identifiants de transaction SumUp."
     override val disclosureDestinationHeading = "Où cela va"
     override val disclosureOffBody =
-        "Désactiver les données analytiques arrête l'enregistrement des données de dons et d'état par ce kiosque. Une panne du lecteur de carte ou du terminal de paiement qui force un redémarrage automatique peut néanmoins en laisser une note locale jusqu'au prochain démarrage du kiosque, envoyée uniquement si les données analytiques sont réactivées d'ici là. Effacer la destination arrête l'envoi de ce qui a déjà été enregistré, et supprime ce qui est encore en attente."
+        "Désactiver les données analytiques arrête l'enregistrement des données de dons et d'état de ce kiosque, à l'exception d'une note locale d'une panne ou d'un rollback assez grave pour le forcer à redémarrer — conservée jusqu'au prochain démarrage, et envoyée uniquement si les données analytiques sont réactivées d'ici là. Effacer la destination arrête l'envoi de ce qui a déjà été enregistré, et supprime ce qui est encore en attente."
     override val disclosurePrivacyLabel = "Politique de confidentialité"
     override val disclosureTermsLabel = "Conditions"
     override val disclosureDismiss = "Fermer"
@@ -1688,7 +1688,7 @@ object SpanishStrings : Strings {
         "Nombres de donantes. Números de tarjeta o cualquier dato de tarjeta. Identificadores de transacción de SumUp."
     override val disclosureDestinationHeading = "A dónde va"
     override val disclosureOffBody =
-        "Desactivar la analítica hace que este kiosco deje de registrar datos de donaciones y de estado. Un fallo del lector de tarjetas o del terminal de pago que fuerce un reinicio automático puede aun así dejar una nota local de ello hasta el siguiente arranque del kiosco, que solo se envía si la analítica vuelve a estar activada para entonces. Borrar el destino hace que deje de enviar lo que ya ha registrado, y elimina lo que aún está en cola."
+        "Desactivar la analítica hace que este kiosco deje de registrar datos de donaciones y de estado, salvo una nota local de un fallo o una reversión lo bastante grave como para obligarlo a reiniciarse — conservada hasta el siguiente arranque, y enviada solo si la analítica vuelve a estar activada para entonces. Borrar el destino hace que deje de enviar lo que ya ha registrado, y elimina lo que aún está en cola."
     override val disclosurePrivacyLabel = "Política de privacidad"
     override val disclosureTermsLabel = "Términos"
     override val disclosureDismiss = "Cerrar"
@@ -1972,7 +1972,7 @@ object ItalianStrings : Strings {
         "Nomi dei donatori. Numeri di carta o qualsiasi dato di carta. Identificativi di transazione SumUp."
     override val disclosureDestinationHeading = "Dove va"
     override val disclosureOffBody =
-        "Disattivare l'analisi interrompe la registrazione dei dati di donazione e di stato da parte di questo kiosk. Un guasto al lettore di carte o al terminale di pagamento che forza un riavvio automatico può comunque lasciarne una nota locale fino al successivo avvio del kiosk, inviata solo se l'analisi è di nuovo attiva a quel punto. Cancellare la destinazione interrompe l'invio di ciò che è già stato registrato, ed elimina ciò che è ancora in coda."
+        "Disattivare l'analisi interrompe la registrazione dei dati di donazione e di stato di questo kiosk, salvo una nota locale di un guasto o di un rollback abbastanza grave da costringerlo a riavviarsi — conservata fino al successivo avvio, e inviata solo se l'analisi è di nuovo attiva a quel punto. Cancellare la destinazione interrompe l'invio di ciò che è già stato registrato, ed elimina ciò che è ancora in coda."
     override val disclosurePrivacyLabel = "Informativa privacy"
     override val disclosureTermsLabel = "Termini"
     override val disclosureDismiss = "Chiudi"
@@ -2256,7 +2256,7 @@ object TurkishStrings : Strings {
         "Bağışçı adları. Kart numaraları veya herhangi bir kart verisi. SumUp işlem kimlikleri."
     override val disclosureDestinationHeading = "Nereye gidiyor"
     override val disclosureOffBody =
-        "Analitiği kapatmak bu kioskun bağış ve durum verilerini kaydetmesini durdurur. Kart okuyucudaki veya ödeme terminalindeki bir arızanın zorladığı otomatik yeniden başlatma, kioskun bir sonraki açılışına kadar bunun yerel bir notunu bırakabilir; bu not yalnızca o sırada analitik tekrar açıksa gönderilir. Hedefi temizlemek zaten kaydedilmiş olanların gönderilmesini durdurur ve sırada bekleyenleri siler."
+        "Analitiği kapatmak bu kioskun bağış ve durum verilerini kaydetmesini durdurur; yalnızca kioskun yeniden başlamasını gerektirecek kadar ciddi bir arıza veya geri almanın yerel bir notu bunun dışındadır — bir sonraki başlangıca kadar saklanır ve yalnızca o sırada analitik tekrar açıksa gönderilir. Hedefi temizlemek zaten kaydedilmiş olanların gönderilmesini durdurur ve sırada bekleyenleri siler."
     override val disclosurePrivacyLabel = "Gizlilik politikası"
     override val disclosureTermsLabel = "Şartlar"
     override val disclosureDismiss = "Kapat"
@@ -2540,7 +2540,7 @@ object ArabicStrings : Strings {
         "أسماء المتبرعين. أرقام البطاقات أو أي بيانات بطاقة. معرّفات معاملات SumUp."
     override val disclosureDestinationHeading = "إلى أين يذهب"
     override val disclosureOffBody =
-        "إيقاف التحليلات يوقف تسجيل هذا الكشك لبيانات التبرعات والحالة. عطل في قارئ البطاقات أو طرفية الدفع يفرض إعادة تشغيل تلقائية قد يترك مع ذلك ملاحظة محلية بذلك حتى بدء تشغيل الكشك التالي، ولا تُرسل تلك الملاحظة إلا إذا كانت التحليلات قد أُعيد تفعيلها بحلول ذلك الوقت. مسح الوجهة يوقف إرسال ما تم تسجيله بالفعل، ويحذف ما لا يزال في الانتظار."
+        "إيقاف التحليلات يوقف تسجيل هذا الكشك لبيانات التبرعات والحالة، باستثناء ملاحظة محلية عن عطل أو تراجع خطير بما يكفي لإجباره على إعادة التشغيل — تُحفظ حتى تشغيله التالي، ولا تُرسل إلا إذا كانت التحليلات قد أُعيد تفعيلها بحلول ذلك الوقت. مسح الوجهة يوقف إرسال ما تم تسجيله بالفعل، ويحذف ما لا يزال في الانتظار."
     override val disclosurePrivacyLabel = "سياسة الخصوصية"
     override val disclosureTermsLabel = "الشروط"
     override val disclosureDismiss = "إغلاق"
