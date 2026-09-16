@@ -140,7 +140,7 @@ The screen itself. Compose screens are unreachable from JVM tests here, which is
 ### Device checks
 
 1. Save a destination on a fresh kiosk: the disclosure appears, states the endpoint just entered, and dismisses.
-2. Save a destination again: it does not reappear.
+2. Save a destination again: the disclosure appears again — there is no stamp suppressing it, and the operator has just changed where data goes.
 3. Reopen it from the analytics settings screen: it appears with the same content.
 4. Scan both QR codes with a phone: each resolves to exactly the URL shown as text beside it.
 5. Switch to Arabic and reopen: the copy is Arabic, the layout is LTR, and nothing is clipped.
@@ -160,7 +160,7 @@ The screen itself. Compose screens are unreachable from JVM tests here, which is
 
 ## Decisions
 
-**A new field rather than reusing `analyticsActivatedAtMs`.** That field answers "when did this kiosk begin reporting" and is documented not to drift. The disclosure answers a different question and gets its own.
+**No new persisted field, and no reuse of `analyticsActivatedAtMs`.** That field answers "when did this kiosk begin reporting" and is documented not to drift. A first draft of this spec gave the disclosure its own field to avoid overloading it — but the trigger is a save, a rare and deliberate act, so nothing needs remembering at all: showing the screen again after a re-save is correct, not a bug to suppress.
 
 **Shown on save, not on activation.** A kiosk that saves a destination and never tests it still reports.
 

@@ -1876,13 +1876,18 @@ class MainActivity : FragmentActivity() {
             showDonationHistory = false
             closeAnalyticsSettings()
             // Load-bearing, not just consistent with the other two teardown
-            // sites: the idle loop above activates the screensaver inline
-            // (`isScreensaverActive = true`) without going through
-            // activateScreensaver() and clears nothing when it does, so this is
-            // the only place that nets a disclosure armed or shown before that
-            // idle timeout. Guarded by the enclosing `if (isScreensaverActive)`,
-            // so it can only run once the screensaver has actually taken over —
-            // never wiping a disclosure a still-present operator is looking at.
+            // sites (the inactivity bounce, and activateScreensaver()):
+            // disclosureView and disclosurePendingUrl are only ever non-null
+            // while showAnalyticsSettings is true, which is itself nested
+            // inside isEditingSettings — so whenever the settings stack got
+            // torn down out from under the operator with one of these still
+            // set, this is one of the three places that clears it. Without
+            // that, a disclosure armed or shown during this visit would still
+            // be sitting in state the next time settings is opened, on a
+            // later, unrelated visit. Guarded by the enclosing
+            // `if (isScreensaverActive)`, so it can only run once the
+            // screensaver has actually taken over — never wiping a disclosure
+            // a still-present operator is looking at.
             disclosureView = null
             disclosurePendingUrl = null
             prepareCardReader()

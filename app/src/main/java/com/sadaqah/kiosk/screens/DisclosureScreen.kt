@@ -192,7 +192,7 @@ private fun DisclosureUrlBlock(label: String, url: String, color: Color) {
         // URLs are never validated, so silently drawing nothing beside the text
         // is the correct behaviour here, not a fallback for an error case.
         if (matrix != null) {
-            DisclosureQrCode(matrix = matrix, edge = responsiveDp(88.dp))
+            DisclosureQrCode(matrix = matrix, edge = QrModuleDp * matrix.width)
         }
     }
 }
@@ -211,6 +211,17 @@ private fun DisclosureUrlBlock(label: String, url: String, color: Color) {
 private val QrLight = Color(0xFFFFFFFF)
 private val QrDark = Color(0xFF000000)
 
+// A fixed edge (or one scaled only by responsiveDp's 0.5-1.5 screen factor)
+// does not track the symbol's own module count, which ranges roughly 37x37
+// to 65x65 across the URL lengths this screen actually renders — the long
+// end is a 200-character URL, the length QrEncoderTest itself exercises. A
+// code held to a constant edge gets *less* readable as the payload grows,
+// which is backwards: it needs to grow with it. 6dp/module is chosen as a
+// floor a phone camera can resolve at arm's length under shop lighting; it
+// is deliberately not run through responsiveDp, since shrinking module size
+// on a small screen is the opposite of what scanning needs.
+private val QrModuleDp = 6.dp
+
 /**
  * Draws [matrix] with one filled rect per dark module, scaled to [edge] — never
  * converted to a Bitmap (see QrEncoder.encode's KDoc on why: at pixel size this
@@ -225,15 +236,24 @@ private fun DisclosureQrCode(matrix: BitMatrix, edge: Dp) {
         // zone included — is transparent and shows whatever is behind this
         // Canvas instead of a clean white margin.
         drawRect(color = QrLight, size = size)
-        val moduleWidth = size.width / matrix.width
-        val moduleHeight = size.height / matrix.height
+        // Modules are drawn at a whole-pixel size and offset, not a fractional
+        // one: size.width / matrix.width is rarely an integer, and a rect
+        // whose edge lands mid-pixel gets anti-aliased into a soft gray line
+        // between modules instead of a hard black/white edge — exactly the
+        // ambiguity a decoder's binarizer struggles with. Flooring to Int
+        // trades a few leftover pixels of extra quiet zone at the far edge
+        // (already light, since drawRect above already filled the whole
+        // canvas white) for edges a camera can actually threshold.
+        val moduleSize = kotlin.math.floor(
+            minOf(size.width / matrix.width, size.height / matrix.height)
+        ).toInt().coerceAtLeast(1)
         for (row in 0 until matrix.height) {
             for (col in 0 until matrix.width) {
                 if (matrix.get(col, row)) {
                     drawRect(
                         color = QrDark,
-                        topLeft = Offset(col * moduleWidth, row * moduleHeight),
-                        size = Size(moduleWidth, moduleHeight)
+                        topLeft = Offset((col * moduleSize).toFloat(), (row * moduleSize).toFloat()),
+                        size = Size(moduleSize.toFloat(), moduleSize.toFloat())
                     )
                 }
             }

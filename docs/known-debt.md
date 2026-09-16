@@ -89,6 +89,43 @@ warning short of gating it — not a code change alone.
 
 **Established in.** Phase 4 spec ("Global Constraints" / known gap), 2026-09-15.
 
+---
+
+## The disclosure's "transaction identifiers never sent" claim is not provable from this repo
+
+**What.** The disclosure screen states SumUp transaction identifiers are never
+sent. The app's own fields never carry one — nothing here reads a transaction
+code. But three call sites forward SumUp's own error `MESSAGE` string into
+diagnostics verbatim (after redaction): `MainActivity.kt:781` and `:825`
+(`DiagnosticEvents.sumUpFailureDetail`), and `:876` (`checkoutNoReaderDetail`,
+on a payment failure). `TelemetryRedactor.scrub` only removes the affiliate
+key and runs of 32+ token characters (`TOKEN_SHAPED`); a SumUp transaction
+code is roughly ten characters, well under that floor. If the SDK ever embeds
+one in an error string, the "never" is false.
+
+**Why deferred.** The SumUp SDK is a closed binary, pinned deliberately (a
+newer version is known to crash on reinit). Nothing in this repository can
+show what strings it does or does not put in
+`SumUpAPI.Response.MESSAGE` on failure, so the exposure is **inferred from
+the redactor's threshold, not demonstrated against a real SDK message**.
+Softening the disclosure copy to hedge this was explicitly rejected — an
+absolute claim this screen makes is the one thing it must not hedge on
+speculation — and widening the redactor is a telemetry behaviour change out
+of scope for this phase.
+
+**What it costs to leave.** If a future SumUp SDK version ever emits a
+transaction code inside its error message text, that code would reach
+diagnostics unredacted, while the disclosure screen tells the operator it
+never does.
+
+**What fixing it needs.** Capturing real SumUp failure messages from a
+physical device across representative failure modes (login failure, no
+reader, no-connectivity payment failure) and checking whether any of them
+carries a transaction code. That would either close this out as unfounded or
+turn it into a redactor change with a concrete pattern to match.
+
+**Established in.** Phase 4 whole-branch review, 2026-09-16.
+
 ## Resolved
 
 Items here have been closed; kept briefly so their history is findable.
