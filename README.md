@@ -260,12 +260,17 @@ If you're migrating from this repository to a fork signed with a different keyst
 
 Android's `PackageInstaller` refuses silent downgrades for non-platform-signed callers. That includes the watchdog rollback path. To keep the kiosk recoverable, the project uses this rule:
 
-**All releases sharing the same `major.minor` share the same `versionCode`. Only bump `versionCode` when you cut a new minor or major.**
+**All releases sharing the same `major.minor` share the same `versionCode`. Only bump `versionCode` when you cut a new minor or major — and for a new minor, only once it is stable.**
+
+A `-preview` on a new minor track keeps the **previous** track's `versionCode`. So `1.4.0-preview` ships on 15, alongside `1.3.x`, and 16 arrives with stable `1.4.0`.
+
+This looks like a violation of the rule above and is the point. A preview is the build most likely to crash on startup, which is the one case the watchdog exists for. Give it the new track's higher `versionCode` and rollback to the last known-good `1.3.x` becomes a silent downgrade, which Android refuses — so the watchdog cannot recover the kiosk and it needs a USB flash instead.
 
 | Releases on the same track | versionCode | Notes                                                                                                |
 |----------------------------|-------------|------------------------------------------------------------------------------------------------------|
 | `1.3.0`, `1.3.1`, … `1.3.N`| 15          | Any of these can be installed over any other (Android treats them as reinstalls, not downgrades).    |
-| `1.4.0`, `1.4.1`, …        | 16          | Same idea for the next minor track.                                                                  |
+| `1.4.0-preview`            | 15          | Stays on the old track so the watchdog can still roll a broken preview back to `1.3.x`.              |
+| `1.4.0`, `1.4.1`, …        | 16          | Same idea for the next minor track, from the stable cut onward.                                      |
 | `2.0.0`, `2.0.1`, …        | 17          | And so on.                                                                                            |
 
 Why it matters:
