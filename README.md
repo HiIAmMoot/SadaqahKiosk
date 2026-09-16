@@ -148,7 +148,7 @@ adb shell dpm remove-active-admin com.sadaqah.kiosk/.KioskDeviceAdminReceiver
 | Connect Card Reader                         | Pairs the SumUp reader (must be logged in first)             |
 | Islamic Blessing when donating              | Toggle between Arabic بارك الله فيكم and localised "thank you" |
 | Export / Import Settings                    | Back up or copy settings between devices as JSON. Secrets are encrypted under a password you choose at export time |
-| Analytics & reporting                       | Off by default. Optionally reports donation totals and kiosk faults to a Supabase project you run. Identified, not anonymous — see [Analytics](#analytics) |
+| Analytics & reporting                       | Off by default. Optionally reports donation totals and kiosk faults to a Supabase project you run. Identified, not anonymous. See [Analytics](#analytics) |
 | Reset App                                   | Clears all stored data and restarts (double-tap to confirm)  |
 
 ### Export format
@@ -635,7 +635,7 @@ project's authors.
 
 ### The reports identify the kiosk
 
-This is the part worth reading twice. The data is **identified, not anonymous**.
+The data is **identified, not anonymous**.
 
 Every row carries the kiosk's install ID (a random UUID minted on the device at
 first run) and the kiosk code an operator typed at provisioning. The code is free
@@ -712,9 +712,8 @@ Redaction does two things and no more:
 - It replaces any unbroken run of 32 or more characters drawn from
   `A-Z a-z 0-9 + = _ -` with `[redacted]`.
 
-That is the whole of it. The 32-character floor is deliberate: at a lower
-threshold the redactor destroys ordinary class names in every stack trace and the
-report stops being useful. The consequence is that shorter secrets are not caught,
+The 32-character floor is deliberate: at a lower threshold the redactor destroys
+ordinary class names in every stack trace and the report stops being useful. The consequence is that shorter secrets are not caught,
 and a value containing `/` is measured in the runs between the slashes rather than
 as a whole. Package names, file paths, line numbers, thread names and exception
 messages all survive by design, because they are the reason the trace was collected.
