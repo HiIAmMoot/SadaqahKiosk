@@ -36,7 +36,20 @@ This file exists because deferred items were previously recorded only in phase s
 
 ---
 
-## The truncation suffix's byte budget is guarded only by a grep
+## ~~The truncation suffix's byte budget is guarded only by a grep~~ — RESOLVED 2026-09-16
+
+**Closed in phase 6.** `DiagnosticEventsTest` gained
+`aTruncatedMessageEndsWithTheSuffixItsBudgetWasComputedFrom`, which pins the
+value actually appended to the one the budget was computed from without
+hardcoding either, and `theAssembledDetailFitsTheCapForEveryAdversarialShape`,
+which runs the cap against eight escape and UTF-8 shapes rather than the single
+one the reserve was sized against.
+
+Verified by mutation: appending a different suffix literal than the one measured
+now fails exactly one test, which is the drift the grep was standing in for.
+Setting the wrapper reserve to zero fails two. The original text follows.
+
+---
 
 **What.** `DiagnosticEvents.truncateWrappedMessage` reserves budget for the
 truncation suffix by measuring `TelemetryRedactor.TRUNCATION_SUFFIX`'s

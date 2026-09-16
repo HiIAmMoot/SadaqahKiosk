@@ -495,6 +495,62 @@ class DiagnosticEventsTest {
         assertTrue(payload(event).has("detail"))
     }
 
+    /** The budget subtracts the suffix it is about to append, reading it from
+     *  [TelemetryRedactor.TRUNCATION_SUFFIX]. Nothing but this forces the value
+     *  actually appended to be that same one: a second literal reintroduced at
+     *  the append site would be absorbed by the 512-byte wrapper reserve and no
+     *  test would notice. Asserting the result ends with the measured constant
+     *  pins the two together without hardcoding either. */
+    @Test
+    fun aTruncatedMessageEndsWithTheSuffixItsBudgetWasComputedFrom() {
+        val huge = "\"".repeat(TelemetryRedactor.MAX_TEXT_BYTES)
+        val truncated = DiagnosticEvents.truncateWrappedMessage(huge)!!
+        assertTrue(
+            "a truncated message must end with the suffix the budget measured",
+            truncated.endsWith(TelemetryRedactor.TRUNCATION_SUFFIX)
+        )
+    }
+
+    /** The cap has to hold for every shape a vendor error can take, not just the
+     *  one the reserve was sized against. Each of these expands differently
+     *  under JSON escaping and UTF-8, and an oversized detail is dropped whole —
+     *  so the row that mattered is the one that disappears. */
+    @Test
+    fun theAssembledDetailFitsTheCapForEveryAdversarialShape() {
+        val shapes = mapOf(
+            "quotes" to "\"",
+            "backslashes" to "\\",
+            "control characters" to "",
+            "newlines" to "\n",
+            "two-byte UTF-8" to "é",
+            "three-byte UTF-8" to "€",
+            "surrogate pairs" to "😀",
+            "plain ascii" to "x"
+        )
+        for ((name, unit) in shapes) {
+            val message = unit.repeat(TelemetryRedactor.MAX_TEXT_BYTES)
+            val wrapped = DiagnosticEvents.sumUpFailureDetail(
+                code = -1,
+                message = DiagnosticEvents.truncateWrappedMessage(message),
+                closedBy = "pairing_timeout"
+            )
+            val size = wrapped.toByteArray(Charsets.UTF_8).size
+            assertTrue(
+                "$name: assembled detail is $size bytes, over the " +
+                    "${TelemetryRedactor.MAX_TEXT_BYTES}-byte cap",
+                size <= TelemetryRedactor.MAX_TEXT_BYTES
+            )
+            val event = TelemetryEvent.Diagnostic(
+                identity = EventIdentity.from(enabled, appVersion),
+                kind = DiagnosticKind.SUMUP_REINIT_FAILED,
+                occurredAtIso = "2023-11-14T22:13:20Z",
+                detailJson = wrapped,
+                affiliateKey = null
+            )
+            assertTrue("$name: the detail was dropped as oversized", payload(event).has("detail"))
+        }
+    }
+
     /** A message already inside the escaped budget must pass through
      *  untouched — the escape-aware truncation must not cut what didn't need
      *  cutting. */
