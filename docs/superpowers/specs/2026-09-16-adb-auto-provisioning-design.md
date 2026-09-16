@@ -397,7 +397,9 @@ The payload carries a payment credential. What holds, and what does not:
 
 **Corrected — the password on disk.** An earlier draft asserted the password "is never written to disk". That was checked: after `am start` with a `--es` extra, the app's persisted task file (`/data/system_ce/0/recent_tasks/*_task.xml`) contains no trace of it. Plain extras live in the Intent's Bundle, which is not persisted; only a `PersistableBundle` would be. The password reaches the bench machine's shell history and process list, and nothing else.
 
-**Accepted, and named rather than hidden — the affiliate key at rest.** `importSettings:1976` stores it in plaintext `app_prefs.xml`, unlike the telemetry credentials which go to the Keystore. `AndroidManifest.xml:41` sets `allowBackup="true"` and both `backup_rules.xml` and `data_extraction_rules.xml` are untouched templates with every rule commented out, so nothing is excluded. This predates provisioning, but provisioning turns it from one bench device into every deployed unit. **`app_prefs.xml` should be excluded from backup as part of this work** — it is two lines of XML and the alternative is shipping the payment credential to cloud backup on every kiosk.
+**Accepted — the affiliate key at rest.** `importSettings:1976` stores it in plaintext `app_prefs.xml`, unlike the telemetry credentials which go to the Keystore, and `AndroidManifest.xml:41` sets `allowBackup="true"` with untouched backup rules, so nothing is excluded.
+
+Raised during review and **ruled acceptable by the founder on 2026-09-16**: the affiliate key is one merchant account's key and is identical on every kiosk in the fleet, so provisioning does not multiply the exposure the way it would for a per-device secret. One device disclosing it discloses exactly what any other would. Recorded here rather than left implicit, because the reasoning depends on the key staying fleet-wide — if per-kiosk affiliate keys are ever introduced, this conclusion expires with them.
 
 ---
 
