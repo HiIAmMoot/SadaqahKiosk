@@ -416,7 +416,7 @@ object DutchStrings : Strings {
 
     override val exportTitle = "Instellingen Exporteren"
     override val exportMessage = "Exporteer uw instellingen naar een bestand?"
-    override val includeAffiliateKey = "Inclusief Affiliate Key"
+    override val includeAffiliateKey = "Inclusief sleutels en rapportagebestemming"
     override val export = "Exporteren"
     override val exportPassword = "Wachtwoord"
     override val exportPasswordHint = "Nodig om dit bestand te importeren. Kan niet worden hersteld."
@@ -701,7 +701,7 @@ object EnglishStrings : Strings {
 
     override val exportTitle = "Export Settings"
     override val exportMessage = "Export your settings to a file?"
-    override val includeAffiliateKey = "Include Affiliate Key"
+    override val includeAffiliateKey = "Include keys and reporting destination"
     override val export = "Export"
     override val exportPassword = "Password"
     override val exportPasswordHint = "Needed to import this file. It cannot be recovered if lost."
@@ -902,7 +902,7 @@ object GermanStrings : Strings {
 
     override val exportTitle = "Einstellungen Exportieren"
     override val exportMessage = "Einstellungen in eine Datei exportieren?"
-    override val includeAffiliateKey = "Affiliate Key einbeziehen"
+    override val includeAffiliateKey = "Schlüssel und Meldeziel einbeziehen"
     override val export = "Exportieren"
     override val exportPassword = "Passwort"
     override val exportPasswordHint = "Zum Importieren dieser Datei erforderlich. Kann nicht wiederhergestellt werden."
@@ -1187,7 +1187,7 @@ object FrenchStrings : Strings {
 
     override val exportTitle = "Exporter Paramètres"
     override val exportMessage = "Exporter vos paramètres dans un fichier?"
-    override val includeAffiliateKey = "Inclure Clé Affilié"
+    override val includeAffiliateKey = "Inclure les clés et la destination des rapports"
     override val export = "Exporter"
     override val exportPassword = "Mot de passe"
     override val exportPasswordHint = "Requis pour importer ce fichier. Irrécupérable en cas de perte."
@@ -1472,7 +1472,7 @@ object SpanishStrings : Strings {
 
     override val exportTitle = "Exportar Configuración"
     override val exportMessage = "¿Exportar configuración a un archivo?"
-    override val includeAffiliateKey = "Incluir Clave Afiliado"
+    override val includeAffiliateKey = "Incluir claves y destino de informes"
     override val export = "Exportar"
     override val exportPassword = "Contraseña"
     override val exportPasswordHint = "Necesaria para importar este archivo. No se puede recuperar."
@@ -1757,7 +1757,7 @@ object ItalianStrings : Strings {
 
     override val exportTitle = "Esporta Impostazioni"
     override val exportMessage = "Esportare le impostazioni in un file?"
-    override val includeAffiliateKey = "Includi Chiave Affiliato"
+    override val includeAffiliateKey = "Includi chiavi e destinazione dei report"
     override val export = "Esporta"
     override val exportPassword = "Password"
     override val exportPasswordHint = "Necessaria per importare questo file. Non è recuperabile."
@@ -2042,7 +2042,7 @@ object TurkishStrings : Strings {
 
     override val exportTitle = "Ayarları Dışa Aktar"
     override val exportMessage = "Ayarlar bir dosyaya aktarılsın mı?"
-    override val includeAffiliateKey = "Ortaklık Anahtarını Dahil Et"
+    override val includeAffiliateKey = "Anahtarları ve raporlama hedefini dahil et"
     override val export = "Dışa Aktar"
     override val exportPassword = "Parola"
     override val exportPasswordHint = "Bu dosyayı içe aktarmak için gerekli. Kaybedilirse kurtarılamaz."
@@ -2327,7 +2327,7 @@ object ArabicStrings : Strings {
 
     override val exportTitle = "تصدير الإعدادات"
     override val exportMessage = "هل تريد تصدير الإعدادات إلى ملف؟"
-    override val includeAffiliateKey = "تضمين مفتاح الشريك"
+    override val includeAffiliateKey = "تضمين المفاتيح ووجهة التقارير"
     override val export = "تصدير"
     override val exportPassword = "كلمة المرور"
     override val exportPasswordHint = "مطلوبة لاستيراد هذا الملف. لا يمكن استعادتها عند فقدانها."

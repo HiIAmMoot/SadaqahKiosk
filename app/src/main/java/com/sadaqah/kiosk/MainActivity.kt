@@ -1937,8 +1937,21 @@ class MainActivity : FragmentActivity() {
      * [includeSecrets] is set. Runs key derivation, so call it off the UI thread.
      */
     fun exportSettings(includeSecrets: Boolean, password: String): String {
-        val secrets = if (includeSecrets && affiliateKey.isNotBlank()) {
-            mapOf(SettingsExportFile.KEY_AFFILIATE to affiliateKey)
+        val secrets = if (includeSecrets) {
+            buildMap {
+                if (affiliateKey.isNotBlank()) put(SettingsExportFile.KEY_AFFILIATE, affiliateKey)
+                // The reporting destination travels with the credentials it
+                // belongs to. Without it, the documented fleet workflow —
+                // configure one kiosk, export, import onto the rest — produced
+                // kiosks that looked configured and silently never reported,
+                // because the destination lives in the Keystore and nothing
+                // carried it across. `build` drops blank values, so an
+                // unconfigured kiosk simply contributes nothing here.
+                telemetryCredentials.load()?.let { config ->
+                    put(SettingsExportFile.KEY_TELEMETRY_URL, config.baseUrl)
+                    put(SettingsExportFile.KEY_TELEMETRY_KEY, config.publishableKey)
+                }
+            }
         } else {
             emptyMap()
         }
@@ -1964,6 +1977,20 @@ class MainActivity : FragmentActivity() {
             // A stale key here disarms the crash handler's exact-match scrub
             // for exactly the key that was just imported.
             CrashContext.affiliateKey = key
+        }
+
+        // Goes through the credentials layer rather than writing the Keystore
+        // directly, so an imported URL faces exactly the same validation an
+        // operator-typed one does. A file carrying a destination this build
+        // rejects leaves the previous one in place rather than half-applying.
+        val importedUrl = result.secrets[SettingsExportFile.KEY_TELEMETRY_URL]
+        val importedKey = result.secrets[SettingsExportFile.KEY_TELEMETRY_KEY]
+        if (!importedUrl.isNullOrBlank() && !importedKey.isNullOrBlank()) {
+            when (val verdict = telemetryCredentials.save(importedUrl, importedKey)) {
+                is UrlVerdict.Valid -> refreshAnalyticsSnapshot()
+                is UrlVerdict.Invalid ->
+                    Log.w("SettingsImport", "Imported telemetry URL rejected: ${verdict.reason}")
+            }
         }
         return result
     }

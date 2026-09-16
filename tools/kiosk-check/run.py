@@ -1096,10 +1096,11 @@ for _cid, _title, _why in [
     ("H6", "Donation throughput does not degrade at scale", "x86_64 emulator timings are not the ARM tablet's"),
     (
         "I1",
-        "An imported kiosk arrives with no reporting destination",
+        "An import restores a working reporting destination",
         "export goes through a SAF file picker (ActivityResultContracts.CreateDocument), "
-        "so the round trip needs a human to drive the system Documents UI. The pure "
-        "half belongs in a JVM test on SettingsExportFile instead.",
+        "so the full round trip needs a human to drive the system Documents UI. The "
+        "envelope half is covered by SettingsExportFileTest; what remains untested is "
+        "the MainActivity wiring, which no JVM test can reach. Guided check.",
     ),
     (
         "D5",

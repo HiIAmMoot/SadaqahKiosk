@@ -176,6 +176,36 @@ copy. Cheap, and worth doing before any vendor deployment into those markets.
 
 ---
 
+## `HttpPosterTest`'s redirect check is intermittently flaky
+
+**What.** `aRedirectIsNotFollowedSoTheKeyNeverReachesAnotherHost` failed once
+during phase 6 with `expected:<302> but was:<-1>`, then passed in isolation and
+across two further full runs. A `-1` response code is what
+`HttpURLConnection` reports when it never got a status line at all, so the
+local server the test stands up almost certainly lost a port or a socket race
+rather than the production code misbehaving.
+
+**Why deferred.** Seen once in a long session and not reproducible on demand.
+Chasing it without a reproduction means guessing at a fix and calling the
+absence of a rare failure proof.
+
+**What it costs to leave.** This is the test that proves the publishable key
+is never replayed onto a redirect target — the guard
+`UrlConnectionPoster` sets `instanceFollowRedirects = false` for. A test that
+fails at random on that path trains whoever sees it to re-run rather than
+investigate, which is exactly how a real regression there would be waved
+through.
+
+**What fixing it needs.** Running it in a loop to get a reproduction, then
+either pinning the port allocation or making the assertion tolerate a
+connection that never completed by failing with a clearer message. Cheap once
+reproduced.
+
+**Established in.** Phase 6, observed 2026-09-16 during the credentials-export
+work.
+
+---
+
 ## Resolved
 
 Items here have been closed; kept briefly so their history is findable.
