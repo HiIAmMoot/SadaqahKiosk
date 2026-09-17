@@ -580,6 +580,15 @@ class Failure(Exception):
     pass
 
 
+class Skip(Exception):
+    """Raise from inside a check body when it cannot run at all -- a missing
+    optional fixture or credential, not a wrong one. A check that never ran
+    is not a check that failed, and reporting it red trains people to stop
+    reading a red suite; this keeps that distinction alive at runtime the
+    same way the registration-time `skip=` argument already does statically.
+    """
+
+
 def expect(condition, message):
     if not condition:
         raise Failure(message)
@@ -1317,7 +1326,7 @@ def p1(ctx):
     payload_path = os.environ.get("KIOSK_PAYLOAD")
     password = os.environ.get("KIOSK_PAYLOAD_PASSWORD")
     if not payload_path or not password:
-        raise Failure(
+        raise Skip(
             "set KIOSK_PAYLOAD to an export taken from a configured device and "
             "KIOSK_PAYLOAD_PASSWORD to its password. The fixture must come from "
             "the app's own exporter -- a reimplementation of SecretsCrypto here "
@@ -1470,6 +1479,12 @@ def run(selected_sessions, apk, out_path):
             print(f"\r  PASS  {cid}  {title}")
             for line in observed:
                 print(f"        {redact(line)}")
+        except Skip as e:
+            # Reported exactly like a registration-time skip -- same status,
+            # same detail line -- so the two are indistinguishable in output;
+            # only the timing (known up front vs. discovered mid-run) differs.
+            results.append(Result(cid, title, "SKIP", str(e)))
+            print(f"\r  SKIP  {cid}  {title}\n        {str(e)}")
         except Failure as e:
             results.append(Result(cid, title, "FAIL", redact(str(e))))
             print(f"\r  FAIL  {cid}  {title}\n        {redact(str(e))}")
