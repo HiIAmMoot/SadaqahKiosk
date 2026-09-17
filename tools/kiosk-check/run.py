@@ -1373,7 +1373,16 @@ PROVISION_DEVICE_SCOPED = [
             "a logoUri survived provisioning; a per-device local file path from "
             "another kiosk points at nothing on this one"
         ),
-        lambda s: bool(s.get("logoUri")),
+        # Always False, never conditioned on the fixture: applyProvisioning
+        # re-stamps logoUri unconditionally after merge --
+        # `settings = settings.copy(logoUri = copyProvisionedLogo()?.uri)` at
+        # MainActivity.kt:2093 -- and P1 never passes -Logo, so this comes back
+        # null regardless of what SettingsImport.merge did to it. Deleting the
+        # `logoUri = null` guard from merge would not change this assertion's
+        # outcome under any fixture P1 can construct, so it cannot be
+        # load-bearing here. The guard itself is proven by
+        # SettingsFieldClassificationTest instead.
+        lambda s: False,
     ),
     DeviceScopedField(
         "analyticsActivatedAtMs",
