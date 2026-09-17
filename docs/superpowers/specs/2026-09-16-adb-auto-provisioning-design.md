@@ -1,4 +1,4 @@
-cla# adb auto-provisioning — design
+# adb auto-provisioning — design
 
 **Status:** spec
 **Supersedes:** the "groundwork for adb auto-provisioning" notes in the phase 2b plan
