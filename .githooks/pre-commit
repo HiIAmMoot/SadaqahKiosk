@@ -18,9 +18,21 @@ fail=0
 # .githooks/ is excluded because these hooks necessarily contain the patterns
 # they search for. Without the exclusion the hook blocks its own commit, which
 # is how this exclusion was found.
+#
+# Two details here are load-bearing and were both wrong in the first version.
+#
+# No `grep -n`. It prefixes every line with "N:", so a pattern anchored with
+# ^\+ can no longer match anything -- the line now starts with a digit. That
+# silently killed both trailer patterns while the two unanchored ones kept
+# working, so the hook looked functional and blocked nothing of the exact
+# form that caused the incident. Anchoring is what lets docs state the rule,
+# so the anchors stay and the numbering goes.
+#
+# The pathspec is `:/` (repo root), not `.` (the current directory). A commit
+# made from inside a subdirectory would otherwise scan only that subdirectory.
 added() {
-	git diff --cached -U0 --diff-filter=ACM -- . ':(exclude).githooks/' \
-		| grep -n "^+" | grep -v "^[0-9]*:+++" | grep -E "$1"
+	git diff --cached -U0 --diff-filter=ACM -- ':/' ':(exclude,top).githooks/' \
+		| grep "^+" | grep -v "^+++" | grep -E "$1"
 }
 
 report() {
