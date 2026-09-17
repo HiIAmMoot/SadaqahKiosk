@@ -7,10 +7,14 @@ import com.sadaqah.kiosk.settingsio.SettingsExportFile
 import com.sadaqah.kiosk.telemetry.KioskCode
 
 sealed class ProvisioningOutcome {
-    data class Apply(
-        val settings: Settings,
-        val secrets: Map<String, String>
-    ) : ProvisioningOutcome()
+    // Deliberately does not carry the parsed secrets: a data class here would
+    // print the affiliate key and the Supabase publishable key through the
+    // generated toString the moment anything logs an outcome (the same reason
+    // TelemetryConfig isn't a data class). Nothing needs them on this path —
+    // Task 4 restores credentials by routing through `importSettings`, which
+    // re-parses the payload itself and confirms what actually landed on the
+    // device rather than trusting what this decision intended.
+    data class Apply(val settings: Settings) : ProvisioningOutcome()
 
     data class Failed(val reason: String) : ProvisioningOutcome()
 }
@@ -73,6 +77,6 @@ object ProvisioningLoader {
             merged = merged.copy(kioskName = kioskNameOverride.trim())
         }
 
-        return ProvisioningOutcome.Apply(merged, imported.secrets)
+        return ProvisioningOutcome.Apply(merged)
     }
 }

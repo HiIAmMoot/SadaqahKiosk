@@ -72,11 +72,10 @@ class ProvisioningLoaderTest {
     }
 
     @Test
-    fun aValidPayloadCarriesItsSecrets() {
+    fun aValidPayloadAppliesItsConfiguration() {
         val result = applied(decide())
-        assertEquals("sup_afk_GOLDEN", result.secrets[SettingsExportFile.KEY_AFFILIATE])
-        assertEquals("https://abc.supabase.co", result.secrets[SettingsExportFile.KEY_TELEMETRY_URL])
-        assertEquals("sb_publishable_GOLDEN", result.secrets[SettingsExportFile.KEY_TELEMETRY_KEY])
+        assertEquals("USD", result.settings.currency)
+        assertEquals("ar", result.settings.language)
     }
 
     /** Configuration crosses; device identity does not. */
@@ -136,13 +135,13 @@ class ProvisioningLoaderTest {
     }
 
     /** An export taken without ticking "include keys" parses fine and carries
-     *  nothing. It must apply, and the caller reports both credentials absent
-     *  so the script can refuse. */
+     *  nothing. It must still apply its settings — this is how a golden export
+     *  taken without ticking "include keys" behaves, and the script refuses it
+     *  downstream on absent credentials, not here. */
     @Test
-    fun aPayloadWithNoSecretsBlockAppliesWithAnEmptySecretsMap() {
+    fun aPayloadWithNoSecretsBlockStillAppliesItsSettings() {
         val noSecrets = SettingsExportFile.build(golden, emptyMap(), null, fast)
         val result = applied(decide(json = noSecrets, password = "hunter2"))
-        assertTrue(result.secrets.isEmpty())
         assertEquals("USD", result.settings.currency)
     }
 }
