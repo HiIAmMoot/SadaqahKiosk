@@ -319,6 +319,17 @@ if ($Payload) {
     # password is never secret — no_payload short-circuits before it's ever
     # read — so it needs no redaction.
     Step "priming the app's data directory"
+    # Priming must not decrypt anything, or its bounded wait below becomes
+    # exactly the false negative just removed from the real trigger. On a
+    # FAILED run the app deliberately keeps kiosk.json (and a pushed logo) so
+    # a human can retry by hand without re-pushing -- but this script always
+    # re-pushes a fresh payload a few lines down regardless, so a leftover
+    # file here has no use to it, only a cost: priming's own no_payload
+    # attempt would find a real (if stale) payload and run a genuine
+    # 600_000-iteration PBKDF2 decrypt inside a 30s bound. That bites exactly
+    # the retry-after-a-wrong-password flow the keep-on-failure design exists
+    # to support, so clear both before priming rather than leave the trap.
+    Sh "rm -f $REMOTE_DIR/kiosk.json $REMOTE_DIR/logo" -What "clearing any payload left from a previous failed run" | Out-Null
     $pidBefore = PidOf
     $primeId = [guid]::NewGuid().ToString()
     Sh ("am start -n $PKG/.MainActivity -f 0x10008000 " +
