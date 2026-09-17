@@ -1281,6 +1281,133 @@ def i3(ctx):
 
 
 # --------------------------------------------------------------------------
+# Session P — the provisioning round trip
+# --------------------------------------------------------------------------
+
+# Fields that MUST differ between the payload and a provisioned device's own
+# export. Everything not listed here must match exactly. Kept beside the check
+# rather than inline so the reason for each is readable.
+PROVISION_EXPECTED_DIFFS = {
+    # Guarded by SettingsImport.merge — device-scoped by design.
+    "installId", "logoUri", "donationStatsStartedAtMs",
+    "analyticsActivatedAtMs", "skipApkSignatureCheckOnce", "testMode",
+    # Derived by merge, then forced false by the code override.
+    "kioskCodeFromImport",
+    # Replaced per unit at provisioning time.
+    "kioskCode", "kioskName",
+}
+
+
+@check("P1", "P", "A provisioned device exports the configuration it was given")
+def p1(ctx):
+    """Round trip: provision from a known payload, export, compare.
+
+    Run only against a clean device (reinstall_clean() below does this). On a
+    device with pre-existing stored settings, MainActivity's onCreate migration
+    blocks also rewrite longDowntimeThresholdSec, the four autoUpdate fields,
+    and analyticsEnabled, which makes the diff unexplainable. On a clean
+    device only the longDowntimeThresholdSec floor (300) applies, and the
+    fixture is built above it so that floor never fires either.
+
+    A raw file comparison fails on a CORRECT provisioning: salt, iv and
+    ciphertext are regenerated from SecureRandom on every export, so the
+    envelope differs even for identical plaintext. This compares decoded
+    settings against a declared exclusion set, in both directions.
+    """
+    payload_path = os.environ.get("KIOSK_PAYLOAD")
+    password = os.environ.get("KIOSK_PAYLOAD_PASSWORD")
+    if not payload_path or not password:
+        raise Failure(
+            "set KIOSK_PAYLOAD to an export taken from a configured device and "
+            "KIOSK_PAYLOAD_PASSWORD to its password. The fixture must come from "
+            "the app's own exporter -- a reimplementation of SecretsCrypto here "
+            "would be a second implementation that can drift, and a drift makes "
+            "this check pass against a format the app no longer writes."
+        )
+    if not os.path.isfile(payload_path):
+        raise Failure(f"KIOSK_PAYLOAD does not exist: {payload_path}")
+
+    with open(payload_path, encoding="utf-8") as f:
+        source = json.load(f)["settings"]
+
+    reinstall_clean(ctx.apk)
+    launch()
+
+    # provision.ps1's own `adb push` has to land the payload under
+    # /sdcard/Android/data/<pkg>/... as the app's own uid would see it. Rooted,
+    # the push writes the file owned by root, the app's scoped-storage view of
+    # it comes back permission-denied, and provisioning fails with "no_payload"
+    # -- reproduced twice on this emulator. Drop root for the run, restore it
+    # after: settings_json() below needs it to read app_prefs.xml.
+    was_root = "root" in sh("whoami")
+    if was_root:
+        adb("unroot")
+        adb("wait-for-device", timeout=30)
+
+    code = "nl-gld-arnhem-nour_al_houda-07"
+    name = "Arnhem hal"
+    try:
+        try:
+            result = subprocess.run(
+                ["powershell", "-File", "tools/provision/provision.ps1",
+                 "-Apk", ctx.apk, "-Payload", payload_path, "-Password", password,
+                 "-KioskCode", code, "-KioskName", name],
+                capture_output=True, timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            raise Failure("provision.ps1 did not finish within 600s")
+        if result.returncode != 0:
+            # Not check=True: CalledProcessError's default message echoes the
+            # whole argv, including -Password in plain text. redact() only
+            # catches long token-shaped secrets, and this password can be
+            # anything, so that path would print it straight into the results
+            # file. Report the script's own output instead, redacted.
+            out = redact((result.stdout or b"").decode(errors="replace"))
+            raise Failure(f"provision.ps1 failed (exit {result.returncode}):\n{out}")
+    finally:
+        # Unconditional: a Failure raised above must not leave the daemon
+        # unrooted for every check that runs after this one in the same session.
+        if was_root:
+            adb("root")
+            adb("wait-for-device", timeout=30)
+
+    provisioned = settings_json()
+    expect(provisioned, "no settings on the device after provisioning")
+
+    mismatched = []
+    for key, want in source.items():
+        if key in PROVISION_EXPECTED_DIFFS:
+            continue
+        got = provisioned.get(key)
+        if got != want:
+            mismatched.append(f"{key}: payload={want!r} device={got!r}")
+    expect(
+        not mismatched,
+        "fields that should have transferred did not:\n  " + "\n  ".join(mismatched),
+    )
+
+    # The other direction: an excluded field that happens to match means the
+    # exclusion is wrong or the guard stopped working. installId is the one
+    # that matters -- if it matched, every kiosk in a fleet would share one.
+    expect(
+        provisioned.get("installId") != source.get("installId"),
+        "the device kept the payload's installId; SettingsImport.merge is no "
+        "longer guarding it and a cloned fleet would share one identity",
+    )
+    expect(provisioned.get("kioskCode") == code, "the code override did not take")
+    expect(provisioned.get("kioskName") == name, "the name override did not take")
+    expect(not provisioned.get("kioskCodeFromImport"),
+           "a per-unit code was flagged as imported, which would warn on the one case that is correct")
+
+    checked = len(source) - len(PROVISION_EXPECTED_DIFFS & set(source))
+    return [
+        f"{checked} configuration fields transferred exactly",
+        f"{len(PROVISION_EXPECTED_DIFFS)} device-scoped fields correctly differ",
+        f"overrides applied: {code} / {name}",
+    ]
+
+
+# --------------------------------------------------------------------------
 # Checks that cannot run here, declared rather than omitted
 # --------------------------------------------------------------------------
 
