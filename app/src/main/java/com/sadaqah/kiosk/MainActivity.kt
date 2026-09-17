@@ -72,8 +72,10 @@ import com.sumup.merchant.reader.ReaderModuleCoreState
 import com.sumup.merchant.reader.api.SumUpState
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -99,6 +101,24 @@ private const val TELEMETRY_FLUSH_TICK_MS = 30L * 60 * 1000 // 30 min
  *  The kiosk cannot take donations without it, so recovery is worth more than patience.
  *  Comfortably clear of the ~5 s deliberate cycle in [MainActivity.cycleBluetoothAdapter]. */
 private const val BLUETOOTH_OFF_RECOVERY_MS = 60L * 1000
+
+/** Key for the last provisioning run id this device has already started
+ *  handling. Durable, unlike the triggering intent: a config-change
+ *  recreation re-delivers the ORIGINAL launching intent from
+ *  ActivityClientRecord, which `Activity.setIntent()` cannot touch, so gating
+ *  re-entry on the intent lets a recreation restart an in-progress (or
+ *  already-finished) run. This is the same run id the result file uses for
+ *  correlation. */
+private const val PROVISIONING_CONSUMED_RUN_ID_KEY = "provisioning_consumed_run_id"
+
+/** Outlives any single Activity instance on purpose: a provisioning run must
+ *  survive the config-change recreation that a rotation, locale change or
+ *  dark-mode toggle would otherwise trigger mid-import (this Activity
+ *  declares no `android:configChanges`), which `lifecycleScope` — cancelled
+ *  at `onDestroy` — cannot. Never explicitly cancelled: every path through
+ *  `runProvisioning` ends in `Runtime.getRuntime().exit(0)`, so nothing
+ *  outlives the one attempt it was created for. */
+private val provisioningScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
 /** The two reads [AnalyticsPresenter.view] needs beyond `settings`, cached
  *  together so they land in Activity state as one atomic assignment rather
@@ -1879,6 +1899,15 @@ class MainActivity : FragmentActivity() {
      *  ever see. */
     private fun relaunchAfterProvisioning() {
         Log.i("Provisioning", "Provisioning complete, restarting into a normal boot")
+        // saveSettings and the affiliate-key write inside importSettings both
+        // use apply(), which hands the disk write to QueuedWork's background
+        // thread; Runtime.exit(0) below does not drain that queue (only
+        // ActivityThread's pause/stop handling does, which exit(0) skips). A
+        // synchronous no-op commit() blocks until every prior write to this
+        // SharedPreferences file — settings included — is actually on disk,
+        // so the one write this whole feature exists to make cannot be lost
+        // to a race with the process exit two lines below.
+        prefs.edit(commit = true) {}
         val intent = Intent(applicationContext, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         }
@@ -1909,9 +1938,14 @@ class MainActivity : FragmentActivity() {
     private val provisioningDir: File
         get() = File(getExternalFilesDir(null), "provisioning")
 
-    private fun isProvisioningRequested(source: Intent): Boolean =
-        !source.getStringExtra("provision_run_id").isNullOrBlank() &&
-            source.getStringExtra("provision_password") != null
+    private fun isProvisioningRequested(source: Intent): Boolean {
+        val runId = source.getStringExtra("provision_run_id")
+        if (runId.isNullOrBlank() || source.getStringExtra("provision_password") == null) return false
+        // Gated on the durable record from runProvisioning, not on whether this
+        // is the "first" read of the intent: see PROVISIONING_CONSUMED_RUN_ID_KEY's
+        // doc for why the intent itself cannot be trusted here.
+        return runId != prefs.getString(PROVISIONING_CONSUMED_RUN_ID_KEY, null)
+    }
 
     private fun runProvisioning(source: Intent) {
         val runId = source.getStringExtra("provision_run_id").orEmpty()
@@ -1919,12 +1953,12 @@ class MainActivity : FragmentActivity() {
         val codeOverride = source.getStringExtra("provision_kiosk_code")
         val nameOverride = source.getStringExtra("provision_kiosk_name")
 
-        // Consumed immediately. getIntent() otherwise returns these extras for
-        // the life of the Activity AND across every recreation — a rotation
-        // after a successful provision would re-enter this path, find the
-        // payload deleted, and overwrite an `applied` result with
-        // `failed / no_payload`.
-        setIntent(Intent(source).apply { replaceExtras(Bundle()) })
+        // Recorded synchronously, before any async work starts, so a
+        // config-change recreation — which re-delivers this same intent from
+        // ActivityClientRecord regardless of anything this instance does —
+        // cannot re-enter runProvisioning for the same run. See
+        // PROVISIONING_CONSUMED_RUN_ID_KEY's doc.
+        prefs.edit(commit = true) { putString(PROVISIONING_CONSUMED_RUN_ID_KEY, runId) }
 
         setContent {
             Box(Modifier.fillMaxSize().background(Color.Black), Alignment.Center) {
@@ -1932,28 +1966,64 @@ class MainActivity : FragmentActivity() {
             }
         }
 
-        lifecycleScope.launch {
-            val outcome = withContext(Dispatchers.Default) {
-                // Off the main thread because SecretsCrypto runs 600_000 PBKDF2
-                // iterations — seconds on kiosk hardware, and an ANR here would
-                // kill the process with settings possibly written and the result
-                // certainly not.
-                val payloadFile = File(provisioningDir, "kiosk.json")
-                val json = if (payloadFile.isFile) payloadFile.readText() else null
-                // The device's REAL stored settings, not the `settings` field's
-                // construction-time default — see parseStoredSettings's doc.
-                val current = parseStoredSettings(prefs.getString("settings", null))
-                ProvisioningLoader.decide(current, json, password, codeOverride, nameOverride)
+        // provisioningScope, not lifecycleScope: this Activity declares no
+        // android:configChanges, so a rotation, locale or dark-mode change
+        // recreates it and would cancel a lifecycleScope coroutine mid-import —
+        // the same "stuck on the Provisioning… screen forever" outcome the
+        // try/finally below exists to prevent, just triggered by the platform
+        // instead of a throw. See provisioningScope's doc.
+        provisioningScope.launch {
+            var current = Settings()
+            try {
+                val outcome = withContext(Dispatchers.Default) {
+                    // Off the main thread because SecretsCrypto runs 600_000 PBKDF2
+                    // iterations — seconds on kiosk hardware, and an ANR here would
+                    // kill the process with settings possibly written and the result
+                    // certainly not.
+                    val payloadFile = File(provisioningDir, "kiosk.json")
+                    val json = if (payloadFile.isFile) payloadFile.readText() else null
+                    // The device's REAL stored settings, not the `settings` field's
+                    // construction-time default — see parseStoredSettings's doc.
+                    // Threaded into applyProvisioning below so the same value
+                    // backs both this decision and the intermediate write
+                    // importSettings performs there.
+                    current = parseStoredSettings(prefs.getString("settings", null))
+                    ProvisioningLoader.decide(current, json, password, codeOverride, nameOverride)
+                }
+                applyProvisioning(runId, outcome, password, current)
+            } catch (t: Throwable) {
+                // Catches Throwable, not Exception: an operator-supplied logo
+                // large enough to make BitmapFactory.decodeFile throw
+                // OutOfMemoryError on kiosk hardware throws an Error, not an
+                // Exception, and a truncated payload push can throw on
+                // readText() too. Whatever goes wrong, a result must still be
+                // written and the process must still relaunch — the onCreate
+                // gate returns before KioskCrashHandler is installed this
+                // boot, so nothing else is watching this coroutine, and an
+                // uncaught throw here would otherwise leave the kiosk sitting
+                // on the black "Provisioning…" screen forever.
+                Log.e("Provisioning", "Provisioning failed: ${t::class.simpleName}", t)
+                writeProvisioningResult(
+                    ProvisioningResult(
+                        runId = runId, status = ProvisioningResult.FAILED,
+                        at = Instant.now().toString(), appVersion = BuildConfig.VERSION_NAME,
+                        // Only the throwable's class, never its message: a
+                        // message can carry a filesystem path into a file an
+                        // adb script reads off the device.
+                        reason = "internal_error:${t::class.simpleName}"
+                    )
+                )
+            } finally {
+                relaunchAfterProvisioning()
             }
-            applyProvisioning(runId, outcome, password)
-            relaunchAfterProvisioning()
         }
     }
 
     private suspend fun applyProvisioning(
         runId: String,
         outcome: ProvisioningOutcome,
-        password: String?
+        password: String?,
+        current: Settings
     ) {
         val now = Instant.now().toString()
         if (outcome is ProvisioningOutcome.Failed) {
@@ -1970,6 +2040,21 @@ class MainActivity : FragmentActivity() {
 
         val apply = outcome as ProvisioningOutcome.Apply
         val payloadFile = File(provisioningDir, "kiosk.json")
+
+        // `settings` is still its construction-time default here — the
+        // onCreate gate returns before the normal load runs. Assign the
+        // device's REAL settings before importSettings merges onto it below:
+        // SettingsImport.merge takes installId / donationStatsStartedAtMs /
+        // analyticsActivatedAtMs FROM `current`, so importSettings's own
+        // intermediate saveSettings call would otherwise persist a blank
+        // installId. Any interruption between that write and the final
+        // saveSettings further down — a crash, a power cut, the very throw
+        // runProvisioning's catch block now guards against — would leave the
+        // device provisioned but with a blank installId, and the next boot's
+        // SettingsBootstrap mints a fresh one, splitting its history. Same bug
+        // class as parseStoredSettings's doc, one level further down the call
+        // stack: do not let this line read the old default again.
+        settings = current
 
         // Routed through importSettings rather than reimplemented: :1979 sets
         // CrashContext.affiliateKey, and a parallel path that skipped it would
@@ -2008,8 +2093,18 @@ class MainActivity : FragmentActivity() {
             )
         )
 
-        payloadFile.delete()
-        File(provisioningDir, "logo").delete()
+        // Best-effort: nothing re-reads this directory outside a provisioning
+        // run (isProvisioningRequested gates on PROVISIONING_CONSUMED_RUN_ID_KEY,
+        // not on this file's presence), so a leftover payload or logo is inert.
+        // A delete failure here must not throw past the APPLIED result just
+        // written above and be mistaken by the caller's catch block for a
+        // failed run.
+        try {
+            payloadFile.delete()
+            File(provisioningDir, "logo").delete()
+        } catch (t: Throwable) {
+            Log.w("Provisioning", "Could not clean up the provisioning payload: ${t.message}")
+        }
     }
 
     private fun writeProvisioningResult(result: ProvisioningResult) {
@@ -2035,16 +2130,22 @@ class MainActivity : FragmentActivity() {
     private fun copyProvisionedLogo(): ProvisionedLogo? {
         val source = File(provisioningDir, "logo")
         if (!source.isFile) return null
-        val dir = File(filesDir, "logo").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
-        val dest = File(dir, "kiosk-logo")
         return try {
+            val dir = File(filesDir, "logo").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
+            val dest = File(dir, "kiosk-logo")
             source.copyTo(dest, overwrite = true)
             ProvisionedLogo(
                 uri = Uri.fromFile(dest).toString(),
                 decodable = BitmapFactory.decodeFile(dest.absolutePath) != null
             )
-        } catch (e: Exception) {
-            Log.w("Provisioning", "Could not copy the logo: ${e.message}")
+        } catch (t: Throwable) {
+            // Catches Throwable, not Exception: an operator-supplied image
+            // large enough to make BitmapFactory.decodeFile throw
+            // OutOfMemoryError on kiosk hardware throws an Error, which a
+            // narrower catch would miss — and a bad logo must degrade to "no
+            // logo applied", not abort a provisioning run whose settings have
+            // already been written by the time this runs.
+            Log.w("Provisioning", "Could not copy the logo: ${t.message}")
             null
         }
     }
