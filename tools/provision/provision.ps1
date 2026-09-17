@@ -93,6 +93,19 @@ function Sh {
     return $true
 }
 
+<#
+    Quotes a value for the DEVICE-side shell that `adb shell` hands the
+    command to, not for PowerShell.
+
+    A bare `'$Value'` breaks the instant $Value itself contains an
+    apostrophe (an SSID like "Nour's Wifi", or a passphrase with one): the
+    device shell sees the quote close early and splits what was meant to be
+    one argument into two, silently. The standard POSIX trick handles it --
+    close the quote, emit an escaped literal quote outside it, reopen the
+    quote -- so the value survives intact however it's spelled.
+#>
+function ShQuote([string]$Value) { "'" + $Value.Replace("'", "'\''") + "'" }
+
 Write-Host "`nProvisioning $(if ($Serial) { $Serial } else { 'the attached device' })`n"
 
 # --- device present -------------------------------------------------------
@@ -134,7 +147,15 @@ if ($r -match "Success") {
     # device stuck on a stale or wrong admin as "already set" and walk
     # straight past the one step this script treats as fatal.
     $owners = (Adb shell "dpm list-owners") -join "`n"
-    if ($owners -match [regex]::Escape($ADMIN)) {
+    # $ADMIN and the DeviceOwner marker must be on the SAME line. Checking
+    # them independently against the whole blob would let a ProfileOwner
+    # entry for this same component -- a different, lesser role -- read as
+    # "device owner already set": the exact silent pass this fallback exists
+    # to rule out, one line owner-check deeper than the file-wide version.
+    $adminIsDeviceOwner = ($owners -split "`n") | Where-Object {
+        $_ -match [regex]::Escape($ADMIN) -and $_ -match "DeviceOwner"
+    }
+    if ($adminIsDeviceOwner) {
         Ok "device owner already set"
     } elseif ($owners -match "DeviceOwner") {
         Write-Host "  FAIL a different component already owns this device:" -ForegroundColor Red
@@ -183,11 +204,15 @@ Ok "wifi, bluetooth, location on"
 # unmetered by default.
 if ($Ssid) {
     Step "joining $Ssid"
+    $ssidQ = ShQuote $Ssid
     if ($WifiPassword) {
-        Adb shell "cmd wifi connect-network '$Ssid' wpa2 '$WifiPassword' -m" | Out-Null
+        Sh "cmd wifi connect-network $ssidQ wpa2 $(ShQuote $WifiPassword) -m" -What "wifi connect-network" | Out-Null
     } else {
-        Adb shell "cmd wifi connect-network '$Ssid' open -m" | Out-Null
+        Sh "cmd wifi connect-network $ssidQ open -m" -What "wifi connect-network" | Out-Null
     }
+    # Non-fatal here on purpose: a bad SSID/passphrase surfaces below as a
+    # clear, specific Die from the association check, which is a better
+    # diagnosis than this call's own error text would give in isolation.
     # connect-network returns before association completes, so a wrong
     # passphrase exits 0 and leaves an offline kiosk. Assert connectivity.
     $joined = $false
