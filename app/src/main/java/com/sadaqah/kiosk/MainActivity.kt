@@ -1911,7 +1911,17 @@ class MainActivity : FragmentActivity() {
         val intent = Intent(applicationContext, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         }
-        startActivity(intent)
+        // Guarded: if startActivity itself throws, exit(0) below must still
+        // run. Without this try, that throw would escape relaunchAfterProvisioning
+        // — called from a `finally` specifically so the process always exits —
+        // and reintroduce C-1 through the one block that exists to prevent it,
+        // leaving the kiosk on the "Provisioning…" screen with the process
+        // never dying and nothing left to relaunch it.
+        try {
+            startActivity(intent)
+        } catch (t: Throwable) {
+            Log.e("Provisioning", "Could not start the relaunch activity: ${t::class.simpleName}")
+        }
         Runtime.getRuntime().exit(0)
     }
 
@@ -2002,7 +2012,11 @@ class MainActivity : FragmentActivity() {
                 // boot, so nothing else is watching this coroutine, and an
                 // uncaught throw here would otherwise leave the kiosk sitting
                 // on the black "Provisioning…" screen forever.
-                Log.e("Provisioning", "Provisioning failed: ${t::class.simpleName}", t)
+                // The class name only, not the throwable itself: Log.e's
+                // (msg, Throwable) overload prints t.message to logcat, the
+                // same detail kept out of the result file below for the same
+                // reason (a message can carry a filesystem path).
+                Log.e("Provisioning", "Provisioning failed: ${t::class.simpleName}")
                 writeProvisioningResult(
                     ProvisioningResult(
                         runId = runId, status = ProvisioningResult.FAILED,
