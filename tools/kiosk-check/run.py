@@ -1444,6 +1444,14 @@ PROVISION_DEVICE_SCOPED = [
             "a per-unit code was flagged as imported, which would warn on the "
             "one case that is correct"
         ),
+        # Load-bearing, but against ProvisioningLoader's override rather than
+        # SettingsImport.merge's derivation, which is what the rows above guard.
+        # merge sets this from `imported.kioskCode.isNotBlank()`, then
+        # ProvisioningLoader.kt:42 clears it whenever a code override is passed
+        # -- and P1 always passes one. So deleting merge's derivation changes
+        # nothing here, while deleting the override's clear makes this fail.
+        # Verify against the override when this row stops passing, not against
+        # merge.
         lambda s: True,
     ),
 ]
@@ -1464,6 +1472,19 @@ def p1(ctx):
     ciphertext are regenerated from SecureRandom on every export, so the
     envelope differs even for identical plaintext. This compares decoded
     settings against PROVISION_DEVICE_SCOPED, in both directions.
+
+    What this check does NOT cover: the credentials themselves. It compares the
+    settings block only. The sole credential evidence is the two booleans the
+    app reports -- affiliateKeyRestored and destinationConfigured -- and those
+    say a key was RESTORED, not that it is CORRECT. A truncated key, or an
+    affiliate key and a telemetry key swapped into each other's slots, passes
+    here. Closing that would mean comparing decrypted secrets, which are
+    deliberately out of reach: they never leave the Keystore by any path this
+    harness can read, and reimplementing the app's crypto to get at them is the
+    second implementation this check exists to avoid. Accepted on 2026-09-16
+    because the affiliate key is identical on every device in the fleet, so
+    there is no per-unit divergence for it to catch. If that stops being true,
+    this is the gap to close first.
     """
     payload_path = os.environ.get("KIOSK_PAYLOAD")
     password = os.environ.get("KIOSK_PAYLOAD_PASSWORD")
