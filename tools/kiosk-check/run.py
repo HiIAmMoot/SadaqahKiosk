@@ -1376,7 +1376,7 @@ PROVISION_DEVICE_SCOPED = [
         # Always False, never conditioned on the fixture: applyProvisioning
         # re-stamps logoUri unconditionally after merge --
         # `settings = settings.copy(logoUri = copyProvisionedLogo()?.uri)` at
-        # MainActivity.kt:2093 -- and P1 never passes -Logo, so this comes back
+        # MainActivity.kt:2129 -- and P1 never passes -Logo, so this comes back
         # null regardless of what SettingsImport.merge did to it. Deleting the
         # `logoUri = null` guard from merge would not change this assertion's
         # outcome under any fixture P1 can construct, so it cannot be
@@ -1447,7 +1447,7 @@ PROVISION_DEVICE_SCOPED = [
         # Load-bearing, but against ProvisioningLoader's override rather than
         # SettingsImport.merge's derivation, which is what the rows above guard.
         # merge sets this from `imported.kioskCode.isNotBlank()`, then
-        # ProvisioningLoader.kt:42 clears it whenever a code override is passed
+        # ProvisioningLoader.kt:73 clears it whenever a code override is passed
         # -- and P1 always passes one. So deleting merge's derivation changes
         # nothing here, while deleting the override's clear makes this fail.
         # Verify against the override when this row stops passing, not against
@@ -1478,10 +1478,12 @@ def p1(ctx):
     app reports -- affiliateKeyRestored and destinationConfigured -- and those
     say a key was RESTORED, not that it is CORRECT. A truncated key, or an
     affiliate key and a telemetry key swapped into each other's slots, passes
-    here. Closing that would mean comparing decrypted secrets, which are
-    deliberately out of reach: they never leave the Keystore by any path this
-    harness can read, and reimplementing the app's crypto to get at them is the
-    second implementation this check exists to avoid. Accepted on 2026-09-16
+    here. What blocks closing it is the EXPECTED value, not the actual one: the
+    affiliate key sits in plaintext in app_prefs.xml and this harness already
+    reads it, but the payload's copy is inside the encrypted envelope, and
+    decrypting that here means reimplementing SecretsCrypto -- the second
+    implementation this check exists to avoid. The telemetry key is harder
+    still; it never leaves the Keystore. Accepted on 2026-09-16
     because the affiliate key is identical on every device in the fleet, so
     there is no per-unit divergence for it to catch. If that stops being true,
     this is the gap to close first.

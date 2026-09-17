@@ -347,18 +347,23 @@ class MainActivity : FragmentActivity() {
         // also fixes the migration blocks below, which string-match the STORED
         // json — after a restart that json already holds the provisioned values,
         // so they no longer overwrite what provisioning just applied.
-        if (isProvisioningRequested(intent)) {
-            runProvisioning(intent)
+        // Checked BEFORE isProvisioningRequested, which is what makes it cover
+        // two different races rather than one. A recreation re-delivers the same
+        // intent, whose run id is already consumed, so it would fall through to
+        // the normal boot path and run it alongside the provisioning coroutine.
+        // A second trigger carrying a DIFFERENT run id — an impatient operator
+        // re-running the script — would instead pass isProvisioningRequested and
+        // start a second concurrent runProvisioning. Both end with two writers on
+        // app_prefs. Ordering this first refuses both: while a run is in flight
+        // this Activity does nothing but hold the screen, and the coroutine that
+        // owns the outcome ends the process either way.
+        if (provisioningInFlight) {
+            showProvisioningScreen()
             return
         }
 
-        // A recreation landing mid-provision. The run-id above has already been
-        // consumed, so the check cannot catch this one; without the flag this
-        // instance runs the entire normal boot alongside the provisioning
-        // coroutine. Hold the same screen and do nothing else — the coroutine
-        // owns the outcome and ends the process either way.
-        if (provisioningInFlight) {
-            showProvisioningScreen()
+        if (isProvisioningRequested(intent)) {
+            runProvisioning(intent)
             return
         }
 

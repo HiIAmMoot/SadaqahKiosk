@@ -234,14 +234,19 @@ if ($Ssid) {
     # passphrase exits 0 and leaves an offline kiosk.
 }
 
-# Gated on -Payload rather than -Ssid: a device that already holds wifi
-# credentials skips the join above entirely but still gets pushed a payload
-# and triggered, and the app reads isNetworkAvailable once at startup and
-# anchors donationStatsStartedAtMs to an unsynced RTC if that boot is
-# offline. Both failures are silent from the app's side, so this has to be
-# the thing that refuses to let the trigger fire on a device that only looks
-# provisioned.
-if ($Payload) {
+# -Payload OR -Ssid, and both halves are load-bearing.
+#
+# -Payload, because a device that already holds wifi credentials skips the join
+# above entirely but still gets pushed a payload and triggered: the app reads
+# isNetworkAvailable once at startup, so the freshly imported affiliate key is
+# never authenticated and SettingsBootstrap anchors donationStatsStartedAtMs to
+# an unsynced RTC. Both are silent from the app's side.
+#
+# -Ssid, because the join above is deliberately non-fatal and defers its
+# diagnosis to this check. Gating on -Payload alone would leave a native-only
+# run (-Ssid, no -Payload) asserting nothing at all: a wrong passphrase would
+# exit 0, leave an offline kiosk, and still print PROVISIONED.
+if ($Payload -or $Ssid) {
     Step "verifying wifi connectivity"
     # `cmd wifi status` names the SSID actually associated, which the old
     # `dumpsys wifi` CONNECTED check could not: that only proved SOME network
@@ -254,6 +259,10 @@ if ($Payload) {
     foreach ($i in 1..20) {
         Start-Sleep -Seconds 2
         $status = (Adb shell "cmd wifi status") -join "`n"
+        # Reset each pass, so the timeout message below names what the device is
+        # on NOW. Carrying the last-seen value forward would report a network it
+        # has since dropped, which is the opposite of a useful bench diagnosis.
+        $actualSsid = $null
         if ($status -match 'Wifi is connected to "([^"]*)"') { $actualSsid = $Matches[1] }
         if ($Ssid) {
             if ($actualSsid -eq $Ssid) { $joined = $true; break }
