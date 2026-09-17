@@ -231,16 +231,52 @@ if ($Ssid) {
     # clear, specific Die from the association check, which is a better
     # diagnosis than this call's own error text would give in isolation.
     # connect-network returns before association completes, so a wrong
-    # passphrase exits 0 and leaves an offline kiosk. Assert connectivity.
+    # passphrase exits 0 and leaves an offline kiosk.
+}
+
+# Gated on -Payload rather than -Ssid: a device that already holds wifi
+# credentials skips the join above entirely but still gets pushed a payload
+# and triggered, and the app reads isNetworkAvailable once at startup and
+# anchors donationStatsStartedAtMs to an unsynced RTC if that boot is
+# offline. Both failures are silent from the app's side, so this has to be
+# the thing that refuses to let the trigger fire on a device that only looks
+# provisioned.
+if ($Payload) {
+    Step "verifying wifi connectivity"
+    # `cmd wifi status` names the SSID actually associated, which the old
+    # `dumpsys wifi` CONNECTED check could not: that only proved SOME network
+    # was up, so re-provisioning onto a new SSID passed while still joined to
+    # the old one, and a wrong passphrase passed against any other saved
+    # network. -join before -match is required: -match against a multi-line
+    # array filters elements instead of populating $Matches.
     $joined = $false
+    $actualSsid = $null
     foreach ($i in 1..20) {
         Start-Sleep -Seconds 2
-        if ((Adb shell "dumpsys wifi | grep -m1 'mNetworkInfo'") -match "state: CONNECTED") { $joined = $true; break }
-        if ((Adb shell "settings get global wifi_on").Trim() -eq "1" -and
-            (Adb shell "dumpsys connectivity | grep -m1 'NetworkAgentInfo.*VALIDATED'")) { $joined = $true; break }
+        $status = (Adb shell "cmd wifi status") -join "`n"
+        if ($status -match 'Wifi is connected to "([^"]*)"') { $actualSsid = $Matches[1] }
+        if ($Ssid) {
+            if ($actualSsid -eq $Ssid) { $joined = $true; break }
+        } elseif ($actualSsid) {
+            # No SSID was requested, so there is nothing to compare against —
+            # but this still has to prove the transport is wifi specifically.
+            # The previous fallback here (wifi_on + "some VALIDATED network")
+            # passed on cellular or ethernet, which proves nothing about the
+            # wifi this run depends on. `cmd wifi status` reporting a
+            # connected SSID at all is wifi-transport-specific by construction.
+            $joined = $true; break
+        }
     }
-    if (-not $joined) { Die "did not associate with '$Ssid' within 40s — check the SSID and passphrase" }
-    Ok "wifi associated"
+    if (-not $joined) {
+        if ($Ssid -and $actualSsid) {
+            Die "connected to '$actualSsid', not the requested '$Ssid' — check the SSID and passphrase"
+        } elseif ($Ssid) {
+            Die "did not associate with '$Ssid' within 40s — check the SSID and passphrase"
+        } else {
+            Die "no wifi connection within 40s — provisioning needs one before the trigger"
+        }
+    }
+    Ok "wifi associated$(if ($actualSsid) { " ('$actualSsid')" })"
 }
 
 # --- screen ---------------------------------------------------------------
