@@ -125,20 +125,44 @@ Step "setting device owner"
 $r = (Adb shell "dpm set-device-owner $ADMIN") -join "`n"
 if ($r -match "Success") {
     Ok "device owner set"
-} elseif ((Adb shell "dumpsys device_policy") -match "Device Owner") {
-    Ok "device owner already set"
 } else {
-    Write-Host "  FAIL device owner could not be set: $($r.Trim())" -ForegroundColor Red
-    Write-Host "" -ForegroundColor Red
-    Write-Host "  This is fatal, not cosmetic. Without device owner:" -ForegroundColor Red
-    Write-Host "    - the kiosk will NOT restart itself after a power cut" -ForegroundColor Red
-    Write-Host "    - lock task degrades to consumer pinning, with the blue bar" -ForegroundColor Red
-    Write-Host "    - the silent location and wifi-scan permission grants never run" -ForegroundColor Red
-    Write-Host "" -ForegroundColor Red
-    Write-Host "  Two causes share this one error: an account exists on the device," -ForegroundColor Red
-    Write-Host "  or setup wizard was COMPLETED rather than skipped. Factory reset," -ForegroundColor Red
-    Write-Host "  skip the wizard entirely, add no account, and run this again." -ForegroundColor Red
-    exit 1
+    # "set-device-owner" failing tells us nothing on its own -- it fails
+    # identically whether nobody owns the device yet or $ADMIN just isn't the
+    # one that already does. `dpm list-owners` names the actual owner, so the
+    # fallback can assert THIS admin holds the role rather than merely that
+    # a role exists. A generic "some owner exists" check would rubber-stamp a
+    # device stuck on a stale or wrong admin as "already set" and walk
+    # straight past the one step this script treats as fatal.
+    $owners = (Adb shell "dpm list-owners") -join "`n"
+    if ($owners -match [regex]::Escape($ADMIN)) {
+        Ok "device owner already set"
+    } elseif ($owners -match "DeviceOwner") {
+        Write-Host "  FAIL a different component already owns this device:" -ForegroundColor Red
+        Write-Host "    $($owners.Trim())" -ForegroundColor Red
+        Write-Host "" -ForegroundColor Red
+        Write-Host "  This is fatal, not cosmetic. Without $ADMIN as device owner:" -ForegroundColor Red
+        Write-Host "    - the kiosk will NOT restart itself after a power cut" -ForegroundColor Red
+        Write-Host "    - lock task degrades to consumer pinning, with the blue bar" -ForegroundColor Red
+        Write-Host "    - the silent location and wifi-scan permission grants never run" -ForegroundColor Red
+        Write-Host "" -ForegroundColor Red
+        Write-Host "  This is a stale or mismatched owner, not a missing one -- a" -ForegroundColor Red
+        Write-Host "  different fix than 'no owner yet'. Device owner cannot be" -ForegroundColor Red
+        Write-Host "  swapped in place; only a factory reset clears it. Wipe the" -ForegroundColor Red
+        Write-Host "  device, skip the wizard, add no account, and run this again." -ForegroundColor Red
+        exit 1
+    } else {
+        Write-Host "  FAIL device owner could not be set: $($r.Trim())" -ForegroundColor Red
+        Write-Host "" -ForegroundColor Red
+        Write-Host "  This is fatal, not cosmetic. Without device owner:" -ForegroundColor Red
+        Write-Host "    - the kiosk will NOT restart itself after a power cut" -ForegroundColor Red
+        Write-Host "    - lock task degrades to consumer pinning, with the blue bar" -ForegroundColor Red
+        Write-Host "    - the silent location and wifi-scan permission grants never run" -ForegroundColor Red
+        Write-Host "" -ForegroundColor Red
+        Write-Host "  Two causes share this one error: an account exists on the device," -ForegroundColor Red
+        Write-Host "  or setup wizard was COMPLETED rather than skipped. Factory reset," -ForegroundColor Red
+        Write-Host "  skip the wizard entirely, add no account, and run this again." -ForegroundColor Red
+        exit 1
+    }
 }
 
 # --- radios ---------------------------------------------------------------
