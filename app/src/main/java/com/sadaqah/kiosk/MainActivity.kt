@@ -2093,6 +2093,39 @@ class MainActivity : FragmentActivity() {
         settings = settings.copy(logoUri = logo?.uri)
         saveSettings(settings)
 
+        // Distinguishes "the payload carried no destination" (an ordinary,
+        // non-fatal applied result) from "the payload carried one and the
+        // Keystore refused it" -- TelemetryCredentials.save's clear()-on-failure
+        // path leaves isConfigured() false in both cases, but sends the operator
+        // to re-take the export only for the first, which cannot help the
+        // second. There is no signal threaded out of importSettings for this,
+        // so it is re-derived here: TelemetryUrl.check is pure and re-running it
+        // costs nothing, and a URL that validates cleanly on its own but still
+        // isn't configured cannot be a validation failure -- save() only fails
+        // past that point if the store write itself did.
+        val destinationConfigured = telemetryCredentials.isConfigured()
+        val importedSecrets = (imported as? ImportResult.Success)?.secrets
+        val importedTelemetryUrl = importedSecrets?.get(SettingsExportFile.KEY_TELEMETRY_URL)
+        val importedTelemetryKey = importedSecrets?.get(SettingsExportFile.KEY_TELEMETRY_KEY)
+        val credentialStoreFailed = !destinationConfigured &&
+            !importedTelemetryUrl.isNullOrBlank() && !importedTelemetryKey.isNullOrBlank() &&
+            TelemetryUrl.check(importedTelemetryUrl) is UrlVerdict.Valid
+        if (credentialStoreFailed) {
+            // Real on a freshly reset tablet where the Keystore is not yet
+            // usable (spec's failure table). Fatal like every other apply-time
+            // failure: the settings write above is not rolled back -- undoing a
+            // successful import would be worse than an accurately reported
+            // failure -- but the operator must not be told to re-export, since
+            // the export was never the problem.
+            writeProvisioningResult(
+                ProvisioningResult(
+                    runId = runId, status = ProvisioningResult.FAILED, at = now,
+                    appVersion = BuildConfig.VERSION_NAME, reason = "credential_store_failed"
+                )
+            )
+            return
+        }
+
         writeProvisioningResult(
             ProvisioningResult(
                 runId = runId, status = ProvisioningResult.APPLIED, at = now,
@@ -2101,7 +2134,7 @@ class MainActivity : FragmentActivity() {
                 kioskCode = settings.kioskCode,
                 kioskName = settings.kioskName.orEmpty(),
                 affiliateKeyRestored = credentialsOk && affiliateKey.isNotBlank(),
-                destinationConfigured = telemetryCredentials.isConfigured(),
+                destinationConfigured = destinationConfigured,
                 logoApplied = logo != null,
                 logoDecodable = logo?.decodable == true
             )
