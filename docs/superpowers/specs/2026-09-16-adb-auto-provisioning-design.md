@@ -1,4 +1,4 @@
-# adb auto-provisioning — design
+cla# adb auto-provisioning — design
 
 **Status:** spec
 **Supersedes:** the "groundwork for adb auto-provisioning" notes in the phase 2b plan
@@ -71,6 +71,24 @@ Native, and **no app change is needed for the gate**: `MainActivity.kt:2047` alr
 **It must be the final step, after the provisioning restart.** A PIN makes the device secure, and a secure device withholds `ACTION_BOOT_COMPLETED` until someone unlocks. Setting it before the restart would strand provisioning itself.
 
 **Once a PIN exists, every later `lock_settings` command requires `--old <pin>`.** Re-provisioning a device that already has one must pass it or every call fails with `Credential can't be null or empty`. The script takes the old PIN as an optional argument for that case.
+
+#### After the PIN is typed, the kiosk starts on its own — because it is device owner
+
+Verified end to end on an emulator, twice, because the answer turned out to depend on something that was written down nowhere.
+
+With a PIN set, a reboot leaves the device on the lock screen and the app not running. Once someone types the PIN, `ACTION_BOOT_COMPLETED` is delivered, `BootReceiver` fires, and `MainActivity` reaches the foreground about 25 to 30 seconds later. Nobody has to find an icon or know anything about the app — the four digits are the whole interaction.
+
+**But that only works because the app is device owner**, and the first run of this test proved it by failing. On the same device without device owner, `BootReceiver` fired and logged "Device booted — launching kiosk app", and Android threw the launch away:
+
+```
+W ActivityTaskManager: Background activity start [callingPackage: com.sadaqah.kiosk;
+   allowBackgroundActivityStart: false; callingUidProcState: RECEIVER; ...]
+E ActivityTaskManager: Abort background activity starts from 10156
+```
+
+Android 10 and later block activity starts from a background receiver. Device owner is exempt; nothing else about this app is. Repeating the test with `dpm set-device-owner` applied, the abort disappeared and the kiosk came to the foreground.
+
+**So auto-start after any device boot is a device-owner feature, not a `BootReceiver` feature — with or without a PIN.** If `dpm set-device-owner` is skipped or refused during provisioning, the kiosk will not come back on its own after a power cut, and the only trace is a line in logcat that nobody is reading. This is the strongest argument in this document for treating a device-owner failure as fatal rather than as the warning the script currently prints.
 
 #### The accepted cost, stated plainly
 
