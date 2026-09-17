@@ -263,23 +263,55 @@ if ($Payload) {
 
     $runId = [guid]::NewGuid().ToString()
 
-    # getExternalFilesDir only creates $REMOTE_DIR once the APP itself calls
-    # it. A directory made with `adb shell mkdir` is owned by shell
-    # (drwxrws--- shell:ext_data_rw) while the app runs as its own uid, so the
-    # app could never write provision-result.json into a directory this
-    # script made — provisioning would run and silently produce no result.
-    # Launch the app plain instead — no extras, so isProvisioningRequested is
-    # false and it takes its ordinary boot path — and let onCreate's own
-    # storage access create the directory app-owned. Only then push into it.
-    Step "starting app to create its data directory"
-    Sh "am start -n $PKG/.MainActivity" -Fatal | Out-Null
-    $dirReady = $false
-    foreach ($i in 1..20) {
-        Start-Sleep -Seconds 1
-        if ((Adb shell "pidof $PKG").Trim()) { $dirReady = $true; break }
+    <#
+        Waits for a NEW pid to replace $PidBefore, up to $MaxTries * 2s.
+        Returns the new pid, or $null if it never showed up.
+
+        Shared by the priming trigger below and the real one further down:
+        the PBKDF2 decrypt behind a real trigger is 600_000 iterations, so a
+        single fixed sleep would either be too short for that or needlessly
+        long for the instant no-payload case the priming trigger produces.
+    #>
+    function WaitForRestart([string]$PidBefore, [int]$MaxTries = 15) {
+        foreach ($i in 1..$MaxTries) {
+            Start-Sleep -Seconds 2
+            $pidNow = (Adb shell "pidof $PKG").Trim()
+            if ($pidNow -and $pidNow -ne $PidBefore) { return $pidNow }
+        }
+        return $null
     }
-    if (-not $dirReady) { Die "app did not come up — cannot create its data directory" }
-    Ok "app is running"
+
+    # getExternalFilesDir(null) creates only $REMOTE_DIR's PARENT ("files/")
+    # automatically — that much the platform does for every installed app
+    # regardless of app code. The "provisioning" directory itself is created
+    # ONLY by writeProvisioningResult()'s own mkdirs(), which runs solely
+    # inside an actual triggered provisioning attempt — a plain `am start`
+    # with no extras never reaches that code, so it never creates this
+    # directory. Confirmed empirically: after a plain launch, "files/" came
+    # up app-owned on its own but "provisioning" stayed entirely absent.
+    # A directory THIS SCRIPT mkdir'd instead would be owned by shell
+    # (drwxrws--- shell:ext_data_rw), and the app cannot write
+    # provision-result.json into that — confirmed via logcat:
+    #   W/Provisioning: Could not write the result file: .../provision-result.json:
+    #   open failed: EACCES (Permission denied)
+    # So the directory has to be created BY the app, which means running the
+    # real provisioning path once before anything is pushed. A trigger with
+    # no kiosk.json on disk yet fails fast as "no_payload", but still runs
+    # writeProvisioningResult() -> mkdirs() on its way there, leaving the
+    # directory app-owned for the real push that follows. The placeholder
+    # password is never secret — no_payload short-circuits before it's ever
+    # read — so it needs no redaction.
+    Step "priming the app's data directory"
+    $pidBefore = (Adb shell "pidof $PKG").Trim()
+    $primeId = [guid]::NewGuid().ToString()
+    Sh ("am start -n $PKG/.MainActivity -f 0x10008000 " +
+               "--es provision_run_id '$primeId' --es provision_password x") `
+       -What "am start -n $PKG/.MainActivity -f 0x10008000 (priming; a harmless no_payload failure is expected)" `
+       -Fatal | Out-Null
+    if (-not (WaitForRestart $pidBefore)) {
+        Die "app never came up to create its data directory — check it isn't crash-looping"
+    }
+    Ok "data directory ready"
 
     Step "pushing payload"
     Sh "rm -f $REMOTE_DIR/provision-result.json" -What "clearing any stale result" | Out-Null
@@ -291,33 +323,46 @@ if ($Payload) {
     }
     Ok "payload in place"
 
-    # force-stop is correct for the PRIMARY case — a freshly reset device
-    # where the app has never run — but is not the unconditional guarantee
-    # Task 1's brief assumed. Verified on an emulator: once the app is device
-    # owner and pinned in lock task (LOCK_TASK_AUTH_ALLOWLISTED), the pid is
-    # unchanged across force-stop AND the am start that follows it — the stop
-    # is refused, not merely slow, and MainActivity has no launchMode and no
-    # onNewIntent, so that am start brings the existing task forward and
-    # silently DISCARDS the extras. Polling for a result after that would hang
-    # for the full timeout every time, so compare the pid before and after
-    # instead of assuming either call worked.
+    # force-stop CANNOT be used here at all — not merely "unless pinned", which
+    # is as far as Task 1's brief went. Verified on this emulator, twice, with
+    # logcat proving it: once against a freshly reinstalled process
+    # (mLockTaskModeState=NONE, never pinned) and once against a steady-state
+    # pinned one (LOCKED) — both produced the exact same line and neither
+    # process ever turned over:
+    #   W/ActivityManager: Ignoring request to force stop protected package
+    #   com.sadaqah.kiosk u0
+    # A device-owner package is unconditionally protected from force-stop by
+    # the platform itself; pin state never enters into it, so there is no
+    # "primary case" where the brief's force-stop step does anything at all.
+    # MainActivity also has no launchMode and no onNewIntent, so a bare
+    # `am start` against the still-running task just brings it forward and
+    # silently discards the extras, same as the brief warned — it's the
+    # premise about force-stop fixing that which doesn't hold.
+    #
+    # What DOES force a genuinely fresh onCreate, confirmed against an
+    # actively LOCKED instance via logcat ("Provisioning complete, restarting
+    # into a normal boot" + the pid turning over): FLAG_ACTIVITY_NEW_TASK
+    # (0x10000000) combined with FLAG_ACTIVITY_CLEAR_TASK (0x00008000) — the
+    # exact pair relaunchAfterProvisioning() itself already uses to rebuild
+    # the task after a successful run. No force-stop, no reboot, needed for
+    # the common case.
     Step "triggering import"
     $pidBefore = (Adb shell "pidof $PKG").Trim()
-    Sh "am force-stop $PKG" -What "force-stop" | Out-Null
-    Start-Sleep -Seconds 2
     # -What omits the password — it is the one value on this line a warning
     # must never echo.
-    Sh ("am start -n $PKG/.MainActivity " +
+    Sh ("am start -n $PKG/.MainActivity -f 0x10008000 " +
                "--es provision_run_id '$runId' " +
                "--es provision_password '$Password' " +
                "--es provision_kiosk_code '$KioskCode' " +
                "--es provision_kiosk_name '$KioskName'") `
-       -What "am start -n $PKG/.MainActivity --es provision_run_id/kiosk_code/kiosk_name (password redacted)" `
+       -What "am start -n $PKG/.MainActivity -f 0x10008000 --es provision_run_id/kiosk_code/kiosk_name (password redacted)" `
        -Fatal | Out-Null
-    Start-Sleep -Seconds 2
-    $pidAfter = (Adb shell "pidof $PKG").Trim()
-    if ($pidBefore -and $pidBefore -eq $pidAfter) {
-        Die "the app did not restart — force-stop was refused (it is already pinned in lock task). Run 'adb reboot' and re-run this script."
+
+    # A trigger that never reached the app (crash on launch, intent
+    # swallowed) must fail fast here rather than burn the full result-poll
+    # timeout below for a result that can never arrive.
+    if (-not (WaitForRestart $pidBefore)) {
+        Die "the app never came back up after the trigger — it may have crashed on launch, or the intent never reached it. Run 'adb reboot' and re-run this script."
     }
 
     Step "waiting for the device to report"
