@@ -165,13 +165,13 @@ Tests the `tools/provision/provision.ps1` script, which configures a freshly res
 
 On a device with pre-existing stored settings, `onCreate` migrations rewrite `longDowntimeThresholdSec`, the four `autoUpdate` fields and `analyticsEnabled`, which makes the diff unexplainable. The harness verifies the package is really uninstalled and stops with a clear message if it is not. Remove the device owner or wipe the emulator first. This is an operator precondition, not a troubleshooting note.
 
-- [x] `[auto]` **P1. A provisioned device exports the configuration it was given.** Round trip: provision from a known payload, export from the device, compare. A raw file comparison fails on a correct provisioning because salt, iv and ciphertext are regenerated on every export. The check compares decoded settings in both directions against a declared set of device-scoped fields. *(6.1)*
-- [ ] **P2. Wrong password reports `provisioning failed: wrong_password`.** *(6.2)*
-- [ ] **P3. Omitting `-KioskCode` is refused before anything is pushed.** *(6.3)*
-- [ ] **P4. A corrupt payload reports `provisioning failed: malformed`.** *(6.4)*
-- [ ] **P5. Running twice in a row with the same arguments succeeds both times.** The trigger is repeatable without `am force-stop` — Android refuses that for a device-owner package. The app relaunches itself with `NEW_TASK|CLEAR_TASK`, which forces a fresh `onCreate` in the same process. *(6.5)*
-- [ ] **P6. With `-Pin 1234` the run completes. `adb shell cmd lock_settings get-disabled` afterwards fails with `Credential can't be null or empty`, which is what a set credential looks like. Re-running with `-Pin 1234` and no `-OldPin` must refuse with the "already has a lock credential" message. Re-running with `-Pin 5678 -OldPin 1234` succeeds.** *(6.6)*
-- [ ] **P7 — clean up the bench device.** `adb shell cmd lock_settings clear --old 5678`, then confirm `get-disabled` reads `true` again. **Leaving a test PIN on an emulator makes every later device check fail in ways that look unrelated.** *(6.7)*
+- [x] `[auto]` **P1. A provisioned device exports the configuration it was given.** Round trip: provision from a known payload, export from the device, compare. A raw file comparison fails on a correct provisioning because salt, iv and ciphertext are regenerated on every export. The check compares decoded settings in both directions against a declared set of device-scoped fields.
+- [ ] **P2. Wrong password reports `provisioning failed: wrong_password`.**
+- [ ] **P3. Omitting `-KioskCode` is refused before anything is pushed.**
+- [ ] **P4. A corrupt payload reports `provisioning failed: malformed`.**
+- [ ] **P5. Running twice in a row with the same arguments succeeds both times.** The trigger is repeatable without `am force-stop` — Android refuses that for a device-owner package. The app relaunches itself with `NEW_TASK|CLEAR_TASK`, which forces a fresh `onCreate` in the same process.
+- [ ] **P6. The PIN is set last, and re-provisioning needs the old one.** With `-Pin 1234` the run completes, and `adb shell cmd lock_settings get-disabled` afterwards fails with `Credential can't be null or empty` — which is what a set credential looks like from the shell. Re-running with `-Pin 1234` and no `-OldPin` must refuse with the "already has a lock credential" message rather than failing obscurely. Re-running with `-Pin 5678 -OldPin 1234` succeeds.
+- [ ] **P7. Clean up the bench device.** `adb shell cmd lock_settings clear --old 5678`, then confirm `get-disabled` reads `true` again. **Leaving a test PIN on an emulator makes every later device check fail in ways that look unrelated.**
 
 ---
 

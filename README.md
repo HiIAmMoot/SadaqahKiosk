@@ -201,14 +201,19 @@ no operator ever has to retype them.
 
 ### Per-unit overrides are required
 
-The `-KioskCode` and `-KioskName` parameters must be given for every unit;
-the script refuses to run without them. The kiosk code travels on import by
-design — when a tablet is replaced, the new unit keeps the original kiosk's
-printed code. The cost is that a whole fleet provisioned from one export would
-otherwise stamp every unit with the source kiosk's code. Paired with distinct
-install IDs, a shared code emits the signal reserved for a re-provisioned unit.
-The app flags an imported code on screen; the flag clears the moment an
-operator edits the field.
+Whenever you pass `-Payload`, the script also requires `-KioskCode` and
+`-KioskName`, and refuses to run without them. Each one guards something
+different.
+
+The kiosk code travels on import by design — when a tablet is replaced, the new
+unit keeps the original kiosk's printed code. The cost is that a whole fleet
+provisioned from one export would otherwise stamp every unit with the source
+kiosk's code. Paired with distinct install IDs, a shared code emits the signal
+reserved for a re-provisioned unit. The app flags an imported code on screen,
+and the flag clears the moment an operator edits the field.
+
+The kiosk name is attached to every SumUp transaction, so a fleet cloned from
+one export would bill under a single name.
 
 ### Example invocation
 
@@ -225,17 +230,15 @@ operator edits the field.
 
 ### Two manual steps
 
-Device owner cannot be set once any account exists on the device or once the
-setup wizard has completed; this is an Android restriction, not a limitation
-of the script. Before running the provisioning command:
-
-1. **Factory reset with the setup wizard skipped.** Tap the button to skip when
-   the device first powers on.
-
-Battery protection — limiting charge when the device is constantly plugged in
-— has no universal Android API. Every vendor implements their own solution.
-The script cannot set it, so it must be done by hand in the device's own
-settings.
+1. **Factory reset with the setup wizard skipped — before running the script.**
+   Device owner cannot be set once any account exists on the device or once the
+   setup wizard has completed. This is an Android restriction, not a limitation
+   of the script.
+2. **Battery protection — afterwards.** Limiting charge on a device that stays
+   permanently plugged in has no universal Android API: `BatteryManager` exposes
+   only read-only properties and `DevicePolicyManager` has no battery symbols at
+   all. Every vendor implements it themselves, so it has to be set by hand in the
+   device's own settings.
 
 ### Timing and re-provisioning
 
@@ -259,7 +262,7 @@ omitted depending on what you are configuring.
 | `-Payload` | Path to an exported settings JSON file |
 | `-Password` | Password for the exported settings |
 | `-KioskCode` | Kiosk identifier (required when using `-Payload`) |
-| `-KioskName` | Display name for the kiosk |
+| `-KioskName` | Display name; appears on every SumUp transaction (required with `-Payload`) |
 | `-Logo` | Path to a logo PNG/JPEG |
 | `-Pin` | Device PIN to set at the end |
 | `-OldPin` | Existing PIN when re-provisioning a device |
