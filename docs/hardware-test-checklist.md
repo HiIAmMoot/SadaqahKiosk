@@ -12,7 +12,7 @@ Four checks are marked **settles debt** — they are the only way to close their
 
 ## Run the automated ones first
 
-Sixteen of these no longer need a human. They run against an attached device or an emulator:
+Eighteen of these no longer need a human. They run against an attached device or an emulator:
 
 ```bash
 python tools/kiosk-check/run.py              # every runnable check
@@ -156,6 +156,22 @@ This session exists to confirm the three provisioning bugs found in phase 5 befo
 - [ ] **I1. Export settings from a configured kiosk, import onto a second one.** Expected today: the second kiosk arrives with the affiliate key but **no reporting destination**, and silently never reports. Confirm that is what happens. *(phase 5, finding 3)*
 - [x] `[auto]` **I2. An imported kiosk code is flagged on screen, and the flag clears when edited.** The code still travels by design; what phase 6 added is a warning that it may be shared, which disappears the moment an operator types their own. *(was: confirm the fleet reports under one identity)*
 - [x] `[auto]` **I3. A kiosk code is trimmed before it is stored and before it ships.** Phase 6 gave `KioskCode.normalize` its missing call site. *(was: confirm the untrimmed code reaches the wire)*
+
+---
+
+## Session P — provisioning
+
+Tests the `tools/provision/provision.ps1` script, which configures a freshly reset tablet end to end. Needs a real fixture: set `KIOSK_PAYLOAD` to an export taken from a configured device and `KIOSK_PAYLOAD_PASSWORD` to its password. The fixture must come from the app's own exporter — a reimplementation of the app's own crypto in the test harness would be a second implementation that can drift, and a drift would make this check pass against a format the app no longer writes.
+
+On a device with pre-existing stored settings, `onCreate` migrations rewrite `longDowntimeThresholdSec`, the four `autoUpdate` fields and `analyticsEnabled`, which makes the diff unexplainable. The harness verifies the package is really uninstalled and stops with a clear message if it is not. Remove the device owner or wipe the emulator first. This is an operator precondition, not a troubleshooting note.
+
+- [x] `[auto]` **P1. A provisioned device exports the configuration it was given.** Round trip: provision from a known payload, export from the device, compare. A raw file comparison fails on a correct provisioning because salt, iv and ciphertext are regenerated on every export. The check compares decoded settings in both directions against a declared set of device-scoped fields. *(6.1)*
+- [ ] **P2. Wrong password reports `provisioning failed: wrong_password`.** *(6.2)*
+- [ ] **P3. Omitting `-KioskCode` is refused before anything is pushed.** *(6.3)*
+- [ ] **P4. A corrupt payload reports `provisioning failed: malformed`.** *(6.4)*
+- [ ] **P5. Running twice in a row with the same arguments succeeds both times.** The trigger is repeatable without `am force-stop` — Android refuses that for a device-owner package. The app relaunches itself with `NEW_TASK|CLEAR_TASK`, which forces a fresh `onCreate` in the same process. *(6.5)*
+- [ ] **P6. With `-Pin 1234` the run completes. `adb shell cmd lock_settings get-disabled` afterwards fails with `Credential can't be null or empty`, which is what a set credential looks like. Re-running with `-Pin 1234` and no `-OldPin` must refuse with the "already has a lock credential" message. Re-running with `-Pin 5678 -OldPin 1234` succeeds.** *(6.6)*
+- [ ] **P7 — clean up the bench device.** `adb shell cmd lock_settings clear --old 5678`, then confirm `get-disabled` reads `true` again. **Leaving a test PIN on an emulator makes every later device check fail in ways that look unrelated.** *(6.7)*
 
 ---
 
