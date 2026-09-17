@@ -288,8 +288,22 @@ def clear_outbox():
 
 
 def reinstall_clean(apk):
-    """Full wipe. `pm uninstall` removes every file the app owns."""
+    """Uninstall, verify the package is actually gone, then install fresh.
+
+    `pm uninstall` refuses when this package is device owner, and does so
+    without this harness noticing unless it looks: the app (and its data) is
+    still there afterwards. Installing on top of that produces a live app
+    with its old settings intact while every caller downstream believes it
+    got a clean device. Removing device-owner status automatically is not
+    this harness's call, so it refuses instead of guessing.
+    """
     adb("uninstall", PKG)
+    if sh(f"pm path {PKG}"):
+        raise Failure(
+            f"{PKG} is still installed after `adb uninstall` -- likely still "
+            "device owner on this unit, which blocks uninstall silently. "
+            "Remove it as device owner or wipe the emulator, then re-run."
+        )
     adb("install", "-r", "-g", apk, check=True, timeout=300)
 
 
@@ -1293,18 +1307,123 @@ def i3(ctx):
 # Session P — the provisioning round trip
 # --------------------------------------------------------------------------
 
-# Fields that MUST differ between the payload and a provisioned device's own
-# export. Everything not listed here must match exactly. Kept beside the check
-# rather than inline so the reason for each is readable.
-PROVISION_EXPECTED_DIFFS = {
-    # Guarded by SettingsImport.merge — device-scoped by design.
-    "installId", "logoUri", "donationStatsStartedAtMs",
-    "analyticsActivatedAtMs", "skipApkSignatureCheckOnce", "testMode",
-    # Derived by merge, then forced false by the code override.
-    "kioskCodeFromImport",
-    # Replaced per unit at provisioning time.
-    "kioskCode", "kioskName",
-}
+@dataclass
+class DeviceScopedField:
+    """One row of PROVISION_DEVICE_SCOPED.
+
+    `assert_ok` and `reason` both take (provisioned, source, code, name) so a
+    field like kioskCode can check itself against the CLI override instead of
+    a fixed constant; fields that don't need the override just ignore it.
+    `load_bearing` takes only `source` -- whether an assertion could ever have
+    caught a broken guard depends entirely on what the fixture itself already
+    carries for that field, never on what the device sends back.
+    """
+
+    field: str
+    assert_ok: object
+    reason: object
+    load_bearing: object
+
+
+# Fields SettingsImport.merge takes from the device rather than the payload,
+# paired with the assertion that proves the guard actually ran. This replaces
+# a bare set of names to skip in the forward comparison: that shape let a
+# field be excluded from one direction and never asserted in the other, which
+# is exactly how five of these nine went unchecked. A field added here without
+# an assertion is a TypeError, not a silent gap.
+PROVISION_DEVICE_SCOPED = [
+    DeviceScopedField(
+        "installId",
+        lambda p, s, c, n: bool(p.get("installId")) and p.get("installId") != s.get("installId"),
+        lambda p, s, c, n: (
+            "the device has no installId after provisioning; every unit would "
+            "boot without a device identity"
+        ) if not p.get("installId") else (
+            "the device kept the payload's installId; SettingsImport.merge is "
+            "no longer guarding it and a cloned fleet would share one identity"
+        ),
+        lambda s: bool(s.get("installId")),
+    ),
+    DeviceScopedField(
+        "testMode",
+        lambda p, s, c, n: p.get("testMode") is False,
+        lambda p, s, c, n: (
+            "testMode was left set after provisioning; a kiosk cloned from a "
+            "bench export would boot with the biometric gate bypassed on a "
+            "machine standing in public"
+        ),
+        lambda s: bool(s.get("testMode")),
+    ),
+    DeviceScopedField(
+        "skipApkSignatureCheckOnce",
+        lambda p, s, c, n: p.get("skipApkSignatureCheckOnce") is False,
+        lambda p, s, c, n: (
+            "skipApkSignatureCheckOnce was left set after provisioning; a fleet "
+            "cloned from this export would run with the signature check disabled"
+        ),
+        lambda s: bool(s.get("skipApkSignatureCheckOnce")),
+    ),
+    DeviceScopedField(
+        "logoUri",
+        lambda p, s, c, n: not p.get("logoUri"),
+        lambda p, s, c, n: (
+            "a logoUri survived provisioning; a per-device local file path from "
+            "another kiosk points at nothing on this one"
+        ),
+        lambda s: bool(s.get("logoUri")),
+    ),
+    DeviceScopedField(
+        "analyticsActivatedAtMs",
+        lambda p, s, c, n: not p.get("analyticsActivatedAtMs"),
+        lambda p, s, c, n: (
+            "analyticsActivatedAtMs carried over from the payload; a unit that "
+            "has never reported would read as already active"
+        ),
+        lambda s: bool(s.get("analyticsActivatedAtMs")),
+    ),
+    DeviceScopedField(
+        "donationStatsStartedAtMs",
+        lambda p, s, c, n: (p.get("donationStatsStartedAtMs") or 0) > 0,
+        lambda p, s, c, n: (
+            "donationStatsStartedAtMs is 0 after provisioning; the bootstrap "
+            "that anchors a fresh unit's own donation stats did not run, or "
+            "the guard let the payload's own zero value through instead of "
+            "preserving the device's"
+        ),
+        # This is a floor (>0) on a value the guard copies FROM the current
+        # device, not equality against a fixed constant like the two booleans
+        # above. A broken guard only produces something this assertion can
+        # catch when the payload's own value is itself 0 -- any positive
+        # payload value passes whether or not the guard ran, because a real
+        # device's own bootstrap timestamp is positive too. So load-bearing
+        # here is the mirror image of testMode/skipApkSignatureCheckOnce:
+        # `not s.get(...)`, not `bool(s.get(...))`. Do not "fix" this to match
+        # the pattern above; that flips it to load-bearing exactly when it
+        # is vacuous.
+        lambda s: not s.get("donationStatsStartedAtMs"),
+    ),
+    DeviceScopedField(
+        "kioskCode",
+        lambda p, s, c, n: p.get("kioskCode") == c,
+        lambda p, s, c, n: "the code override did not take",
+        lambda s: True,
+    ),
+    DeviceScopedField(
+        "kioskName",
+        lambda p, s, c, n: p.get("kioskName") == n,
+        lambda p, s, c, n: "the name override did not take",
+        lambda s: True,
+    ),
+    DeviceScopedField(
+        "kioskCodeFromImport",
+        lambda p, s, c, n: not p.get("kioskCodeFromImport"),
+        lambda p, s, c, n: (
+            "a per-unit code was flagged as imported, which would warn on the "
+            "one case that is correct"
+        ),
+        lambda s: True,
+    ),
+]
 
 
 @check("P1", "P", "A provisioned device exports the configuration it was given")
@@ -1321,7 +1440,7 @@ def p1(ctx):
     A raw file comparison fails on a CORRECT provisioning: salt, iv and
     ciphertext are regenerated from SecureRandom on every export, so the
     envelope differs even for identical plaintext. This compares decoded
-    settings against a declared exclusion set, in both directions.
+    settings against PROVISION_DEVICE_SCOPED, in both directions.
     """
     payload_path = os.environ.get("KIOSK_PAYLOAD")
     password = os.environ.get("KIOSK_PAYLOAD_PASSWORD")
@@ -1342,20 +1461,24 @@ def p1(ctx):
     reinstall_clean(ctx.apk)
     launch()
 
-    # provision.ps1's own `adb push` has to land the payload under
-    # /sdcard/Android/data/<pkg>/... as the app's own uid would see it. Rooted,
-    # the push writes the file owned by root, the app's scoped-storage view of
-    # it comes back permission-denied, and provisioning fails with "no_payload"
-    # -- reproduced twice on this emulator. Drop root for the run, restore it
-    # after: settings_json() below needs it to read app_prefs.xml.
     was_root = "root" in sh("whoami")
-    if was_root:
-        adb("unroot")
-        adb("wait-for-device", timeout=30)
-
     code = "nl-gld-arnhem-nour_al_houda-07"
     name = "Arnhem hal"
     try:
+        # provision.ps1's own `adb push` has to land the payload under
+        # /sdcard/Android/data/<pkg>/... as the app's own uid would see it. Rooted,
+        # the push writes the file owned by root, the app's scoped-storage view of
+        # it comes back permission-denied, and provisioning fails with "no_payload"
+        # -- reproduced twice on this emulator. Drop root for the run, restore it
+        # after: settings_json() below needs it to read app_prefs.xml.
+        #
+        # This has to sit inside the try: if wait-for-device times out here, the
+        # daemon is left unrooted, and without the finally below every check
+        # after this one in the same session fails to read app_prefs.xml for a
+        # reason nowhere near this line.
+        if was_root:
+            adb("unroot")
+            adb("wait-for-device", timeout=30)
         try:
             result = subprocess.run(
                 ["powershell", "-File", "tools/provision/provision.ps1",
@@ -1383,9 +1506,22 @@ def p1(ctx):
     provisioned = settings_json()
     expect(provisioned, "no settings on the device after provisioning")
 
+    # A field renamed in Settings.kt without this table being updated would
+    # otherwise fail silent: `source.get()` and `provisioned.get()` both just
+    # return None for a name that no longer exists, and the assertion below
+    # would pass against two absences instead of catching the drift.
+    for entry in PROVISION_DEVICE_SCOPED:
+        expect(
+            entry.field in source,
+            f"fixture is missing device-scoped field {entry.field!r}; "
+            "Settings.kt may have renamed it and PROVISION_DEVICE_SCOPED in "
+            "run.py needs to follow",
+        )
+
+    device_scoped = {entry.field for entry in PROVISION_DEVICE_SCOPED}
     mismatched = []
     for key, want in source.items():
-        if key in PROVISION_EXPECTED_DIFFS:
+        if key in device_scoped:
             continue
         got = provisioned.get(key)
         if got != want:
@@ -1395,23 +1531,40 @@ def p1(ctx):
         "fields that should have transferred did not:\n  " + "\n  ".join(mismatched),
     )
 
-    # The other direction: an excluded field that happens to match means the
-    # exclusion is wrong or the guard stopped working. installId is the one
-    # that matters -- if it matched, every kiosk in a fleet would share one.
-    expect(
-        provisioned.get("installId") != source.get("installId"),
-        "the device kept the payload's installId; SettingsImport.merge is no "
-        "longer guarding it and a cloned fleet would share one identity",
-    )
-    expect(provisioned.get("kioskCode") == code, "the code override did not take")
-    expect(provisioned.get("kioskName") == name, "the name override did not take")
-    expect(not provisioned.get("kioskCodeFromImport"),
-           "a per-unit code was flagged as imported, which would warn on the one case that is correct")
+    # The other direction: every entry's own assertion runs here, not just
+    # installId's. A reverse check that only re-tested installId is exactly
+    # how the other eight fields regressed without this check ever turning
+    # red -- excluding a field from the forward comparison is a claim that
+    # something checks it going the other way, and only actually running that
+    # something makes the claim true.
+    load_bearing = 0
+    vacuous = []
+    for entry in PROVISION_DEVICE_SCOPED:
+        expect(
+            entry.assert_ok(provisioned, source, code, name),
+            entry.reason(provisioned, source, code, name),
+        )
+        if entry.load_bearing(source):
+            load_bearing += 1
+        else:
+            vacuous.append(entry.field)
 
-    checked = len(source) - len(PROVISION_EXPECTED_DIFFS & set(source))
+    total = len(PROVISION_DEVICE_SCOPED)
+    coverage = f"{total} device-scoped fields asserted"
+    if vacuous:
+        coverage += (
+            f" ({load_bearing} load-bearing, {len(vacuous)} vacuous: "
+            + ", ".join(vacuous)
+            + " -- the fixture already carries the guarded value, so these "
+            "assertions cannot fail)"
+        )
+    else:
+        coverage += " (all load-bearing)"
+
+    checked = len(source) - len(device_scoped & set(source))
     return [
         f"{checked} configuration fields transferred exactly",
-        f"{len(PROVISION_EXPECTED_DIFFS)} device-scoped fields correctly differ",
+        coverage,
         f"overrides applied: {code} / {name}",
     ]
 
