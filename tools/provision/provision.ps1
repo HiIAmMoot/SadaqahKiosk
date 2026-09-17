@@ -255,6 +255,134 @@ if ($uidLine -match "userId=(\d+)") {
 Write-Host "`n  Battery protection is not settable from adb on stock Android." -ForegroundColor Yellow
 Write-Host "  Enable it by hand in the device's own battery settings.`n" -ForegroundColor Yellow
 
+# --- settings import ------------------------------------------------------
+if ($Payload) {
+    if (-not $Password)   { Die "-Payload needs -Password (the export's password)" }
+    if (-not $KioskCode)  { Die "-Payload needs -KioskCode — a fleet cloned from one export otherwise reports under a single code" }
+    if (-not $KioskName)  { Die "-Payload needs -KioskName — it is attached to every SumUp transaction, so a fleet would bill under one name" }
+
+    $runId = [guid]::NewGuid().ToString()
+
+    # getExternalFilesDir only creates $REMOTE_DIR once the APP itself calls
+    # it. A directory made with `adb shell mkdir` is owned by shell
+    # (drwxrws--- shell:ext_data_rw) while the app runs as its own uid, so the
+    # app could never write provision-result.json into a directory this
+    # script made — provisioning would run and silently produce no result.
+    # Launch the app plain instead — no extras, so isProvisioningRequested is
+    # false and it takes its ordinary boot path — and let onCreate's own
+    # storage access create the directory app-owned. Only then push into it.
+    Step "starting app to create its data directory"
+    Sh "am start -n $PKG/.MainActivity" -Fatal | Out-Null
+    $dirReady = $false
+    foreach ($i in 1..20) {
+        Start-Sleep -Seconds 1
+        if ((Adb shell "pidof $PKG").Trim()) { $dirReady = $true; break }
+    }
+    if (-not $dirReady) { Die "app did not come up — cannot create its data directory" }
+    Ok "app is running"
+
+    Step "pushing payload"
+    Sh "rm -f $REMOTE_DIR/provision-result.json" -What "clearing any stale result" | Out-Null
+    $pushOut = (Adb push $Payload "$REMOTE_DIR/kiosk.json") -join "`n"
+    if ($pushOut -notmatch "file pushed") { Die "could not push the payload: $pushOut" }
+    if ($Logo) {
+        $logoOut = (Adb push $Logo "$REMOTE_DIR/logo") -join "`n"
+        if ($logoOut -notmatch "file pushed") { Die "could not push the logo: $logoOut" }
+    }
+    Ok "payload in place"
+
+    # force-stop is correct for the PRIMARY case — a freshly reset device
+    # where the app has never run — but is not the unconditional guarantee
+    # Task 1's brief assumed. Verified on an emulator: once the app is device
+    # owner and pinned in lock task (LOCK_TASK_AUTH_ALLOWLISTED), the pid is
+    # unchanged across force-stop AND the am start that follows it — the stop
+    # is refused, not merely slow, and MainActivity has no launchMode and no
+    # onNewIntent, so that am start brings the existing task forward and
+    # silently DISCARDS the extras. Polling for a result after that would hang
+    # for the full timeout every time, so compare the pid before and after
+    # instead of assuming either call worked.
+    Step "triggering import"
+    $pidBefore = (Adb shell "pidof $PKG").Trim()
+    Sh "am force-stop $PKG" -What "force-stop" | Out-Null
+    Start-Sleep -Seconds 2
+    # -What omits the password — it is the one value on this line a warning
+    # must never echo.
+    Sh ("am start -n $PKG/.MainActivity " +
+               "--es provision_run_id '$runId' " +
+               "--es provision_password '$Password' " +
+               "--es provision_kiosk_code '$KioskCode' " +
+               "--es provision_kiosk_name '$KioskName'") `
+       -What "am start -n $PKG/.MainActivity --es provision_run_id/kiosk_code/kiosk_name (password redacted)" `
+       -Fatal | Out-Null
+    Start-Sleep -Seconds 2
+    $pidAfter = (Adb shell "pidof $PKG").Trim()
+    if ($pidBefore -and $pidBefore -eq $pidAfter) {
+        Die "the app did not restart — force-stop was refused (it is already pinned in lock task). Run 'adb reboot' and re-run this script."
+    }
+
+    Step "waiting for the device to report"
+    $result = $null
+    foreach ($i in 1..60) {
+        Start-Sleep -Seconds 2
+        $raw = Adb shell "cat $REMOTE_DIR/provision-result.json 2>/dev/null"
+        if ($raw) {
+            try { $parsed = $raw | ConvertFrom-Json } catch { continue }
+            # A stale result from an earlier attempt or another device is
+            # indistinguishable from this one's without the run id. The "at"
+            # timestamp cannot rescue it: a factory-reset tablet has an unsynced
+            # clock.
+            if ($parsed.runId -eq $runId) { $result = $parsed; break }
+        }
+    }
+    if (-not $result) { Die "no result after 120s — the app may have crashed or never started" }
+
+    if ($result.status -ne "applied") { Die "provisioning failed: $($result.reason)" }
+
+    # A golden export taken without ticking "include keys" parses fine and
+    # carries nothing, so `applied` alone would pass a kiosk that takes no
+    # payments and reports nowhere.
+    if (-not $result.affiliateKeyRestored)  { Die "applied, but no affiliate key — was the export taken with keys included?" }
+    if (-not $result.destinationConfigured) { Die "applied, but no reporting destination — was the export taken with keys included?" }
+    if ($Logo -and -not $result.logoDecodable) { Die "logo was copied but could not be decoded — check the image" }
+
+    Ok "imported: $($result.kioskCode) / $($result.kioskName), install $($result.installId)"
+
+    # Cleared only on success. On failure the app keeps the payload so the
+    # operator can retry with a corrected password without re-pushing.
+    Sh "rm -f $REMOTE_DIR/kiosk.json $REMOTE_DIR/logo $REMOTE_DIR/provision-result.json" -What "cleaning up the payload" | Out-Null
+}
+
+# --- device PIN -----------------------------------------------------------
+# LAST, and deliberately after the app has provisioned and restarted. A PIN
+# makes the device secure, and a secure device withholds ACTION_BOOT_COMPLETED
+# until someone unlocks it — setting this any earlier would strand provisioning
+# itself behind a lock screen.
+#
+# The app needs no change to use it: MainActivity's settings screen already
+# builds its unlock prompt with BIOMETRIC_WEAK or DEVICE_CREDENTIAL, so it is
+# protected the moment a credential exists.
+if ($Pin) {
+    Step "setting the device PIN"
+    # Every lock_settings command refuses once a credential exists, so
+    # re-provisioning a device that already has one must pass the old value.
+    $oldArg = if ($OldPin) { "--old $OldPin " } else { "" }
+    $r = Adb shell "cmd lock_settings set-pin $oldArg$Pin"
+    if ($r -notmatch "Pin set to") {
+        if ($r -match "Credential can't be null or empty|old credential") {
+            Die "this device already has a lock credential — pass -OldPin to replace it"
+        }
+        Die "could not set the PIN: $r"
+    }
+    Ok "PIN set — the settings screen now requires it"
+
+    Write-Host ""
+    Write-Host "  NOTE: this device is now secure, so a POWER CUT will leave the" -ForegroundColor Yellow
+    Write-Host "  kiosk on a lock screen and it will not take donations until" -ForegroundColor Yellow
+    Write-Host "  someone attends it and types the PIN. App restarts, the watchdog" -ForegroundColor Yellow
+    Write-Host "  and auto-update are unaffected — none of them reboot the device." -ForegroundColor Yellow
+    Write-Host "  Undo on a bench with: adb shell cmd lock_settings clear --old $Pin" -ForegroundColor Yellow
+}
+
 if ($script:Warnings.Count -gt 0) {
     Write-Host ""
     Write-Host "  $($script:Warnings.Count) step(s) did not apply cleanly:" -ForegroundColor Yellow
