@@ -1342,7 +1342,10 @@ PROVISION_DEVICE_SCOPED = [
             "the device kept the payload's installId; SettingsImport.merge is "
             "no longer guarding it and a cloned fleet would share one identity"
         ),
-        lambda s: bool(s.get("installId")),
+        # True regardless of the fixture: the non-blank half of the assertion
+        # catches a device that finished provisioning with no identity at all,
+        # and no fixture can make that check vacuous.
+        lambda s: True,
     ),
     DeviceScopedField(
         "testMode",
@@ -1383,24 +1386,35 @@ PROVISION_DEVICE_SCOPED = [
     ),
     DeviceScopedField(
         "donationStatsStartedAtMs",
-        lambda p, s, c, n: (p.get("donationStatsStartedAtMs") or 0) > 0,
         lambda p, s, c, n: (
-            "donationStatsStartedAtMs is 0 after provisioning; the bootstrap "
-            "that anchors a fresh unit's own donation stats did not run, or "
-            "the guard let the payload's own zero value through instead of "
-            "preserving the device's"
+            (p.get("donationStatsStartedAtMs") or 0) > 0
+            and p.get("donationStatsStartedAtMs") != s.get("donationStatsStartedAtMs")
         ),
-        # This is a floor (>0) on a value the guard copies FROM the current
-        # device, not equality against a fixed constant like the two booleans
-        # above. A broken guard only produces something this assertion can
-        # catch when the payload's own value is itself 0 -- any positive
-        # payload value passes whether or not the guard ran, because a real
-        # device's own bootstrap timestamp is positive too. So load-bearing
-        # here is the mirror image of testMode/skipApkSignatureCheckOnce:
-        # `not s.get(...)`, not `bool(s.get(...))`. Do not "fix" this to match
-        # the pattern above; that flips it to load-bearing exactly when it
-        # is vacuous.
-        lambda s: not s.get("donationStatsStartedAtMs"),
+        lambda p, s, c, n: (
+            "donationStatsStartedAtMs is 0 after provisioning; neither "
+            "bootstrap call site ran, so this unit has no anchor for its own "
+            "donation averages"
+        ) if not (p.get("donationStatsStartedAtMs") or 0) > 0 else (
+            "donationStatsStartedAtMs came over from the payload; this unit "
+            "would compute its donation averages from the golden kiosk's start "
+            "date instead of its own"
+        ),
+        # Two clauses, because the floor alone proves nothing. runProvisioning
+        # calls SettingsBootstrap.apply a SECOND time, on the already-merged
+        # settings (MainActivity.kt:2087), and that re-stamps a 0 to now. So a
+        # device whose merge guard was deleted still comes back positive and a
+        # bare `> 0` passes under every possible fixture -- it can only ever
+        # catch both bootstrap call sites failing at once.
+        #
+        # The inequality is what catches a deleted guard: the guard's whole job
+        # is to keep the device's own timestamp, so losing it leaves the
+        # payload's value in place. The device's genuine value is its own
+        # post-wipe bootstrap and cannot collide with the source unit's to the
+        # millisecond. That makes this row load-bearing exactly when the
+        # fixture carries a non-zero value -- the ordinary case. A zero-value
+        # fixture is undetectable here no matter what is asserted, because the
+        # second bootstrap masks the regression either way.
+        lambda s: bool(s.get("donationStatsStartedAtMs")),
     ),
     DeviceScopedField(
         "kioskCode",
@@ -1555,8 +1569,8 @@ def p1(ctx):
         coverage += (
             f" ({load_bearing} load-bearing, {len(vacuous)} vacuous: "
             + ", ".join(vacuous)
-            + " -- the fixture already carries the guarded value, so these "
-            "assertions cannot fail)"
+            + " -- nothing this fixture can produce would make these fail, so "
+            "they prove nothing about the guards behind them)"
         )
     else:
         coverage += " (all load-bearing)"
