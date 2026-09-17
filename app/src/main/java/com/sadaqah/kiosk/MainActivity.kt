@@ -17,6 +17,8 @@ import android.app.admin.DevicePolicyManager
 import android.annotation.SuppressLint
 import android.content.ComponentName
 import android.content.pm.PackageManager
+import android.graphics.BitmapFactory
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
@@ -27,9 +29,15 @@ import androidx.activity.compose.setContent
 import androidx.biometric.BiometricManager.Authenticators.*
 import androidx.biometric.BiometricPrompt
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Text
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import androidx.core.view.WindowCompat
@@ -40,6 +48,9 @@ import androidx.lifecycle.lifecycleScope
 import com.sadaqah.kiosk.model.Settings
 import com.sadaqah.kiosk.model.SettingsBootstrap
 import com.sadaqah.kiosk.model.SettingsImport
+import com.sadaqah.kiosk.provisioning.ProvisioningLoader
+import com.sadaqah.kiosk.provisioning.ProvisioningOutcome
+import com.sadaqah.kiosk.provisioning.ProvisioningResult
 import com.sadaqah.kiosk.ui.theme.SadaqahKioskTheme
 import com.google.gson.Gson
 import com.sadaqah.kiosk.donations.DonationHistory
@@ -53,6 +64,7 @@ import com.sadaqah.kiosk.update.SemVer
 import com.sadaqah.kiosk.update.UpdateManager
 import com.sadaqah.kiosk.update.UpdateState
 import com.sadaqah.kiosk.update.UpdateWatchdogReceiver
+import java.time.Instant
 import com.sumup.merchant.reader.api.SumUpAPI
 import com.sumup.merchant.reader.api.SumUpLogin
 import com.sumup.merchant.reader.api.SumUpPayment
@@ -282,6 +294,25 @@ class MainActivity : FragmentActivity() {
 
         prefs = getSharedPreferences("app_prefs", MODE_PRIVATE)
         ColorHistory.init(prefs)
+
+        // Provision, then restart. Deliberately not applied into this onCreate:
+        // SecretsCrypto runs 600_000 PBKDF2 iterations, which is seconds on kiosk
+        // hardware and a guaranteed ANR on the main thread — and onCreate reads
+        // `settings` into seven consumers with contradictory ordering needs
+        // (SettingsBootstrap must follow provisioning, authenticate() and
+        // LogoColorExtractor must precede it, and RestartManager /
+        // NetworkRecoveryManager / UpdateManager each snapshot settings by value
+        // at construction). There is no slot that satisfies all of them.
+        //
+        // Restarting dissolves that instead of solving it: boot 2 is an ordinary
+        // startup reading provisioned settings from disk in the normal order. It
+        // also fixes the migration blocks below, which string-match the STORED
+        // json — after a restart that json already holds the provisioned values,
+        // so they no longer overwrite what provisioning just applied.
+        if (isProvisioningRequested(intent)) {
+            runProvisioning(intent)
+            return
+        }
 
         // Whitelist this app for silent lock task mode (no blue notification)
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
@@ -1843,6 +1874,160 @@ class MainActivity : FragmentActivity() {
         }
         startActivity(intent)
         Runtime.getRuntime().exit(0)
+    }
+
+    /** Restart after provisioning. Separate from [hardRestart] so the restart
+     *  does not read as an auto-recovery event: hardRestart logs under
+     *  "AutoRestart" against restartManager's counter, and a provisioning
+     *  relaunch is neither a failure nor something the give-up latch should
+     *  ever see. */
+    private fun relaunchAfterProvisioning() {
+        Log.i("Provisioning", "Provisioning complete, restarting into a normal boot")
+        val intent = Intent(applicationContext, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+        }
+        startActivity(intent)
+        Runtime.getRuntime().exit(0)
+    }
+
+    private val provisioningDir: File
+        get() = File(getExternalFilesDir(null), "provisioning")
+
+    private fun isProvisioningRequested(source: Intent): Boolean =
+        !source.getStringExtra("provision_run_id").isNullOrBlank() &&
+            source.getStringExtra("provision_password") != null
+
+    private fun runProvisioning(source: Intent) {
+        val runId = source.getStringExtra("provision_run_id").orEmpty()
+        val password = source.getStringExtra("provision_password")
+        val codeOverride = source.getStringExtra("provision_kiosk_code")
+        val nameOverride = source.getStringExtra("provision_kiosk_name")
+
+        // Consumed immediately. getIntent() otherwise returns these extras for
+        // the life of the Activity AND across every recreation — a rotation
+        // after a successful provision would re-enter this path, find the
+        // payload deleted, and overwrite an `applied` result with
+        // `failed / no_payload`.
+        setIntent(Intent(source).apply { replaceExtras(Bundle()) })
+
+        setContent {
+            Box(Modifier.fillMaxSize().background(Color.Black), Alignment.Center) {
+                Text("Provisioning…", color = Color.White, fontSize = 24.sp)
+            }
+        }
+
+        lifecycleScope.launch {
+            val outcome = withContext(Dispatchers.Default) {
+                // Off the main thread because SecretsCrypto runs 600_000 PBKDF2
+                // iterations — seconds on kiosk hardware, and an ANR here would
+                // kill the process with settings possibly written and the result
+                // certainly not.
+                val payloadFile = File(provisioningDir, "kiosk.json")
+                val json = if (payloadFile.isFile) payloadFile.readText() else null
+                ProvisioningLoader.decide(settings, json, password, codeOverride, nameOverride)
+            }
+            applyProvisioning(runId, outcome, password)
+            relaunchAfterProvisioning()
+        }
+    }
+
+    private suspend fun applyProvisioning(
+        runId: String,
+        outcome: ProvisioningOutcome,
+        password: String?
+    ) {
+        val now = Instant.now().toString()
+        if (outcome is ProvisioningOutcome.Failed) {
+            // The payload is deliberately kept so the operator can retry with a
+            // corrected password rather than re-pushing.
+            writeProvisioningResult(
+                ProvisioningResult(
+                    runId = runId, status = ProvisioningResult.FAILED, at = now,
+                    appVersion = BuildConfig.VERSION_NAME, reason = outcome.reason
+                )
+            )
+            return
+        }
+
+        val apply = outcome as ProvisioningOutcome.Apply
+        val payloadFile = File(provisioningDir, "kiosk.json")
+
+        // Routed through importSettings rather than reimplemented: :1979 sets
+        // CrashContext.affiliateKey, and a parallel path that skipped it would
+        // disarm the crash handler's scrub for exactly the key just imported,
+        // shipping the payment credential into crash reports on every kiosk.
+        val imported = withContext(Dispatchers.Default) {
+            importSettings(payloadFile.readText(), password)
+        }
+        val credentialsOk = imported is ImportResult.Success
+
+        // importSettings merges without the overrides, so re-apply them over it.
+        settings = apply.settings
+        // installId must exist before the result names it: on a first provision
+        // the device has never completed a boot, so SettingsBootstrap has never
+        // run and the field is still blank.
+        val bootstrapped = SettingsBootstrap.apply(settings, System.currentTimeMillis()) {
+            java.util.UUID.randomUUID().toString()
+        }
+        settings = bootstrapped.settings
+
+        val logo = copyProvisionedLogo()
+        settings = settings.copy(logoUri = logo?.uri)
+        saveSettings(settings)
+
+        writeProvisioningResult(
+            ProvisioningResult(
+                runId = runId, status = ProvisioningResult.APPLIED, at = now,
+                appVersion = BuildConfig.VERSION_NAME,
+                installId = settings.installId,
+                kioskCode = settings.kioskCode,
+                kioskName = settings.kioskName.orEmpty(),
+                affiliateKeyRestored = credentialsOk && affiliateKey.isNotBlank(),
+                destinationConfigured = telemetryCredentials.isConfigured(),
+                logoApplied = logo != null,
+                logoDecodable = logo?.decodable == true
+            )
+        )
+
+        payloadFile.delete()
+        File(provisioningDir, "logo").delete()
+    }
+
+    private fun writeProvisioningResult(result: ProvisioningResult) {
+        try {
+            provisioningDir.mkdirs()
+            File(provisioningDir, "provision-result.json").writeText(result.toJson())
+        } catch (e: Exception) {
+            // Not rolled back: the import succeeded, and undoing it would be
+            // worse than an unreported success.
+            Log.w("Provisioning", "Could not write the result file: ${e.message}")
+        }
+    }
+
+    private data class ProvisionedLogo(val uri: String, val decodable: Boolean)
+
+    /** Copies the pushed image into internal storage and returns where it
+     *  landed, or null when no image was pushed.
+     *
+     *  The destination is a FIXED name with NO extension, and the directory is
+     *  emptied first: a preserved extension would defeat the fixed name, so
+     *  re-provisioning a .png over a .jpg would leave the .jpg behind forever,
+     *  unreferenced. LogoColorExtractor.decode infers format from content. */
+    private fun copyProvisionedLogo(): ProvisionedLogo? {
+        val source = File(provisioningDir, "logo")
+        if (!source.isFile) return null
+        val dir = File(filesDir, "logo").apply { mkdirs(); listFiles()?.forEach { it.delete() } }
+        val dest = File(dir, "kiosk-logo")
+        return try {
+            source.copyTo(dest, overwrite = true)
+            ProvisionedLogo(
+                uri = Uri.fromFile(dest).toString(),
+                decodable = BitmapFactory.decodeFile(dest.absolutePath) != null
+            )
+        } catch (e: Exception) {
+            Log.w("Provisioning", "Could not copy the logo: ${e.message}")
+            null
+        }
     }
 
     override fun onDestroy() {
