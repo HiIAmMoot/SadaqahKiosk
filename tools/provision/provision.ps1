@@ -106,6 +106,23 @@ function Sh {
 #>
 function ShQuote([string]$Value) { "'" + $Value.Replace("'", "'\''") + "'" }
 
+<#
+    Returns the running pid(s) of $PKG as one trimmed string, or "" if it
+    isn't running.
+
+    `pidof` prints NOTHING at all on no match -- not even a blank line -- so
+    `Adb shell "pidof $PKG"` comes back as $null rather than an empty string,
+    and calling .Trim() straight on that throws InvokeMethodOnNull. That is
+    exactly the "process is gone" case the priming and trigger steps below
+    poll for, so it has to read as an empty value here, not crash the script
+    on the primary success path.
+#>
+function PidOf {
+    $out = Adb shell "pidof $PKG"
+    if ($null -eq $out) { return "" }
+    return ($out -join "`n").Trim()
+}
+
 Write-Host "`nProvisioning $(if ($Serial) { $Serial } else { 'the attached device' })`n"
 
 # --- device present -------------------------------------------------------
@@ -275,7 +292,7 @@ if ($Payload) {
     function WaitForRestart([string]$PidBefore, [int]$MaxTries = 15) {
         foreach ($i in 1..$MaxTries) {
             Start-Sleep -Seconds 2
-            $pidNow = (Adb shell "pidof $PKG").Trim()
+            $pidNow = PidOf
             if ($pidNow -and $pidNow -ne $PidBefore) { return $pidNow }
         }
         return $null
@@ -302,10 +319,10 @@ if ($Payload) {
     # password is never secret — no_payload short-circuits before it's ever
     # read — so it needs no redaction.
     Step "priming the app's data directory"
-    $pidBefore = (Adb shell "pidof $PKG").Trim()
+    $pidBefore = PidOf
     $primeId = [guid]::NewGuid().ToString()
     Sh ("am start -n $PKG/.MainActivity -f 0x10008000 " +
-               "--es provision_run_id '$primeId' --es provision_password x") `
+               "--es provision_run_id $(ShQuote $primeId) --es provision_password $(ShQuote 'x')") `
        -What "am start -n $PKG/.MainActivity -f 0x10008000 (priming; a harmless no_payload failure is expected)" `
        -Fatal | Out-Null
     if (-not (WaitForRestart $pidBefore)) {
@@ -347,28 +364,38 @@ if ($Payload) {
     # the task after a successful run. No force-stop, no reboot, needed for
     # the common case.
     Step "triggering import"
-    $pidBefore = (Adb shell "pidof $PKG").Trim()
-    # -What omits the password — it is the one value on this line a warning
-    # must never echo.
+    $pidBefore = PidOf
+    # Every value goes through ShQuote, not just the password: a kiosk name
+    # or code with an apostrophe (a possessive shop name, say) closes the
+    # device-side single quote early and splits the extra in two exactly
+    # like an unquoted SSID or wifi password would -- see ShQuote's own doc.
+    # -What still omits the password itself; that is the one value on this
+    # line a warning must never echo.
     Sh ("am start -n $PKG/.MainActivity -f 0x10008000 " +
-               "--es provision_run_id '$runId' " +
-               "--es provision_password '$Password' " +
-               "--es provision_kiosk_code '$KioskCode' " +
-               "--es provision_kiosk_name '$KioskName'") `
+               "--es provision_run_id $(ShQuote $runId) " +
+               "--es provision_password $(ShQuote $Password) " +
+               "--es provision_kiosk_code $(ShQuote $KioskCode) " +
+               "--es provision_kiosk_name $(ShQuote $KioskName)") `
        -What "am start -n $PKG/.MainActivity -f 0x10008000 --es provision_run_id/kiosk_code/kiosk_name (password redacted)" `
        -Fatal | Out-Null
 
-    # A trigger that never reached the app (crash on launch, intent
-    # swallowed) must fail fast here rather than burn the full result-poll
-    # timeout below for a result that can never arrive.
-    if (-not (WaitForRestart $pidBefore)) {
-        Die "the app never came back up after the trigger — it may have crashed on launch, or the intent never reached it. Run 'adb reboot' and re-run this script."
-    }
-
     Step "waiting for the device to report"
+    # The pid is a hint here, not a gate. A real run decrypts the payload
+    # TWICE (once in ProvisioningLoader.decide, again in applyProvisioning's
+    # importSettings) at 600_000 PBKDF2 iterations each, so a slow-but-correct
+    # device can easily take longer than a short fixed wait to turn its
+    # process over -- gating on that separately would report a merely slow
+    # run as a crash. The result file is the actual authority; track whether
+    # the process ever restarted only to sharpen the message if this times
+    # out with nothing.
     $result = $null
+    $sawRestart = $false
     foreach ($i in 1..60) {
         Start-Sleep -Seconds 2
+        if (-not $sawRestart) {
+            $pidNow = PidOf
+            if ($pidNow -and $pidNow -ne $pidBefore) { $sawRestart = $true }
+        }
         $raw = Adb shell "cat $REMOTE_DIR/provision-result.json 2>/dev/null"
         if ($raw) {
             try { $parsed = $raw | ConvertFrom-Json } catch { continue }
@@ -379,7 +406,13 @@ if ($Payload) {
             if ($parsed.runId -eq $runId) { $result = $parsed; break }
         }
     }
-    if (-not $result) { Die "no result after 120s — the app may have crashed or never started" }
+    if (-not $result) {
+        if ($sawRestart) {
+            Die "no result after 120s — the app restarted but never reported; check logcat on the device"
+        } else {
+            Die "no result after 120s — the app never came back up after the trigger; it may have crashed on launch, or the intent never reached it. Run 'adb reboot' and re-run this script."
+        }
+    }
 
     if ($result.status -ne "applied") { Die "provisioning failed: $($result.reason)" }
 
@@ -411,7 +444,11 @@ if ($Pin) {
     # Every lock_settings command refuses once a credential exists, so
     # re-provisioning a device that already has one must pass the old value.
     $oldArg = if ($OldPin) { "--old $OldPin " } else { "" }
-    $r = Adb shell "cmd lock_settings set-pin $oldArg$Pin"
+    # -join before -match: the same array-vs-scalar hazard as the uid read
+    # above and the original wifi_on check -- without it, -match filters the
+    # output array element-by-element instead of testing the whole string,
+    # so a multi-line response would silently never match either branch.
+    $r = (Adb shell "cmd lock_settings set-pin $oldArg$Pin") -join "`n"
     if ($r -notmatch "Pin set to") {
         if ($r -match "Credential can't be null or empty|old credential") {
             Die "this device already has a lock credential — pass -OldPin to replace it"
