@@ -120,6 +120,24 @@ private const val PROVISIONING_CONSUMED_RUN_ID_KEY = "provisioning_consumed_run_
  *  outlives the one attempt it was created for. */
 private val provisioningScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
+/** True from the moment [MainActivity.runProvisioning] starts until the process
+ *  exits.
+ *
+ *  File-scoped for the same reason [provisioningScope] is: a config change
+ *  recreates the Activity, and the guard has to outlive the instance that set
+ *  it. The durable run-id record stops a recreation from *re-entering*
+ *  provisioning, but that is the whole of what it does — once the id is
+ *  consumed, `isProvisioningRequested` returns false and the recreated instance
+ *  would fall through to the ordinary boot path and run it CONCURRENTLY with the
+ *  still-running provisioning coroutine. Both write `app_prefs`, and the device
+ *  can end up holding an installId that the result file does not name, which is
+ *  the split identity this whole feature exists to prevent.
+ *
+ *  Never cleared: `runProvisioning` always ends in `Runtime.getRuntime().exit(0)`,
+ *  so the flag dies with the process it describes. */
+@Volatile
+private var provisioningInFlight = false
+
 /** The two reads [AnalyticsPresenter.view] needs beyond `settings`, cached
  *  together so they land in Activity state as one atomic assignment rather
  *  than two (which would let composition observe one refreshed and one
@@ -331,6 +349,16 @@ class MainActivity : FragmentActivity() {
         // so they no longer overwrite what provisioning just applied.
         if (isProvisioningRequested(intent)) {
             runProvisioning(intent)
+            return
+        }
+
+        // A recreation landing mid-provision. The run-id above has already been
+        // consumed, so the check cannot catch this one; without the flag this
+        // instance runs the entire normal boot alongside the provisioning
+        // coroutine. Hold the same screen and do nothing else — the coroutine
+        // owns the outcome and ends the process either way.
+        if (provisioningInFlight) {
+            showProvisioningScreen()
             return
         }
 
@@ -1957,6 +1985,14 @@ class MainActivity : FragmentActivity() {
         return runId != prefs.getString(PROVISIONING_CONSUMED_RUN_ID_KEY, null)
     }
 
+    private fun showProvisioningScreen() {
+        setContent {
+            Box(Modifier.fillMaxSize().background(Color.Black), Alignment.Center) {
+                Text("Provisioning…", color = Color.White, fontSize = 24.sp)
+            }
+        }
+    }
+
     private fun runProvisioning(source: Intent) {
         val runId = source.getStringExtra("provision_run_id").orEmpty()
         val password = source.getStringExtra("provision_password")
@@ -1970,11 +2006,11 @@ class MainActivity : FragmentActivity() {
         // PROVISIONING_CONSUMED_RUN_ID_KEY's doc.
         prefs.edit(commit = true) { putString(PROVISIONING_CONSUMED_RUN_ID_KEY, runId) }
 
-        setContent {
-            Box(Modifier.fillMaxSize().background(Color.Black), Alignment.Center) {
-                Text("Provisioning…", color = Color.White, fontSize = 24.sp)
-            }
-        }
+        // Set before the coroutine launches, so a recreation that happens while
+        // the import is still running sees it. See provisioningInFlight's doc.
+        provisioningInFlight = true
+
+        showProvisioningScreen()
 
         // provisioningScope, not lifecycleScope: this Activity declares no
         // android:configChanges, so a rotation, locale or dark-mode change
