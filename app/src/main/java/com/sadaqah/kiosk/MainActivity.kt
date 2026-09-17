@@ -344,11 +344,7 @@ class MainActivity : FragmentActivity() {
         isNetworkAvailable = isOnlineNow()
 
         val json = prefs.getString("settings", null)
-        if (!json.isNullOrEmpty()) {
-            settings = Gson().fromJson(json, Settings::class.java)
-        } else {
-            settings = Settings()
-        }
+        settings = parseStoredSettings(json)
 
         if (json.isNullOrEmpty()) {
             // First startup: auto-detect from device locale, default to English if no match
@@ -1890,6 +1886,26 @@ class MainActivity : FragmentActivity() {
         Runtime.getRuntime().exit(0)
     }
 
+    /** Parses the persisted settings JSON, or `Settings()` when nothing is
+     *  stored yet (a genuinely fresh device). Pulled out of onCreate's own load
+     *  so provisioning's decision can read the exact same thing rather than
+     *  the field's construction-time default.
+     *
+     *  `current` matters here specifically because `SettingsImport.merge`
+     *  preserves `installId`, `donationStatsStartedAtMs` and
+     *  `analyticsActivatedAtMs` FROM `current` — never from the imported file.
+     *  Handing it a blank `Settings()` makes a second provisioning run on an
+     *  already-booted kiosk look like a brand new device: `SettingsBootstrap`
+     *  then mints a fresh installId, silently splitting that device's history
+     *  in two, which is exactly what those fields' preservation exists to
+     *  prevent. This file has shipped that exact class of bug before — `:343`
+     *  once read `settings.testMode` before the stored JSON was parsed, so the
+     *  branch was dead on every cold start — so do not move this call back
+     *  above the settings load, and do not let the provisioning gate above
+     *  read `settings` directly again. */
+    private fun parseStoredSettings(json: String?): Settings =
+        if (!json.isNullOrEmpty()) Gson().fromJson(json, Settings::class.java) else Settings()
+
     private val provisioningDir: File
         get() = File(getExternalFilesDir(null), "provisioning")
 
@@ -1924,7 +1940,10 @@ class MainActivity : FragmentActivity() {
                 // certainly not.
                 val payloadFile = File(provisioningDir, "kiosk.json")
                 val json = if (payloadFile.isFile) payloadFile.readText() else null
-                ProvisioningLoader.decide(settings, json, password, codeOverride, nameOverride)
+                // The device's REAL stored settings, not the `settings` field's
+                // construction-time default — see parseStoredSettings's doc.
+                val current = parseStoredSettings(prefs.getString("settings", null))
+                ProvisioningLoader.decide(current, json, password, codeOverride, nameOverride)
             }
             applyProvisioning(runId, outcome, password)
             relaunchAfterProvisioning()
