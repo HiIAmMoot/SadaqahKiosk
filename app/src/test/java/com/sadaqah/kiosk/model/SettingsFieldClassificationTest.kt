@@ -68,11 +68,15 @@ class SettingsFieldClassificationTest {
     private fun valueOf(settings: Settings, name: String): Any? =
         Settings::class.java.getDeclaredField(name).apply { isAccessible = true }.get(settings)
 
-    /** Two instances differing in every field, so "kept this device's value" or
-     *  "refused the imported value" is unambiguous for each one. `theirs` is
-     *  built to disagree with every constant `merge` forces (a non-null
-     *  `logoUri`, `testMode = true`, `skipApkSignatureCheckOnce = true`)
-     *  so a forced field can't be mistaken for an unrefused one. */
+    /** Two instances differing on every classified field — enforced, not just
+     *  intended, by [fixturesDisagreeOnEveryClassifiedField] below: a field
+     *  left at its constructor default in both fixtures agrees silently, and
+     *  every derivation in this file gates on `mine != theirs`, so an
+     *  agreeing field is invisible to the tests that are supposed to prove
+     *  its bucket. `theirs` also disagrees with every constant `merge`
+     *  forces (a non-null `logoUri`, `testMode = true`,
+     *  `skipApkSignatureCheckOnce = true`) so a forced field can't be
+     *  mistaken for an unrefused one. */
     private val mine = Settings(
         kioskName = "mine", language = "en", currency = "EUR",
         kioskCode = "mine-01", installId = "mine-install",
@@ -82,7 +86,16 @@ class SettingsFieldClassificationTest {
         analyticsEnabled = false, analyticsPrivacyPolicyUrl = "https://mine/p",
         analyticsTermsUrl = "https://mine/t", autoUpdateEnabled = false,
         autoUpdateGraceDays = 1, hideUpdatePrompts = false,
-        donationTrackingEnabled = false, thankYouDurationSec = 1
+        donationTrackingEnabled = false, thankYouDurationSec = 1,
+        backgroundColor = 0x11111111L, patternColor = 0x11111112L,
+        buttonColor = 0x11111113L, buttonBorderColor = 0x11111114L,
+        patternAlpha = 0.1f, useTapToPay = false, useArabicThankYou = true,
+        screensaverStyle = "scrolling", screensaverCustomMessage = "mine-msg",
+        screensaverIdleTimeoutSec = 600, screensaverDurationSec = 60,
+        maxConsecutiveFailures = 3, restartCooldownSec = 300,
+        maxRestartsBeforeGiveUp = 3, longDowntimeThresholdSec = 300,
+        restartCountResetSec = 1800, autoUpdateTargetVersion = "latest",
+        updateRepoUrl = "https://github.com/mine/repo"
     )
 
     private val theirs = Settings(
@@ -94,8 +107,46 @@ class SettingsFieldClassificationTest {
         analyticsEnabled = true, analyticsPrivacyPolicyUrl = "https://theirs/p",
         analyticsTermsUrl = "https://theirs/t", autoUpdateEnabled = true,
         autoUpdateGraceDays = 9, hideUpdatePrompts = true,
-        donationTrackingEnabled = true, thankYouDurationSec = 9
+        donationTrackingEnabled = true, thankYouDurationSec = 9,
+        backgroundColor = 0x22222221L, patternColor = 0x22222222L,
+        buttonColor = 0x22222223L, buttonBorderColor = 0x22222224L,
+        patternAlpha = 0.9f, useTapToPay = true, useArabicThankYou = false,
+        screensaverStyle = "static", screensaverCustomMessage = "theirs-msg",
+        screensaverIdleTimeoutSec = 601, screensaverDurationSec = 61,
+        maxConsecutiveFailures = 4, restartCooldownSec = 301,
+        maxRestartsBeforeGiveUp = 4, longDowntimeThresholdSec = 301,
+        restartCountResetSec = 1801, autoUpdateTargetVersion = "1.5.0",
+        updateRepoUrl = "https://github.com/theirs/repo"
     )
+
+    /** The tests above only prove a field's bucket if `mine` and `theirs`
+     *  actually disagree on it — an unclassified field is caught by
+     *  [everyFieldIsClassified] regardless, but a MISCLASSIFIED one (the
+     *  actual `kioskName` bug: present, but in the wrong bucket) is only
+     *  caught by a derivation that gates on `mine != theirs`. A field left
+     *  at its shared constructor default agrees in both fixtures and is
+     *  invisible to that gate.
+     *
+     *  Checked against [fieldNames] — every field Settings actually has —
+     *  rather than the static `expectedGuarded`/`expectedComputed`/
+     *  `expectedTravelling` union, deliberately: a brand-new field is by
+     *  definition not yet in any of those sets, so restricting this check to
+     *  them would let a new, unset field pass here even though it is exactly
+     *  the case this test exists to catch. Checking every reflected field
+     *  means a new field with no fixture values fails BOTH this test and
+     *  [everyFieldIsClassified] at once, instead of silently waiting for
+     *  someone to also remember to classify it before this test would ever
+     *  notice its default was never overridden. */
+    @Test
+    fun fixturesDisagreeOnEveryField() {
+        val agreeing = fieldNames().filter { name -> valueOf(mine, name) == valueOf(theirs, name) }
+        assertTrue(
+            "mine and theirs agree on $agreeing — widen the fixtures so every " +
+                "Settings field has a genuinely different value in each, or the " +
+                "tests above cannot tell whether merge actually guarded/travelled it",
+            agreeing.isEmpty()
+        )
+    }
 
     /** The point of the whole file: a new field cannot be added to Settings
      *  without someone deciding whether it describes the device or the
