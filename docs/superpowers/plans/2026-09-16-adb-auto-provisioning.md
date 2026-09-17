@@ -106,7 +106,39 @@ function Adb {
 
 function Step($name) { Write-Host "  $name" -ForegroundColor Cyan }
 function Ok($name)   { Write-Host "  OK   $name" -ForegroundColor Green }
+function Warn($msg)  { Write-Host "  WARN $msg" -ForegroundColor Yellow; $script:Warnings += $msg }
 function Die($msg)   { Write-Host "  FAIL $msg" -ForegroundColor Red; exit 1 }
+
+$script:Warnings = @()
+
+<#
+    Runs one adb shell command and REPORTS anything that looks wrong.
+
+    `adb shell` exits 0 even when the command inside it failed, so an exit code
+    on its own proves nothing -- the output has to be read. Without this, a
+    settings write that the platform rejected is indistinguishable from one that
+    worked, and the script cheerfully reports OK for a device it never
+    configured. Silent partial provisioning is the failure mode this whole
+    script exists to remove, so no call is allowed to pass unexamined.
+#>
+function Sh {
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [string]$What = $Command,
+        # Fatal when the step is load-bearing; a warning when the kiosk still
+        # works without it.
+        [switch]$Fatal
+    )
+    $out = (Adb shell $Command) -join "`n"
+    $bad = $LASTEXITCODE -ne 0 -or
+           $out -match "Error|error:|Exception|Denied|denied|not found|Failure|Unknown command|Invalid|cannot|Can't|refused"
+    if ($bad) {
+        $detail = "$What -> $($out.Trim())"
+        if ($Fatal) { Die $detail } else { Warn $detail }
+        return $false
+    }
+    return $true
+}
 
 Write-Host "`nProvisioning $(if ($Serial) { $Serial } else { 'the attached device' })`n"
 
@@ -126,25 +158,46 @@ Ok "installed"
 # Must follow install. Two distinct refusals share one opaque error, so both
 # are named: an account exists, or setup wizard was completed rather than
 # skipped.
+# FATAL, not a warning. Without device owner, Android 10+ aborts the
+# startActivity that BootReceiver makes after a reboot:
+#
+#   E ActivityTaskManager: Abort background activity starts from <uid>
+#
+# Verified on an emulator: with device owner the kiosk reaches the foreground
+# ~28s after unlock; without it the process starts, logs "Device booted --
+# launching kiosk app", and is thrown away silently. A kiosk provisioned
+# without device owner looks correct on the bench and never comes back from a
+# power cut, with the only trace a logcat line nobody reads.
 Step "setting device owner"
-$r = Adb shell "dpm set-device-owner $ADMIN"
+$r = (Adb shell "dpm set-device-owner $ADMIN") -join "`n"
 if ($r -match "Success") {
     Ok "device owner set"
 } elseif ((Adb shell "dumpsys device_policy") -match "Device Owner") {
     Ok "device owner already set"
 } else {
-    Write-Host "  WARN device owner not set: $r" -ForegroundColor Yellow
-    Write-Host "       usual causes: an account exists on the device, or setup" -ForegroundColor Yellow
-    Write-Host "       wizard was completed instead of skipped. Factory reset and" -ForegroundColor Yellow
-    Write-Host "       skip the wizard. Lock task will be the degraded pinning mode." -ForegroundColor Yellow
+    Write-Host "  FAIL device owner could not be set: $($r.Trim())" -ForegroundColor Red
+    Write-Host "" -ForegroundColor Red
+    Write-Host "  This is fatal, not cosmetic. Without device owner:" -ForegroundColor Red
+    Write-Host "    - the kiosk will NOT restart itself after a power cut" -ForegroundColor Red
+    Write-Host "    - lock task degrades to consumer pinning, with the blue bar" -ForegroundColor Red
+    Write-Host "    - the silent location and wifi-scan permission grants never run" -ForegroundColor Red
+    Write-Host "" -ForegroundColor Red
+    Write-Host "  Two causes share this one error: an account exists on the device," -ForegroundColor Red
+    Write-Host "  or setup wizard was COMPLETED rather than skipped. Factory reset," -ForegroundColor Red
+    Write-Host "  skip the wizard entirely, add no account, and run this again." -ForegroundColor Red
+    exit 1
 }
 
 # --- radios ---------------------------------------------------------------
+# Location SERVICES, not the location permission -- the permission is already
+# granted by MainActivity.kt:296-307 once device owner is set. BLUETOOTH_SCAN is
+# declared without neverForLocation, so BLE discovery fails with services off,
+# and a factory-reset tablet has them off.
 Step "enabling radios"
-Adb shell "svc wifi enable" | Out-Null
-Adb shell "svc bluetooth enable" | Out-Null
-Adb shell "cmd location set-location-enabled true" | Out-Null
-Adb shell "settings put secure location_mode 3" | Out-Null
+Sh "svc wifi enable" -What "wifi radio" | Out-Null
+Sh "svc bluetooth enable" -What "bluetooth radio" | Out-Null
+Sh "cmd location set-location-enabled true" -What "location services" -Fatal | Out-Null
+Sh "settings put secure location_mode 3" -What "location mode" | Out-Null
 Ok "wifi, bluetooth, location on"
 
 # --- wifi -----------------------------------------------------------------
@@ -173,10 +226,10 @@ if ($Ssid) {
 
 # --- screen ---------------------------------------------------------------
 Step "configuring screen"
-Adb shell "settings put system screen_off_timeout 2147483647" | Out-Null
-Adb shell "settings put system screen_brightness_mode 1" | Out-Null
-Adb shell "settings put secure lock_to_app_enabled 1" | Out-Null
-Adb shell "svc power stayon true" | Out-Null
+Sh "settings put system screen_off_timeout 2147483647" -What "screen timeout" -Fatal | Out-Null
+Sh "settings put system screen_brightness_mode 1" -What "adaptive brightness" | Out-Null
+Sh "settings put secure lock_to_app_enabled 1" -What "pinning fallback" | Out-Null
+Sh "svc power stayon true" -What "stay awake while charging" | Out-Null
 Ok "never sleeps, adaptive brightness, pinning allowed"
 
 # --- data reduction -------------------------------------------------------
@@ -186,8 +239,8 @@ Step "restricting background data"
 $uidLine = Adb shell "dumpsys package $PKG | grep -m1 userId"
 if ($uidLine -match "userId=(\d+)") {
     $uid = $Matches[1]
-    Adb shell "cmd netpolicy set restrict-background true" | Out-Null
-    Adb shell "cmd netpolicy add restrict-background-whitelist $uid" | Out-Null
+    Sh "cmd netpolicy set restrict-background true" -What "data saver" | Out-Null
+    Sh "cmd netpolicy add restrict-background-whitelist $uid" -What "whitelist uid $uid" | Out-Null
     Ok "data saver on, $PKG (uid $uid) whitelisted"
 } else {
     Die "could not read the app's uid from dumpsys"
@@ -195,6 +248,14 @@ if ($uidLine -match "userId=(\d+)") {
 
 Write-Host "`n  Battery protection is not settable from adb on stock Android." -ForegroundColor Yellow
 Write-Host "  Enable it by hand in the device's own battery settings.`n" -ForegroundColor Yellow
+
+if ($script:Warnings.Count -gt 0) {
+    Write-Host ""
+    Write-Host "  $($script:Warnings.Count) step(s) did not apply cleanly:" -ForegroundColor Yellow
+    foreach ($w in $script:Warnings) { Write-Host "    - $w" -ForegroundColor Yellow }
+    Write-Host "  The kiosk will run, but check each one before deploying it." -ForegroundColor Yellow
+    Write-Host ""
+}
 
 Write-Host "PROVISIONED (native steps)" -ForegroundColor Green
 ```
@@ -223,6 +284,13 @@ adb shell "cmd netpolicy list restrict-background-whitelist"  # contains the app
 ```
 
 Every one must match. A script that reports OK for a setting that did not take is worse than one that fails.
+
+Then prove the reporting works, because a warning path that never fires is a warning path nobody has tested:
+
+1. **Every failed command warns.** Temporarily change one non-fatal call to a command that cannot work — `Sh "settings put system nonexistent_key_xyz 1" -What "bogus"` — and confirm it prints `WARN` and appears in the closing summary rather than passing silently.
+2. **A fatal step stops the run.** Temporarily point `$ADMIN` at a component that does not exist and confirm the script exits non-zero with the device-owner explanation, without going on to configure anything else.
+
+Revert both afterwards and confirm `git diff` is clean.
 
 - [ ] **Step 4: Commit**
 
