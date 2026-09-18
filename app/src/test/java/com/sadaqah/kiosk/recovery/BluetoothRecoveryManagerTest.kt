@@ -11,6 +11,12 @@ class BluetoothRecoveryManagerTest {
 
     private fun createManager() = BluetoothRecoveryManager(thresholdMs, clock = { now })
 
+    // Alias matching the task-2 brief's helper name (with the threshold made
+    // overridable, as the brief's tests require); kept distinct from
+    // createManager() so no existing (passing) test needed to change.
+    private fun manager(offThresholdMs: Long = thresholdMs) =
+        BluetoothRecoveryManager(offThresholdMs, clock = { now })
+
     @Before
     fun setUp() {
         now = 1_000_000L
@@ -171,5 +177,74 @@ class BluetoothRecoveryManagerTest {
 
         now += 31_000L
         assertEquals(BluetoothRecoveryAction.ReEnable, mgr.evaluate(cycleInProgress = false))
+    }
+
+    // ── lastOffMs / reEnablesThisOutage ──────────────────────────────────────
+
+    @Test
+    fun theOffDurationIsMeasuredBeforeTheClockRestarts() {
+        val m = manager(offThresholdMs = 60_000L)
+        m.onBluetoothOff()
+        now += 61_000L
+        assertEquals(BluetoothRecoveryAction.ReEnable, m.evaluate(cycleInProgress = false))
+        assertEquals(
+            "measured before evaluate restarts the clock, or this reads as zero",
+            61_000L, m.lastOffMs
+        )
+    }
+
+    @Test
+    fun theFirstReEnableOfAnOutageIsCountedAsTheFirst() {
+        val m = manager(offThresholdMs = 60_000L)
+        m.onBluetoothOff()
+        now += 61_000L
+        m.evaluate(cycleInProgress = false)
+        assertEquals(1, m.reEnablesThisOutage)
+    }
+
+    /**
+     * The count is what stops this kind writing ~1,400 rows a day against a
+     * queue shared with donations that have not uploaded yet.
+     */
+    @Test
+    fun aSecondReEnableInTheSameOutageIsCountedAsTheSecond() {
+        val m = manager(offThresholdMs = 60_000L)
+        m.onBluetoothOff()
+        now += 61_000L
+        m.evaluate(cycleInProgress = false)
+        now += 61_000L
+        m.evaluate(cycleInProgress = false)
+        assertEquals(2, m.reEnablesThisOutage)
+    }
+
+    @Test
+    fun theCountResetsWhenTheRadioActuallyComesBack() {
+        val m = manager(offThresholdMs = 60_000L)
+        m.onBluetoothOff()
+        now += 61_000L
+        m.evaluate(cycleInProgress = false)
+        m.onBluetoothOn()
+        m.onBluetoothOff()
+        now += 61_000L
+        m.evaluate(cycleInProgress = false)
+        assertEquals("a later outage starts counting again from one", 1, m.reEnablesThisOutage)
+    }
+
+    @Test
+    fun aTickBelowTheThresholdDoesNotCount() {
+        val m = manager(offThresholdMs = 60_000L)
+        m.onBluetoothOff()
+        now += 10_000L
+        assertEquals(BluetoothRecoveryAction.Ignore, m.evaluate(cycleInProgress = false))
+        assertEquals(0, m.reEnablesThisOutage)
+    }
+
+    @Test
+    fun aDeliberateCycleDoesNotCount() {
+        val m = manager(offThresholdMs = 60_000L)
+        m.onBluetoothOff()
+        now += 61_000L
+        assertEquals(BluetoothRecoveryAction.Ignore, m.evaluate(cycleInProgress = true))
+        assertEquals(0, m.reEnablesThisOutage)
     }
 }

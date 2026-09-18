@@ -28,7 +28,10 @@ object TranslationManager {
     fun fromCode(code: String): Language =
         Language.entries.firstOrNull { it.code == code } ?: Language.ENGLISH
 
-    fun currentStrings(): Strings = when (_currentLanguage.value) {
+    /** Exposed for tests, which must be able to ask for a language other than
+     *  the current one. [rememberStrings] is @Composable and [currentStrings]
+     *  reads the live selection, so neither can answer "what does German say". */
+    fun stringsFor(language: Language): Strings = when (language) {
         Language.DUTCH   -> DutchStrings
         Language.ENGLISH -> EnglishStrings
         Language.GERMAN  -> GermanStrings
@@ -38,6 +41,8 @@ object TranslationManager {
         Language.TURKISH -> TurkishStrings
         Language.ARABIC  -> ArabicStrings
     }
+
+    fun currentStrings(): Strings = stringsFor(_currentLanguage.value)
 }
 
 @Composable
@@ -294,6 +299,65 @@ interface Strings {
     val frequencyCountHeader: String get() = "Count"
     val frequencyTotalHeader: String get() = "Total"
     val recentDonations: String get() = "Recent donations"
+
+    // Analytics / telemetry
+    val analyticsTitle: String
+    val analyticsSettings: String
+    val analyticsEnabledLabel: String
+    val analyticsEnabledHint: String
+    val analyticsDestination: String
+    val analyticsUrlLabel: String
+    val analyticsKeyLabel: String
+    val analyticsKeyHint: String
+    val analyticsSave: String
+    val analyticsTestConnection: String
+    val analyticsTesting: String
+    val analyticsTestSucceeded: String
+    val analyticsTestFailed: String
+    val analyticsTestQueued: String
+    val analyticsStatus: String
+    val analyticsQueued: String
+    val analyticsLastUpload: String
+    val analyticsNeverUploaded: String
+    val analyticsLastError: String
+    val analyticsBackingOff: String
+    val analyticsActivated: String
+    val analyticsNotActivated: String
+    val analyticsKioskCode: String
+    val analyticsKioskCodeUnusual: String
+    val analyticsPolicyUrls: String
+    val analyticsPrivacyUrlLabel: String
+    val analyticsTermsUrlLabel: String
+    val analyticsClearCredentials: String
+    val analyticsClearWarning: String
+    val analyticsCleared: String
+    // Added after Task 1's review: the presenter now decides these, so the
+    // screen needs copy for each rather than computing its own.
+    val analyticsTestUnavailableNotConfigured: String
+    val analyticsTestUnavailableDisabled: String
+    val analyticsKeyUnusual: String
+    val analyticsPolicyUrlsMissing: String
+    val analyticsInstallId: String
+    val analyticsFailedAttempts: String
+    val analyticsRetryIn: String
+    val analyticsDropped: String
+
+    // Disclosure screen
+    val disclosureTitle: String
+    val disclosureIntro: String
+    val disclosureSendsHeading: String
+    val disclosureSendsAmount: String
+    val disclosureSendsIdentity: String
+    val disclosureSendsHealth: String
+    val disclosureIdentified: String
+    val disclosureNeverHeading: String
+    val disclosureNeverBody: String
+    val disclosureDestinationHeading: String
+    val disclosureOffBody: String
+    val disclosurePrivacyLabel: String
+    val disclosureTermsLabel: String
+    val disclosureDismiss: String
+    val disclosureReopen: String
 }
 
 // ── Dutch ─────────────────────────────────────────────────────────────────────
@@ -518,6 +582,67 @@ object DutchStrings : Strings {
     override val frequencyCountHeader = "Aantal"
     override val frequencyTotalHeader = "Totaal"
     override val recentDonations = "Recente donaties"
+
+    // Analytics
+    override val analyticsTitle = "Analyse"
+    override val analyticsSettings = "Analyse & rapportage"
+    override val analyticsEnabledLabel = "Analyse versturen"
+    override val analyticsEnabledHint = "Donatietotalen en storingsmeldingen, alleen van deze kiosk."
+    override val analyticsDestination = "Bestemming"
+    override val analyticsUrlLabel = "Project-URL"
+    override val analyticsKeyLabel = "Publiceerbare sleutel"
+    override val analyticsKeyHint = "Versleuteld opgeslagen op dit apparaat."
+    override val analyticsSave = "Bestemming opslaan"
+    override val analyticsTestConnection = "Verbinding testen"
+    override val analyticsTesting = "Bezig met testen..."
+    override val analyticsTestSucceeded = "Verbonden. Deze kiosk rapporteert nu."
+    override val analyticsTestFailed = "Kon de bestemming niet bereiken."
+    override val analyticsTestQueued = "In de wachtrij achter bestaande gebeurtenissen; wordt daarmee verstuurd."
+    override val analyticsStatus = "Status"
+    override val analyticsQueued = "Wacht op verzending"
+    override val analyticsLastUpload = "Laatste upload"
+    override val analyticsNeverUploaded = "Nooit"
+    override val analyticsLastError = "Laatste fout"
+    override val analyticsBackingOff = "Wacht voor nieuwe poging"
+    override val analyticsActivated = "Rapportage is actief"
+    override val analyticsNotActivated = "Rapporteert nog niet"
+    override val analyticsKioskCode = "Kioskcode"
+    override val analyticsKioskCodeUnusual = "Dit komt niet overeen met het gebruikelijke codeformaat. Wordt toch gebruikt."
+    override val analyticsPolicyUrls = "Beleidslinks"
+    override val analyticsPrivacyUrlLabel = "URL privacybeleid"
+    override val analyticsTermsUrlLabel = "URL voorwaarden"
+    override val analyticsClearCredentials = "Gegevens wissen"
+    override val analyticsClearWarning = "Dit verwijdert de bestemming en wist alles wat nog klaarstaat om te verzenden."
+    override val analyticsCleared = "Gegevens gewist."
+    override val analyticsTestUnavailableNotConfigured = "Vul eerst een bestemming in."
+    override val analyticsTestUnavailableDisabled = "Zet analyse aan om de verbinding te testen."
+    override val analyticsKeyUnusual = "Dit lijkt geen publiceerbare sleutel. Controleer of u geen geheime sleutel heeft geplakt."
+    override val analyticsPolicyUrlsMissing = "Geen beleidslinks ingesteld. Activatie registreert deze als leeg."
+    override val analyticsInstallId = "Installatie-ID"
+    override val analyticsFailedAttempts = "Mislukte pogingen"
+    override val analyticsRetryIn = "Nieuwe poging over"
+    override val analyticsDropped = "Verwijderd (opslag vol of te oud)"
+
+    // Disclosure screen
+    override val disclosureTitle = "Wat deze kiosk rapporteert"
+    override val disclosureIntro =
+        "Er is een rapportagebestemming opgeslagen. Zodra rapportage is ingeschakeld en getest, stuurt deze kiosk het volgende daarnaartoe."
+    override val disclosureSendsHeading = "Wat wordt verstuurd"
+    override val disclosureSendsAmount = "Het bedrag, de valuta en het tijdstip van elke donatie."
+    override val disclosureSendsIdentity = "De installatie-ID van deze kiosk, en de kioskcode indien ingesteld."
+    override val disclosureSendsHealth = "De app-versie, en gebeurtenissen over de gezondheid van deze kiosk zelf — herstarts, kaartlezerproblemen, crashes, inclusief de technische details van de crash."
+    override val disclosureIdentified =
+        "Deze rapporten identificeren deze kiosk. Ze zijn niet anoniem."
+    override val disclosureNeverHeading = "Wat nooit wordt verstuurd"
+    override val disclosureNeverBody =
+        "Namen van donateurs. Kaartnummers of andere kaartgegevens. SumUp-transactie-ID's."
+    override val disclosureDestinationHeading = "Waar het naartoe gaat"
+    override val disclosureOffBody =
+        "Analyse uitschakelen zorgt dat deze kiosk stopt met het registreren van donatiegegevens en gegevens over de gezondheid van de kiosk zelf, afgezien van een lokale notitie van een storing of terugzetting die ernstig genoeg is om hem opnieuw te laten opstarten — bewaard tot de volgende opstart, en alleen verstuurd als analyse dan weer aanstaat. De bestemming wissen zorgt dat hij stopt met versturen wat al geregistreerd is, en verwijdert wat nog in de wachtrij staat."
+    override val disclosurePrivacyLabel = "Privacybeleid"
+    override val disclosureTermsLabel = "Voorwaarden"
+    override val disclosureDismiss = "Sluiten"
+    override val disclosureReopen = "Wat deze kiosk rapporteert"
 }
 
 // ── English ───────────────────────────────────────────────────────────────────
@@ -658,6 +783,67 @@ object EnglishStrings : Strings {
     override val euro = "Euro (€)"
     override val usDollar = "US Dollar ($)"
     override val britishPound = "British Pound (£)"
+
+    // Analytics
+    override val analyticsTitle = "Analytics"
+    override val analyticsSettings = "Analytics & reporting"
+    override val analyticsEnabledLabel = "Send analytics"
+    override val analyticsEnabledHint = "Donation totals and fault reports, from this kiosk only."
+    override val analyticsDestination = "Destination"
+    override val analyticsUrlLabel = "Project URL"
+    override val analyticsKeyLabel = "Publishable key"
+    override val analyticsKeyHint = "Stored encrypted on this device."
+    override val analyticsSave = "Save destination"
+    override val analyticsTestConnection = "Test connection"
+    override val analyticsTesting = "Testing..."
+    override val analyticsTestSucceeded = "Connected. This kiosk is now reporting."
+    override val analyticsTestFailed = "Could not reach the destination."
+    override val analyticsTestQueued = "Queued behind existing events; it will send with them."
+    override val analyticsStatus = "Status"
+    override val analyticsQueued = "Waiting to send"
+    override val analyticsLastUpload = "Last upload"
+    override val analyticsNeverUploaded = "Never"
+    override val analyticsLastError = "Last error"
+    override val analyticsBackingOff = "Waiting before retrying"
+    override val analyticsActivated = "Reporting is on"
+    override val analyticsNotActivated = "Not yet reporting"
+    override val analyticsKioskCode = "Kiosk code"
+    override val analyticsKioskCodeUnusual = "This does not match the usual code format. It will still be used."
+    override val analyticsPolicyUrls = "Policy links"
+    override val analyticsPrivacyUrlLabel = "Privacy policy URL"
+    override val analyticsTermsUrlLabel = "Terms URL"
+    override val analyticsClearCredentials = "Clear credentials"
+    override val analyticsClearWarning = "This removes the destination and deletes everything still waiting to send."
+    override val analyticsCleared = "Credentials cleared."
+    override val analyticsTestUnavailableNotConfigured = "Enter a destination first."
+    override val analyticsTestUnavailableDisabled = "Turn analytics on to test the connection."
+    override val analyticsKeyUnusual = "This does not look like a publishable key. Check you have not pasted a secret key."
+    override val analyticsPolicyUrlsMissing = "No policy links set. Activation will record them as empty."
+    override val analyticsInstallId = "Install ID"
+    override val analyticsFailedAttempts = "Failed attempts"
+    override val analyticsRetryIn = "Retrying in"
+    override val analyticsDropped = "Discarded (storage full or too old)"
+
+    // Disclosure screen
+    override val disclosureTitle = "What this kiosk reports"
+    override val disclosureIntro =
+        "A reporting destination has been saved. Once reporting is switched on and tested, this kiosk will send the following to it."
+    override val disclosureSendsHeading = "What is sent"
+    override val disclosureSendsAmount = "The amount, currency and time of each donation."
+    override val disclosureSendsIdentity = "This kiosk's install id, and its kiosk code if one is set."
+    override val disclosureSendsHealth = "The app version, and events about this kiosk's own health — restarts, card reader problems, and crashes, including the technical detail of each crash."
+    override val disclosureIdentified =
+        "These reports identify this kiosk. They are not anonymous."
+    override val disclosureNeverHeading = "What is never sent"
+    override val disclosureNeverBody =
+        "Donor names. Card numbers or any card data. SumUp transaction identifiers."
+    override val disclosureDestinationHeading = "Where it goes"
+    override val disclosureOffBody =
+        "Switching analytics off stops this kiosk recording donation and health data, apart from a local note of a fault or rollback serious enough to restart it — kept until the next startup, and sent only if analytics is on by then. Clearing the destination stops it sending what it has already recorded, and deletes anything still queued."
+    override val disclosurePrivacyLabel = "Privacy policy"
+    override val disclosureTermsLabel = "Terms"
+    override val disclosureDismiss = "Close"
+    override val disclosureReopen = "What this kiosk reports"
 }
 
 // ── German ────────────────────────────────────────────────────────────────────
@@ -882,6 +1068,67 @@ object GermanStrings : Strings {
     override val frequencyCountHeader = "Anzahl"
     override val frequencyTotalHeader = "Summe"
     override val recentDonations = "Letzte Spenden"
+
+    // Analytics
+    override val analyticsTitle = "Analyse"
+    override val analyticsSettings = "Analyse & Berichte"
+    override val analyticsEnabledLabel = "Analyse senden"
+    override val analyticsEnabledHint = "Spendensummen und Störungsmeldungen, nur von diesem Kiosk."
+    override val analyticsDestination = "Ziel"
+    override val analyticsUrlLabel = "Projekt-URL"
+    override val analyticsKeyLabel = "Veröffentlichbarer Schlüssel"
+    override val analyticsKeyHint = "Verschlüsselt auf diesem Gerät gespeichert."
+    override val analyticsSave = "Ziel speichern"
+    override val analyticsTestConnection = "Verbindung testen"
+    override val analyticsTesting = "Wird getestet..."
+    override val analyticsTestSucceeded = "Verbunden. Dieser Kiosk meldet jetzt Daten."
+    override val analyticsTestFailed = "Ziel konnte nicht erreicht werden."
+    override val analyticsTestQueued = "Hinter bestehenden Ereignissen eingereiht; wird mit ihnen gesendet."
+    override val analyticsStatus = "Status"
+    override val analyticsQueued = "Wartet auf Versand"
+    override val analyticsLastUpload = "Letzter Upload"
+    override val analyticsNeverUploaded = "Nie"
+    override val analyticsLastError = "Letzter Fehler"
+    override val analyticsBackingOff = "Wartet vor erneutem Versuch"
+    override val analyticsActivated = "Meldung ist aktiv"
+    override val analyticsNotActivated = "Meldet noch nicht"
+    override val analyticsKioskCode = "Kiosk-Code"
+    override val analyticsKioskCodeUnusual = "Entspricht nicht dem üblichen Codeformat. Wird trotzdem verwendet."
+    override val analyticsPolicyUrls = "Richtlinien-Links"
+    override val analyticsPrivacyUrlLabel = "URL der Datenschutzerklärung"
+    override val analyticsTermsUrlLabel = "URL der Nutzungsbedingungen"
+    override val analyticsClearCredentials = "Zugangsdaten löschen"
+    override val analyticsClearWarning = "Dadurch werden das Ziel entfernt und alle noch wartenden Daten endgültig gelöscht."
+    override val analyticsCleared = "Zugangsdaten gelöscht."
+    override val analyticsTestUnavailableNotConfigured = "Zuerst ein Ziel eingeben."
+    override val analyticsTestUnavailableDisabled = "Analyse einschalten, um die Verbindung zu testen."
+    override val analyticsKeyUnusual = "Das sieht nicht wie ein veröffentlichbarer Schlüssel aus. Prüfen Sie, ob Sie keinen geheimen Schlüssel eingefügt haben."
+    override val analyticsPolicyUrlsMissing = "Keine Richtlinien-Links festgelegt. Bei der Aktivierung werden sie leer gespeichert."
+    override val analyticsInstallId = "Installations-ID"
+    override val analyticsFailedAttempts = "Fehlgeschlagene Versuche"
+    override val analyticsRetryIn = "Erneuter Versuch in"
+    override val analyticsDropped = "Verworfen (Speicher voll oder zu alt)"
+
+    // Disclosure screen
+    override val disclosureTitle = "Was dieser Kiosk meldet"
+    override val disclosureIntro =
+        "Ein Meldeziel wurde gespeichert. Sobald die Meldung eingeschaltet und getestet ist, sendet dieser Kiosk Folgendes dorthin."
+    override val disclosureSendsHeading = "Was gesendet wird"
+    override val disclosureSendsAmount = "Betrag, Währung und Uhrzeit jeder Spende."
+    override val disclosureSendsIdentity = "Die Installations-ID dieses Kiosks und, falls festgelegt, der Kiosk-Code."
+    override val disclosureSendsHealth = "Die App-Version sowie Ereignisse zum eigenen Zustand dieses Kiosks — Neustarts, Kartenleser-Probleme, Abstürze, einschließlich der technischen Details des Absturzes."
+    override val disclosureIdentified =
+        "Diese Meldungen identifizieren diesen Kiosk. Sie sind nicht anonym."
+    override val disclosureNeverHeading = "Was niemals gesendet wird"
+    override val disclosureNeverBody =
+        "Namen von Spendern. Kartennummern oder sonstige Kartendaten. SumUp-Transaktionskennungen."
+    override val disclosureDestinationHeading = "Wohin es geht"
+    override val disclosureOffBody =
+        "Analyse ausschalten beendet die Aufzeichnung von Spenden- und Zustandsdaten dieses Kiosks, abgesehen von einem lokalen Hinweis auf einen Fehler oder ein Rollback, der schwerwiegend genug ist, um ihn neu zu starten — aufbewahrt bis zum nächsten Start und nur gesendet, wenn Analyse bis dahin wieder eingeschaltet ist. Das Ziel zu löschen beendet den Versand dessen, was bereits aufgezeichnet wurde, und löscht, was noch in der Warteschlange steht."
+    override val disclosurePrivacyLabel = "Datenschutzerklärung"
+    override val disclosureTermsLabel = "Nutzungsbedingungen"
+    override val disclosureDismiss = "Schließen"
+    override val disclosureReopen = "Was dieser Kiosk meldet"
 }
 
 // ── French ────────────────────────────────────────────────────────────────────
@@ -1106,6 +1353,67 @@ object FrenchStrings : Strings {
     override val frequencyCountHeader = "Nombre"
     override val frequencyTotalHeader = "Total"
     override val recentDonations = "Dons récents"
+
+    // Analytics
+    override val analyticsTitle = "Analytique"
+    override val analyticsSettings = "Analytique et rapports"
+    override val analyticsEnabledLabel = "Envoyer les données analytiques"
+    override val analyticsEnabledHint = "Totaux des dons et rapports d'incidents, de ce kiosque uniquement."
+    override val analyticsDestination = "Destination"
+    override val analyticsUrlLabel = "URL du projet"
+    override val analyticsKeyLabel = "Clé publiable"
+    override val analyticsKeyHint = "Stockée de façon chiffrée sur cet appareil."
+    override val analyticsSave = "Enregistrer la destination"
+    override val analyticsTestConnection = "Tester la connexion"
+    override val analyticsTesting = "Test en cours..."
+    override val analyticsTestSucceeded = "Connecté. Ce kiosque transmet désormais ses données."
+    override val analyticsTestFailed = "Impossible de joindre la destination."
+    override val analyticsTestQueued = "En file derrière les événements existants ; sera envoyé avec eux."
+    override val analyticsStatus = "État"
+    override val analyticsQueued = "En attente d'envoi"
+    override val analyticsLastUpload = "Dernier envoi"
+    override val analyticsNeverUploaded = "Jamais"
+    override val analyticsLastError = "Dernière erreur"
+    override val analyticsBackingOff = "Attente avant nouvelle tentative"
+    override val analyticsActivated = "Transmission active"
+    override val analyticsNotActivated = "Pas encore de transmission"
+    override val analyticsKioskCode = "Code du kiosque"
+    override val analyticsKioskCodeUnusual = "Ne correspond pas au format habituel. Sera quand même utilisé."
+    override val analyticsPolicyUrls = "Liens des politiques"
+    override val analyticsPrivacyUrlLabel = "URL de la politique de confidentialité"
+    override val analyticsTermsUrlLabel = "URL des conditions d'utilisation"
+    override val analyticsClearCredentials = "Effacer les identifiants"
+    override val analyticsClearWarning = "Cela supprime la destination et efface tout ce qui reste en attente d'envoi."
+    override val analyticsCleared = "Identifiants effacés."
+    override val analyticsTestUnavailableNotConfigured = "Saisissez d'abord une destination."
+    override val analyticsTestUnavailableDisabled = "Activez les données analytiques pour tester la connexion."
+    override val analyticsKeyUnusual = "Ceci ne ressemble pas à une clé publiable. Vérifiez que vous n'avez pas collé une clé secrète."
+    override val analyticsPolicyUrlsMissing = "Aucun lien de politique défini. L'activation les enregistrera comme vides."
+    override val analyticsInstallId = "ID d'installation"
+    override val analyticsFailedAttempts = "Tentatives échouées"
+    override val analyticsRetryIn = "Nouvelle tentative dans"
+    override val analyticsDropped = "Supprimé (stockage plein ou trop ancien)"
+
+    // Disclosure screen
+    override val disclosureTitle = "Ce que ce kiosque transmet"
+    override val disclosureIntro =
+        "Une destination de transmission a été enregistrée. Une fois la transmission activée et testée, ce kiosque lui enverra les éléments suivants."
+    override val disclosureSendsHeading = "Ce qui est envoyé"
+    override val disclosureSendsAmount = "Le montant, la devise et l'heure de chaque don."
+    override val disclosureSendsIdentity = "L'ID d'installation de ce kiosque, ainsi que son code de kiosque s'il en a un."
+    override val disclosureSendsHealth = "La version de l'application, et des événements sur l'état de ce kiosque lui-même — redémarrages, problèmes de lecteur de carte, plantages, y compris le détail technique du plantage."
+    override val disclosureIdentified =
+        "Ces rapports identifient ce kiosque. Ils ne sont pas anonymes."
+    override val disclosureNeverHeading = "Ce qui n'est jamais envoyé"
+    override val disclosureNeverBody =
+        "Les noms des donateurs. Les numéros de carte ou toute autre donnée de carte. Les identifiants de transaction SumUp."
+    override val disclosureDestinationHeading = "Où cela va"
+    override val disclosureOffBody =
+        "Désactiver les données analytiques arrête l'enregistrement des données de dons et d'état de ce kiosque, à l'exception d'une note locale d'une panne ou d'un rollback assez grave pour le forcer à redémarrer — conservée jusqu'au prochain démarrage, et envoyée uniquement si les données analytiques sont réactivées d'ici là. Effacer la destination arrête l'envoi de ce qui a déjà été enregistré, et supprime ce qui est encore en attente."
+    override val disclosurePrivacyLabel = "Politique de confidentialité"
+    override val disclosureTermsLabel = "Conditions"
+    override val disclosureDismiss = "Fermer"
+    override val disclosureReopen = "Ce que ce kiosque transmet"
 }
 
 // ── Spanish ───────────────────────────────────────────────────────────────────
@@ -1330,6 +1638,67 @@ object SpanishStrings : Strings {
     override val frequencyCountHeader = "Cantidad"
     override val frequencyTotalHeader = "Total"
     override val recentDonations = "Donaciones recientes"
+
+    // Analytics
+    override val analyticsTitle = "Analítica"
+    override val analyticsSettings = "Analítica e informes"
+    override val analyticsEnabledLabel = "Enviar analítica"
+    override val analyticsEnabledHint = "Totales de donaciones y avisos de fallos, solo de este kiosco."
+    override val analyticsDestination = "Destino"
+    override val analyticsUrlLabel = "URL del proyecto"
+    override val analyticsKeyLabel = "Clave publicable"
+    override val analyticsKeyHint = "Guardada cifrada en este dispositivo."
+    override val analyticsSave = "Guardar destino"
+    override val analyticsTestConnection = "Probar conexión"
+    override val analyticsTesting = "Probando..."
+    override val analyticsTestSucceeded = "Conectado. Este kiosco ya está informando."
+    override val analyticsTestFailed = "No se pudo contactar con el destino."
+    override val analyticsTestQueued = "En cola detrás de eventos existentes; se enviará junto con ellos."
+    override val analyticsStatus = "Estado"
+    override val analyticsQueued = "Esperando para enviar"
+    override val analyticsLastUpload = "Última subida"
+    override val analyticsNeverUploaded = "Nunca"
+    override val analyticsLastError = "Último error"
+    override val analyticsBackingOff = "Esperando para reintentar"
+    override val analyticsActivated = "El envío está activo"
+    override val analyticsNotActivated = "Aún no informa"
+    override val analyticsKioskCode = "Código del kiosco"
+    override val analyticsKioskCodeUnusual = "No coincide con el formato habitual. Se usará de todas formas."
+    override val analyticsPolicyUrls = "Enlaces de políticas"
+    override val analyticsPrivacyUrlLabel = "URL de política de privacidad"
+    override val analyticsTermsUrlLabel = "URL de términos"
+    override val analyticsClearCredentials = "Borrar credenciales"
+    override val analyticsClearWarning = "Esto elimina el destino y borra todo lo que aún esperaba enviarse."
+    override val analyticsCleared = "Credenciales borradas."
+    override val analyticsTestUnavailableNotConfigured = "Introduce primero un destino."
+    override val analyticsTestUnavailableDisabled = "Activa la analítica para probar la conexión."
+    override val analyticsKeyUnusual = "Esto no parece una clave publicable. Comprueba que no hayas pegado una clave secreta."
+    override val analyticsPolicyUrlsMissing = "No hay enlaces de políticas configurados. La activación los registrará vacíos."
+    override val analyticsInstallId = "ID de instalación"
+    override val analyticsFailedAttempts = "Intentos fallidos"
+    override val analyticsRetryIn = "Reintentando en"
+    override val analyticsDropped = "Descartado (almacenamiento lleno o demasiado antiguo)"
+
+    // Disclosure screen
+    override val disclosureTitle = "Qué informa este kiosco"
+    override val disclosureIntro =
+        "Se ha guardado un destino de informes. Cuando el envío esté activado y probado, este kiosco enviará lo siguiente a ese destino."
+    override val disclosureSendsHeading = "Qué se envía"
+    override val disclosureSendsAmount = "El importe, la moneda y la hora de cada donación."
+    override val disclosureSendsIdentity = "El ID de instalación de este kiosco, y su código de kiosco si tiene uno configurado."
+    override val disclosureSendsHealth = "La versión de la app, y eventos sobre el propio estado de este kiosco — reinicios, problemas del lector de tarjetas, fallos, incluido el detalle técnico del fallo."
+    override val disclosureIdentified =
+        "Estos informes identifican a este kiosco. No son anónimos."
+    override val disclosureNeverHeading = "Qué nunca se envía"
+    override val disclosureNeverBody =
+        "Nombres de donantes. Números de tarjeta o cualquier dato de tarjeta. Identificadores de transacción de SumUp."
+    override val disclosureDestinationHeading = "A dónde va"
+    override val disclosureOffBody =
+        "Desactivar la analítica hace que este kiosco deje de registrar datos de donaciones y de estado, salvo una nota local de un fallo o una reversión lo bastante grave como para obligarlo a reiniciarse — conservada hasta el siguiente arranque, y enviada solo si la analítica vuelve a estar activada para entonces. Borrar el destino hace que deje de enviar lo que ya ha registrado, y elimina lo que aún está en cola."
+    override val disclosurePrivacyLabel = "Política de privacidad"
+    override val disclosureTermsLabel = "Términos"
+    override val disclosureDismiss = "Cerrar"
+    override val disclosureReopen = "Qué informa este kiosco"
 }
 
 // ── Italian ───────────────────────────────────────────────────────────────────
@@ -1554,6 +1923,67 @@ object ItalianStrings : Strings {
     override val frequencyCountHeader = "Quantità"
     override val frequencyTotalHeader = "Totale"
     override val recentDonations = "Donazioni recenti"
+
+    // Analytics
+    override val analyticsTitle = "Analisi"
+    override val analyticsSettings = "Analisi e report"
+    override val analyticsEnabledLabel = "Invia dati di analisi"
+    override val analyticsEnabledHint = "Totali delle donazioni e segnalazioni di guasti, solo da questo kiosk."
+    override val analyticsDestination = "Destinazione"
+    override val analyticsUrlLabel = "URL del progetto"
+    override val analyticsKeyLabel = "Chiave pubblicabile"
+    override val analyticsKeyHint = "Salvata in modo cifrato su questo dispositivo."
+    override val analyticsSave = "Salva destinazione"
+    override val analyticsTestConnection = "Prova connessione"
+    override val analyticsTesting = "Prova in corso..."
+    override val analyticsTestSucceeded = "Connesso. Questo kiosk ora invia i dati."
+    override val analyticsTestFailed = "Impossibile raggiungere la destinazione."
+    override val analyticsTestQueued = "In coda dietro agli eventi esistenti; verrà inviato insieme a loro."
+    override val analyticsStatus = "Stato"
+    override val analyticsQueued = "In attesa di invio"
+    override val analyticsLastUpload = "Ultimo invio"
+    override val analyticsNeverUploaded = "Mai"
+    override val analyticsLastError = "Ultimo errore"
+    override val analyticsBackingOff = "In attesa prima di ritentare"
+    override val analyticsActivated = "L'invio è attivo"
+    override val analyticsNotActivated = "Non ancora attivo"
+    override val analyticsKioskCode = "Codice kiosk"
+    override val analyticsKioskCodeUnusual = "Non corrisponde al formato consueto. Verrà comunque usato."
+    override val analyticsPolicyUrls = "Link alle norme"
+    override val analyticsPrivacyUrlLabel = "URL informativa privacy"
+    override val analyticsTermsUrlLabel = "URL termini di servizio"
+    override val analyticsClearCredentials = "Cancella credenziali"
+    override val analyticsClearWarning = "Questo rimuove la destinazione ed elimina tutto ciò che era ancora in attesa di invio."
+    override val analyticsCleared = "Credenziali cancellate."
+    override val analyticsTestUnavailableNotConfigured = "Inserisci prima una destinazione."
+    override val analyticsTestUnavailableDisabled = "Attiva l'analisi per provare la connessione."
+    override val analyticsKeyUnusual = "Questa non sembra una chiave pubblicabile. Verifica di non aver incollato una chiave segreta."
+    override val analyticsPolicyUrlsMissing = "Nessun link alle norme impostato. L'attivazione li registrerà vuoti."
+    override val analyticsInstallId = "ID installazione"
+    override val analyticsFailedAttempts = "Tentativi falliti"
+    override val analyticsRetryIn = "Nuovo tentativo tra"
+    override val analyticsDropped = "Scartato (memoria piena o troppo vecchio)"
+
+    // Disclosure screen
+    override val disclosureTitle = "Cosa segnala questo kiosk"
+    override val disclosureIntro =
+        "È stata salvata una destinazione per l'invio. Una volta attivato e testato l'invio, questo kiosk le invierà quanto segue."
+    override val disclosureSendsHeading = "Cosa viene inviato"
+    override val disclosureSendsAmount = "L'importo, la valuta e l'orario di ogni donazione."
+    override val disclosureSendsIdentity = "L'ID di installazione di questo kiosk, e il suo codice kiosk se impostato."
+    override val disclosureSendsHealth = "La versione dell'app, ed eventi sullo stato del kiosk stesso — riavvii, problemi al lettore di carte, crash, incluso il dettaglio tecnico del crash."
+    override val disclosureIdentified =
+        "Questi report identificano questo kiosk. Non sono anonimi."
+    override val disclosureNeverHeading = "Cosa non viene mai inviato"
+    override val disclosureNeverBody =
+        "Nomi dei donatori. Numeri di carta o qualsiasi dato di carta. Identificativi di transazione SumUp."
+    override val disclosureDestinationHeading = "Dove va"
+    override val disclosureOffBody =
+        "Disattivare l'analisi interrompe la registrazione dei dati di donazione e di stato di questo kiosk, salvo una nota locale di un guasto o di un rollback abbastanza grave da costringerlo a riavviarsi — conservata fino al successivo avvio, e inviata solo se l'analisi è di nuovo attiva a quel punto. Cancellare la destinazione interrompe l'invio di ciò che è già stato registrato, ed elimina ciò che è ancora in coda."
+    override val disclosurePrivacyLabel = "Informativa privacy"
+    override val disclosureTermsLabel = "Termini"
+    override val disclosureDismiss = "Chiudi"
+    override val disclosureReopen = "Cosa segnala questo kiosk"
 }
 
 // ── Turkish ───────────────────────────────────────────────────────────────────
@@ -1778,6 +2208,67 @@ object TurkishStrings : Strings {
     override val frequencyCountHeader = "Adet"
     override val frequencyTotalHeader = "Toplam"
     override val recentDonations = "Son bağışlar"
+
+    // Analytics
+    override val analyticsTitle = "Analitik"
+    override val analyticsSettings = "Analitik ve raporlama"
+    override val analyticsEnabledLabel = "Analitik verisi gönder"
+    override val analyticsEnabledHint = "Sadece bu kiosktan bağış toplamları ve arıza bildirimleri."
+    override val analyticsDestination = "Hedef"
+    override val analyticsUrlLabel = "Proje URL'si"
+    override val analyticsKeyLabel = "Yayınlanabilir anahtar"
+    override val analyticsKeyHint = "Bu cihazda şifreli olarak saklanır."
+    override val analyticsSave = "Hedefi kaydet"
+    override val analyticsTestConnection = "Bağlantıyı test et"
+    override val analyticsTesting = "Test ediliyor..."
+    override val analyticsTestSucceeded = "Bağlandı. Bu kiosk artık veri gönderiyor."
+    override val analyticsTestFailed = "Hedefe ulaşılamadı."
+    override val analyticsTestQueued = "Mevcut olayların arkasında sırada; onlarla birlikte gönderilecek."
+    override val analyticsStatus = "Durum"
+    override val analyticsQueued = "Gönderim bekleniyor"
+    override val analyticsLastUpload = "Son gönderim"
+    override val analyticsNeverUploaded = "Hiç"
+    override val analyticsLastError = "Son hata"
+    override val analyticsBackingOff = "Tekrar denemeden önce bekleniyor"
+    override val analyticsActivated = "Raporlama açık"
+    override val analyticsNotActivated = "Henüz rapor gönderilmiyor"
+    override val analyticsKioskCode = "Kiosk kodu"
+    override val analyticsKioskCodeUnusual = "Bu, olağan kod biçimine uymuyor. Yine de kullanılacak."
+    override val analyticsPolicyUrls = "Politika bağlantıları"
+    override val analyticsPrivacyUrlLabel = "Gizlilik politikası URL'si"
+    override val analyticsTermsUrlLabel = "Kullanım şartları URL'si"
+    override val analyticsClearCredentials = "Kimlik bilgilerini temizle"
+    override val analyticsClearWarning = "Bu, hedefi kaldırır ve gönderilmeyi bekleyen her şeyi siler."
+    override val analyticsCleared = "Kimlik bilgileri temizlendi."
+    override val analyticsTestUnavailableNotConfigured = "Önce bir hedef girin."
+    override val analyticsTestUnavailableDisabled = "Bağlantıyı test etmek için analitiği açın."
+    override val analyticsKeyUnusual = "Bu, yayınlanabilir bir anahtara benzemiyor. Gizli bir anahtar yapıştırmadığınızdan emin olun."
+    override val analyticsPolicyUrlsMissing = "Politika bağlantısı ayarlanmadı. Etkinleştirme bunları boş olarak kaydeder."
+    override val analyticsInstallId = "Kurulum kimliği"
+    override val analyticsFailedAttempts = "Başarısız denemeler"
+    override val analyticsRetryIn = "Yeniden deneme"
+    override val analyticsDropped = "Atıldı (depolama dolu ya da çok eski)"
+
+    // Disclosure screen
+    override val disclosureTitle = "Bu kiosk neleri raporluyor"
+    override val disclosureIntro =
+        "Bir raporlama hedefi kaydedildi. Raporlama açılıp test edildikten sonra bu kiosk aşağıdakileri o hedefe gönderecek."
+    override val disclosureSendsHeading = "Neler gönderiliyor"
+    override val disclosureSendsAmount = "Her bağışın tutarı, para birimi ve zamanı."
+    override val disclosureSendsIdentity = "Bu kioskun kurulum kimliği ve varsa kiosk kodu."
+    override val disclosureSendsHealth = "Uygulama sürümü ve bu kioskun kendi sağlığıyla ilgili olaylar — yeniden başlatmalar, kart okuyucu sorunları, çökmeler ve çökmenin teknik ayrıntıları."
+    override val disclosureIdentified =
+        "Bu raporlar bu kioskun kimliğini belirtir. Anonim değildirler."
+    override val disclosureNeverHeading = "Neler asla gönderilmez"
+    override val disclosureNeverBody =
+        "Bağışçı adları. Kart numaraları veya herhangi bir kart verisi. SumUp işlem kimlikleri."
+    override val disclosureDestinationHeading = "Nereye gidiyor"
+    override val disclosureOffBody =
+        "Analitiği kapatmak bu kioskun bağış ve durum verilerini kaydetmesini durdurur; yalnızca kioskun yeniden başlamasını gerektirecek kadar ciddi bir arıza veya geri almanın yerel bir notu bunun dışındadır — bir sonraki başlangıca kadar saklanır ve yalnızca o sırada analitik tekrar açıksa gönderilir. Hedefi temizlemek zaten kaydedilmiş olanların gönderilmesini durdurur ve sırada bekleyenleri siler."
+    override val disclosurePrivacyLabel = "Gizlilik politikası"
+    override val disclosureTermsLabel = "Şartlar"
+    override val disclosureDismiss = "Kapat"
+    override val disclosureReopen = "Bu kiosk neleri raporluyor"
 }
 
 // ── Arabic ────────────────────────────────────────────────────────────────────
@@ -2002,4 +2493,65 @@ object ArabicStrings : Strings {
     override val frequencyCountHeader = "العدد"
     override val frequencyTotalHeader = "الإجمالي"
     override val recentDonations = "التبرعات الأخيرة"
+
+    // Analytics
+    override val analyticsTitle = "التحليلات"
+    override val analyticsSettings = "التحليلات والتقارير"
+    override val analyticsEnabledLabel = "إرسال بيانات التحليلات"
+    override val analyticsEnabledHint = "إجماليات التبرعات وتقارير الأعطال، من هذا الكشك فقط."
+    override val analyticsDestination = "الوجهة"
+    override val analyticsUrlLabel = "رابط المشروع"
+    override val analyticsKeyLabel = "المفتاح القابل للنشر"
+    override val analyticsKeyHint = "محفوظ بشكل مشفر على هذا الجهاز."
+    override val analyticsSave = "حفظ الوجهة"
+    override val analyticsTestConnection = "اختبار الاتصال"
+    override val analyticsTesting = "جارٍ الاختبار..."
+    override val analyticsTestSucceeded = "تم الاتصال. هذا الكشك يرسل التقارير الآن."
+    override val analyticsTestFailed = "تعذر الوصول إلى الوجهة."
+    override val analyticsTestQueued = "في الطابور خلف الأحداث الحالية؛ سيُرسل معها."
+    override val analyticsStatus = "الحالة"
+    override val analyticsQueued = "في انتظار الإرسال"
+    override val analyticsLastUpload = "آخر رفع"
+    override val analyticsNeverUploaded = "أبداً"
+    override val analyticsLastError = "آخر خطأ"
+    override val analyticsBackingOff = "في انتظار قبل إعادة المحاولة"
+    override val analyticsActivated = "الإرسال مفعّل"
+    override val analyticsNotActivated = "لم يبدأ الإرسال بعد"
+    override val analyticsKioskCode = "رمز الكشك"
+    override val analyticsKioskCodeUnusual = "لا يطابق الصيغة المعتادة للرمز. سيُستخدم رغم ذلك."
+    override val analyticsPolicyUrls = "روابط السياسات"
+    override val analyticsPrivacyUrlLabel = "رابط سياسة الخصوصية"
+    override val analyticsTermsUrlLabel = "رابط الشروط"
+    override val analyticsClearCredentials = "مسح بيانات الاعتماد"
+    override val analyticsClearWarning = "يؤدي هذا إلى إزالة الوجهة وحذف كل ما ينتظر الإرسال."
+    override val analyticsCleared = "تم مسح بيانات الاعتماد."
+    override val analyticsTestUnavailableNotConfigured = "أدخل وجهة أولاً."
+    override val analyticsTestUnavailableDisabled = "فعّل التحليلات لاختبار الاتصال."
+    override val analyticsKeyUnusual = "هذا لا يبدو مفتاحاً قابلاً للنشر. تأكد من أنك لم تلصق مفتاحاً سرياً."
+    override val analyticsPolicyUrlsMissing = "لا توجد روابط سياسات محددة. سيسجلها التفعيل فارغة."
+    override val analyticsInstallId = "معرّف التثبيت"
+    override val analyticsFailedAttempts = "المحاولات الفاشلة"
+    override val analyticsRetryIn = "إعادة المحاولة خلال"
+    override val analyticsDropped = "تم الحذف (التخزين ممتلئ أو قديم جدًا)"
+
+    // Disclosure screen
+    override val disclosureTitle = "ما يرسله هذا الكشك"
+    override val disclosureIntro =
+        "تم حفظ وجهة للإرسال. بمجرد تفعيل الإرسال واختباره، سيرسل هذا الكشك ما يلي إليها."
+    override val disclosureSendsHeading = "ما الذي يُرسَل"
+    override val disclosureSendsAmount = "المبلغ والعملة ووقت كل تبرع."
+    override val disclosureSendsIdentity = "معرّف التثبيت لهذا الكشك، ورمز الكشك إن وُجد."
+    override val disclosureSendsHealth = "إصدار التطبيق، وأحداث عن حالة هذا الكشك نفسه — إعادة التشغيل، مشاكل قارئ البطاقات، الأعطال، بما في ذلك التفاصيل التقنية للعطل."
+    override val disclosureIdentified =
+        "تُعرّف هذه التقارير هذا الكشك. إنها ليست مجهولة الهوية."
+    override val disclosureNeverHeading = "ما لا يُرسَل أبداً"
+    override val disclosureNeverBody =
+        "أسماء المتبرعين. أرقام البطاقات أو أي بيانات بطاقة. معرّفات معاملات SumUp."
+    override val disclosureDestinationHeading = "إلى أين يذهب"
+    override val disclosureOffBody =
+        "إيقاف التحليلات يوقف تسجيل هذا الكشك لبيانات التبرعات والحالة، باستثناء ملاحظة محلية عن عطل أو تراجع خطير بما يكفي لإجباره على إعادة التشغيل — تُحفظ حتى تشغيله التالي، ولا تُرسل إلا إذا كانت التحليلات قد أُعيد تفعيلها بحلول ذلك الوقت. مسح الوجهة يوقف إرسال ما تم تسجيله بالفعل، ويحذف ما لا يزال في الانتظار."
+    override val disclosurePrivacyLabel = "سياسة الخصوصية"
+    override val disclosureTermsLabel = "الشروط"
+    override val disclosureDismiss = "إغلاق"
+    override val disclosureReopen = "ما يرسله هذا الكشك"
 }
