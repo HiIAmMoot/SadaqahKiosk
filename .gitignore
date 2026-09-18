@@ -55,3 +55,7 @@ CLAUDE.md
 # Python bytecode from tools/
 __pycache__/
 *.pyc
+
+# Local repo bundles taken before history rewrites. Never pushed: they carry
+# every branch including ones not meant to be published yet.
+/backups/
