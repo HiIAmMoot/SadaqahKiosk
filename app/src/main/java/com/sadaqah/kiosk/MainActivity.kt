@@ -316,6 +316,34 @@ class MainActivity : FragmentActivity() {
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         isNetworkAvailable = isOnlineNow()
 
+        val json = prefs.getString("settings", null)
+        if (!json.isNullOrEmpty()) {
+            settings = Gson().fromJson(json, Settings::class.java)
+        } else {
+            settings = Settings()
+        }
+
+        if (json.isNullOrEmpty()) {
+            // First startup: auto-detect from device locale, default to English if no match
+            val deviceLocale = java.util.Locale.getDefault().language
+            val detectedLanguage = TranslationManager.fromCode(deviceLocale)
+            TranslationManager.setLanguage(detectedLanguage)
+            settings = settings.copy(language = detectedLanguage.code)
+            saveSettings(settings)
+        } else {
+            TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
+        }
+
+        // Deliberately below the settings load above, not beside the
+        // connectivity setup where it used to sit. `settings` is a field with a
+        // default initialiser, so reading settings.testMode before the stored
+        // JSON is parsed always saw `false`: the bypass never fired on a cold
+        // start, the else branch always ran, and authenticate() went out to
+        // SumUp for real — opening the SDK's own login activity on top of a
+        // kiosk that was supposed to be in test mode.
+        //
+        // authenticate() carries the same guard internally and was reading the
+        // same unloaded value, so neither layer caught it.
         if (settings.testMode) {
             isLoggedIn = true
             isCardReaderConnected = true
@@ -336,24 +364,6 @@ class MainActivity : FragmentActivity() {
         // door. Safe to call unconditionally: arming is idempotent, so the call
         // above has already won if it got there first.
         scheduleDailyLoginReset(affiliateKey)
-
-        val json = prefs.getString("settings", null)
-        if (!json.isNullOrEmpty()) {
-            settings = Gson().fromJson(json, Settings::class.java)
-        } else {
-            settings = Settings()
-        }
-
-        if (json.isNullOrEmpty()) {
-            // First startup: auto-detect from device locale, default to English if no match
-            val deviceLocale = java.util.Locale.getDefault().language
-            val detectedLanguage = TranslationManager.fromCode(deviceLocale)
-            TranslationManager.setLanguage(detectedLanguage)
-            settings = settings.copy(language = detectedLanguage.code)
-            saveSettings(settings)
-        } else {
-            TranslationManager.setLanguage(TranslationManager.fromCode(settings.language))
-        }
 
         // Kick off logo colour extraction so the picker has swatches ready
         // by the time the operator opens it. Idempotent — repeat calls on
@@ -699,7 +709,24 @@ class MainActivity : FragmentActivity() {
                         verdict
                     },
                     onAnalyticsTestConnection = ::onAnalyticsTestConnection,
-                    onAnalyticsKioskCodeChange = { code -> onSettingsChange(settings.copy(kioskCode = code)) },
+                    // Normalised on the way in, not just validated. KioskCode's
+                    // advisory check trims before matching, so an untrimmed code
+                    // "looks conventional", raises no warning, and then ships on
+                    // every row that kiosk sends — splitting one kiosk into two
+                    // groups for whoever queries the table, with nothing on
+                    // screen saying so.
+                    onAnalyticsKioskCodeChange = { code ->
+                        onSettingsChange(
+                            settings.copy(
+                                kioskCode = KioskCode.normalize(code),
+                                // Typing here is the operator claiming the code for
+                                // this kiosk, which is exactly the condition the
+                                // imported-code warning exists to flag. Clearing it
+                                // on edit is what stops the warning outliving it.
+                                kioskCodeFromImport = false
+                            )
+                        )
+                    },
                     onAnalyticsPolicyUrlsChange = { privacy, terms ->
                         onSettingsChange(settings.copy(analyticsPrivacyPolicyUrl = privacy, analyticsTermsUrl = terms))
                     },
@@ -1959,8 +1986,21 @@ class MainActivity : FragmentActivity() {
      * [includeSecrets] is set. Runs key derivation, so call it off the UI thread.
      */
     fun exportSettings(includeSecrets: Boolean, password: String): String {
-        val secrets = if (includeSecrets && affiliateKey.isNotBlank()) {
-            mapOf(SettingsExportFile.KEY_AFFILIATE to affiliateKey)
+        val secrets = if (includeSecrets) {
+            buildMap {
+                if (affiliateKey.isNotBlank()) put(SettingsExportFile.KEY_AFFILIATE, affiliateKey)
+                // The reporting destination travels with the credentials it
+                // belongs to. Without it, the documented fleet workflow —
+                // configure one kiosk, export, import onto the rest — produced
+                // kiosks that looked configured and silently never reported,
+                // because the destination lives in the Keystore and nothing
+                // carried it across. `build` drops blank values, so an
+                // unconfigured kiosk simply contributes nothing here.
+                telemetryCredentials.load()?.let { config ->
+                    put(SettingsExportFile.KEY_TELEMETRY_URL, config.baseUrl)
+                    put(SettingsExportFile.KEY_TELEMETRY_KEY, config.publishableKey)
+                }
+            }
         } else {
             emptyMap()
         }
@@ -1986,6 +2026,20 @@ class MainActivity : FragmentActivity() {
             // A stale key here disarms the crash handler's exact-match scrub
             // for exactly the key that was just imported.
             CrashContext.affiliateKey = key
+        }
+
+        // Goes through the credentials layer rather than writing the Keystore
+        // directly, so an imported URL faces exactly the same validation an
+        // operator-typed one does. A file carrying a destination this build
+        // rejects leaves the previous one in place rather than half-applying.
+        val importedUrl = result.secrets[SettingsExportFile.KEY_TELEMETRY_URL]
+        val importedKey = result.secrets[SettingsExportFile.KEY_TELEMETRY_KEY]
+        if (!importedUrl.isNullOrBlank() && !importedKey.isNullOrBlank()) {
+            when (val verdict = telemetryCredentials.save(importedUrl, importedKey)) {
+                is UrlVerdict.Valid -> refreshAnalyticsSnapshot()
+                is UrlVerdict.Invalid ->
+                    Log.w("SettingsImport", "Imported telemetry URL rejected: ${verdict.reason}")
+            }
         }
         return result
     }

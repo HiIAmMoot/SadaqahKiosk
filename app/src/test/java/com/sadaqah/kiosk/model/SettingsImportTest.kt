@@ -3,6 +3,7 @@ package com.sadaqah.kiosk.model
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SettingsImportTest {
@@ -20,6 +21,39 @@ class SettingsImportTest {
     fun aBlankLocalInstallIdIsNotFilledFromTheFile() {
         val merged = SettingsImport.merge(Settings(installId = ""), Settings(installId = "from-file"))
         assertEquals("", merged.installId)
+    }
+
+    /** The code travels by design, so a tablet swapped into an existing kiosk
+     *  keeps that kiosk's printed code. What must not happen silently is a whole
+     *  cloned fleet reporting under one code, so the merge records that the value
+     *  arrived from a file rather than from this kiosk's operator. */
+    @Test
+    fun anImportedKioskCodeIsMarkedAsComingFromAFile() {
+        val merged = SettingsImport.merge(
+            Settings(kioskCode = ""),
+            Settings(kioskCode = "nl-gld-arnhem-nour_al_houda-01")
+        )
+        assertEquals("nl-gld-arnhem-nour_al_houda-01", merged.kioskCode)
+        assertTrue(merged.kioskCodeFromImport)
+    }
+
+    /** An import carrying no code leaves nothing to warn about. */
+    @Test
+    fun anImportWithNoKioskCodeIsNotMarked() {
+        val merged = SettingsImport.merge(Settings(kioskCode = "mine"), Settings(kioskCode = ""))
+        assertFalse(merged.kioskCodeFromImport)
+    }
+
+    /** The flag describes THIS import, so a stale one from the source device's
+     *  own export must not ride across and warn about a code that did not come
+     *  from a file at all. */
+    @Test
+    fun theFlagIsRecomputedRatherThanInherited() {
+        val merged = SettingsImport.merge(
+            Settings(),
+            Settings(kioskCode = "", kioskCodeFromImport = true)
+        )
+        assertFalse(merged.kioskCodeFromImport)
     }
 
     @Test

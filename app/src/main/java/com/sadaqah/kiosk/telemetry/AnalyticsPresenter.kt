@@ -59,7 +59,12 @@ data class AnalyticsView(
     val dropped: Int,
     val privacyPolicyUrl: String,
     val termsUrl: String,
-    val policyUrlsMissing: Boolean
+    val policyUrlsMissing: Boolean,
+    /** The kiosk code arrived from an imported file rather than being typed
+     *  here, so it may be shared with every other kiosk provisioned from that
+     *  same export. Only ever true while a code is actually set — a blank code
+     *  cannot be shared, and warning about one would be noise. */
+    val kioskCodeFromImport: Boolean
 )
 
 object AnalyticsPresenter {
@@ -151,7 +156,8 @@ object AnalyticsPresenter {
             dropped = status.droppedCount,
             privacyPolicyUrl = settings.analyticsPrivacyPolicyUrl,
             termsUrl = settings.analyticsTermsUrl,
-            policyUrlsMissing = settings.analyticsPrivacyPolicyUrl.isBlank() || settings.analyticsTermsUrl.isBlank()
+            policyUrlsMissing = settings.analyticsPrivacyPolicyUrl.isBlank() || settings.analyticsTermsUrl.isBlank(),
+            kioskCodeFromImport = settings.kioskCodeFromImport && settings.kioskCode.isNotBlank()
         )
     }
 

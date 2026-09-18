@@ -36,7 +36,20 @@ This file exists because deferred items were previously recorded only in phase s
 
 ---
 
-## The truncation suffix's byte budget is guarded only by a grep
+## ~~The truncation suffix's byte budget is guarded only by a grep~~ — RESOLVED 2026-09-16
+
+**Closed in phase 6.** `DiagnosticEventsTest` gained
+`aTruncatedMessageEndsWithTheSuffixItsBudgetWasComputedFrom`, which pins the
+value actually appended to the one the budget was computed from without
+hardcoding either, and `theAssembledDetailFitsTheCapForEveryAdversarialShape`,
+which runs the cap against eight escape and UTF-8 shapes rather than the single
+one the reserve was sized against.
+
+Verified by mutation: appending a different suffix literal than the one measured
+now fails exactly one test, which is the drift the grep was standing in for.
+Setting the wrapper reserve to zero fails two. The original text follows.
+
+---
 
 **What.** `DiagnosticEvents.truncateWrappedMessage` reserves budget for the
 truncation suffix by measuring `TelemetryRedactor.TRUNCATION_SUFFIX`'s
@@ -125,6 +138,86 @@ carries a transaction code. That would either close this out as unfounded or
 turn it into a redactor change with a concrete pattern to match.
 
 **Established in.** Phase 4 whole-branch review, 2026-09-16.
+
+## Arabic ships with a left-to-right layout
+
+**What.** Every screen, including the disclosure, arranges itself
+left-to-right in Arabic. Text is right-aligned correctly and nothing is
+clipped, but the layout mirrors the English arrangement: on
+`DisclosureScreen` the QR codes sit to the right of their labels rather than
+the left, which is not the convention for the script.
+
+**Why deferred.** Founder-ruled twice, most recently on 2026-09-16 after
+reviewing a screenshot of the Arabic disclosure on a device: implementing RTL
+is not worth it at this stage. It is a whole-app change rather than a
+per-screen one, and the app is legible in Arabic as it stands.
+
+**What it costs to leave.** An Arabic-reading operator gets a layout that
+reads as foreign, on every screen. Nothing is unreadable and no information is
+lost.
+
+**What fixing it needs.** Its own phase. Compose supports it through
+`LocalLayoutDirection`, but every screen would need reviewing for hardcoded
+start/end assumptions, and it wants a native reader on the result rather than
+a screenshot diff.
+
+**Established in.** Phase 4 spec, "Limitations"; re-affirmed after the phase 6
+device check D5, 2026-09-16.
+
+---
+
+## The translations are machine-produced
+
+**What.** All eight languages were produced without a native reader. Phase 4's
+review caught the Dutch using "gezondheidsgegevens", the GDPR term for
+*medical* data, in a sentence about kiosk health, and the Arabic saying "the
+next kiosk's startup" instead of "its next startup". Both were fixed; neither
+was found by a test.
+
+**Why deferred.** Accepted as adequate on 2026-09-16. This is UI copy rather
+than binding text, and the document behind the privacy URL is what actually
+discharges the disclosure obligation.
+
+**What it costs to leave.** A plausible-but-wrong translation reads as
+confident and correct. The two already found were both on the privacy screen,
+which is where being wrong matters most.
+
+**What fixing it needs.** A native read of the Dutch and Arabic disclosure
+copy. Cheap, and worth doing before any vendor deployment into those markets.
+
+**Established in.** Phase 4 spec, "Limitations"; re-affirmed 2026-09-16.
+
+---
+
+## `HttpPosterTest`'s redirect check is intermittently flaky
+
+**What.** `aRedirectIsNotFollowedSoTheKeyNeverReachesAnotherHost` failed once
+during phase 6 with `expected:<302> but was:<-1>`, then passed in isolation and
+across two further full runs. A `-1` response code is what
+`HttpURLConnection` reports when it never got a status line at all, so the
+local server the test stands up almost certainly lost a port or a socket race
+rather than the production code misbehaving.
+
+**Why deferred.** Seen once in a long session and not reproducible on demand.
+Chasing it without a reproduction means guessing at a fix and calling the
+absence of a rare failure proof.
+
+**What it costs to leave.** This is the test that proves the publishable key
+is never replayed onto a redirect target — the guard
+`UrlConnectionPoster` sets `instanceFollowRedirects = false` for. A test that
+fails at random on that path trains whoever sees it to re-run rather than
+investigate, which is exactly how a real regression there would be waved
+through.
+
+**What fixing it needs.** Running it in a loop to get a reproduction, then
+either pinning the port allocation or making the assertion tolerate a
+connection that never completed by failing with a clearer message. Cheap once
+reproduced.
+
+**Established in.** Phase 6, observed 2026-09-16 during the credentials-export
+work.
+
+---
 
 ## Resolved
 
