@@ -40,8 +40,16 @@ class KeystoreSecretStore(
         // returned null forever — a silent, permanent outage. Fail loudly instead.
         check(cipher.iv.size == IV_BYTES) { "unexpected GCM IV length: ${cipher.iv.size}" }
         val packed = cipher.iv + ciphertext
-        prefs.edit().putString(key, Base64.encodeToString(packed, Base64.NO_WRAP)).apply()
-        true
+        // commit rather than apply: apply() returns before the write lands on
+        // disk, and a process kill right after a caller reads `true` back
+        // from this call — a bench power-cut, or provisioning's own
+        // Runtime.exit(0) moments after saving a destination — would leave
+        // the ciphertext only in the in-memory copy, never on disk. remove()
+        // below already treats clearing this way; saving deserves the same
+        // guarantee, not less. Both callers (the settings screen, and
+        // provisioning) are off the hot path, so the synchronous write costs
+        // nothing that matters.
+        prefs.edit().putString(key, Base64.encodeToString(packed, Base64.NO_WRAP)).commit()
     } catch (_: Throwable) {
         false
     }

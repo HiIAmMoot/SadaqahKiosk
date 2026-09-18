@@ -288,8 +288,22 @@ def clear_outbox():
 
 
 def reinstall_clean(apk):
-    """Full wipe. `pm uninstall` removes every file the app owns."""
+    """Uninstall, verify the package is actually gone, then install fresh.
+
+    `pm uninstall` refuses when this package is device owner, and does so
+    without this harness noticing unless it looks: the app (and its data) is
+    still there afterwards. Installing on top of that produces a live app
+    with its old settings intact while every caller downstream believes it
+    got a clean device. Removing device-owner status automatically is not
+    this harness's call, so it refuses instead of guessing.
+    """
     adb("uninstall", PKG)
+    if sh(f"pm path {PKG}"):
+        raise Failure(
+            f"{PKG} is still installed after `adb uninstall` -- likely still "
+            "device owner on this unit, which blocks uninstall silently. "
+            "Remove it as device owner or wipe the emulator, then re-run."
+        )
     adb("install", "-r", "-g", apk, check=True, timeout=300)
 
 
@@ -578,6 +592,15 @@ def check(cid, session, title, skip=None):
 
 class Failure(Exception):
     pass
+
+
+class Skip(Exception):
+    """Raise from inside a check body when it cannot run at all -- a missing
+    optional fixture or credential, not a wrong one. A check that never ran
+    is not a check that failed, and reporting it red trains people to stop
+    reading a red suite; this keeps that distinction alive at runtime the
+    same way the registration-time `skip=` argument already does statically.
+    """
 
 
 def expect(condition, message):
@@ -1281,6 +1304,318 @@ def i3(ctx):
 
 
 # --------------------------------------------------------------------------
+# Session P — the provisioning round trip
+# --------------------------------------------------------------------------
+
+@dataclass
+class DeviceScopedField:
+    """One row of PROVISION_DEVICE_SCOPED.
+
+    `assert_ok` and `reason` both take (provisioned, source, code, name) so a
+    field like kioskCode can check itself against the CLI override instead of
+    a fixed constant; fields that don't need the override just ignore it.
+    `load_bearing` takes only `source` -- whether an assertion could ever have
+    caught a broken guard depends entirely on what the fixture itself already
+    carries for that field, never on what the device sends back.
+    """
+
+    field: str
+    assert_ok: object
+    reason: object
+    load_bearing: object
+
+
+# Fields SettingsImport.merge takes from the device rather than the payload,
+# paired with the assertion that proves the guard actually ran. This replaces
+# a bare set of names to skip in the forward comparison: that shape let a
+# field be excluded from one direction and never asserted in the other, which
+# is exactly how five of these nine went unchecked. A field added here without
+# an assertion is a TypeError, not a silent gap.
+PROVISION_DEVICE_SCOPED = [
+    DeviceScopedField(
+        "installId",
+        lambda p, s, c, n: bool(p.get("installId")) and p.get("installId") != s.get("installId"),
+        lambda p, s, c, n: (
+            "the device has no installId after provisioning; every unit would "
+            "boot without a device identity"
+        ) if not p.get("installId") else (
+            "the device kept the payload's installId; SettingsImport.merge is "
+            "no longer guarding it and a cloned fleet would share one identity"
+        ),
+        # True regardless of the fixture: the non-blank half of the assertion
+        # catches a device that finished provisioning with no identity at all,
+        # and no fixture can make that check vacuous.
+        lambda s: True,
+    ),
+    DeviceScopedField(
+        "testMode",
+        lambda p, s, c, n: p.get("testMode") is False,
+        lambda p, s, c, n: (
+            "testMode was left set after provisioning; a kiosk cloned from a "
+            "bench export would boot with the biometric gate bypassed on a "
+            "machine standing in public"
+        ),
+        lambda s: bool(s.get("testMode")),
+    ),
+    DeviceScopedField(
+        "skipApkSignatureCheckOnce",
+        lambda p, s, c, n: p.get("skipApkSignatureCheckOnce") is False,
+        lambda p, s, c, n: (
+            "skipApkSignatureCheckOnce was left set after provisioning; a fleet "
+            "cloned from this export would run with the signature check disabled"
+        ),
+        lambda s: bool(s.get("skipApkSignatureCheckOnce")),
+    ),
+    DeviceScopedField(
+        "logoUri",
+        lambda p, s, c, n: not p.get("logoUri"),
+        lambda p, s, c, n: (
+            "a logoUri survived provisioning; a per-device local file path from "
+            "another kiosk points at nothing on this one"
+        ),
+        # Always False, never conditioned on the fixture: applyProvisioning
+        # re-stamps logoUri unconditionally after merge --
+        # `settings = settings.copy(logoUri = copyProvisionedLogo()?.uri)` at
+        # MainActivity.kt:2129 -- and P1 never passes -Logo, so this comes back
+        # null regardless of what SettingsImport.merge did to it. Deleting the
+        # `logoUri = null` guard from merge would not change this assertion's
+        # outcome under any fixture P1 can construct, so it cannot be
+        # load-bearing here. The guard itself is proven by
+        # SettingsFieldClassificationTest instead.
+        lambda s: False,
+    ),
+    DeviceScopedField(
+        "analyticsActivatedAtMs",
+        lambda p, s, c, n: not p.get("analyticsActivatedAtMs"),
+        lambda p, s, c, n: (
+            "analyticsActivatedAtMs carried over from the payload; a unit that "
+            "has never reported would read as already active"
+        ),
+        lambda s: bool(s.get("analyticsActivatedAtMs")),
+    ),
+    DeviceScopedField(
+        "donationStatsStartedAtMs",
+        lambda p, s, c, n: (
+            (p.get("donationStatsStartedAtMs") or 0) > 0
+            and p.get("donationStatsStartedAtMs") != s.get("donationStatsStartedAtMs")
+        ),
+        lambda p, s, c, n: (
+            "donationStatsStartedAtMs is 0 after provisioning; neither "
+            "bootstrap call site ran, so this unit has no anchor for its own "
+            "donation averages"
+        ) if not (p.get("donationStatsStartedAtMs") or 0) > 0 else (
+            "donationStatsStartedAtMs came over from the payload; this unit "
+            "would compute its donation averages from the golden kiosk's start "
+            "date instead of its own"
+        ),
+        # Two clauses, because the floor alone proves nothing. runProvisioning
+        # calls SettingsBootstrap.apply a SECOND time, on the already-merged
+        # settings (MainActivity.kt:2087), and that re-stamps a 0 to now. So a
+        # device whose merge guard was deleted still comes back positive and a
+        # bare `> 0` passes under every possible fixture -- it can only ever
+        # catch both bootstrap call sites failing at once.
+        #
+        # The inequality is what catches a deleted guard: the guard's whole job
+        # is to keep the device's own timestamp, so losing it leaves the
+        # payload's value in place. The device's genuine value is its own
+        # post-wipe bootstrap and cannot collide with the source unit's to the
+        # millisecond. That makes this row load-bearing exactly when the
+        # fixture carries a non-zero value -- the ordinary case. A zero-value
+        # fixture is undetectable here no matter what is asserted, because the
+        # second bootstrap masks the regression either way.
+        lambda s: bool(s.get("donationStatsStartedAtMs")),
+    ),
+    DeviceScopedField(
+        "kioskCode",
+        lambda p, s, c, n: p.get("kioskCode") == c,
+        lambda p, s, c, n: "the code override did not take",
+        lambda s: True,
+    ),
+    DeviceScopedField(
+        "kioskName",
+        lambda p, s, c, n: p.get("kioskName") == n,
+        lambda p, s, c, n: "the name override did not take",
+        lambda s: True,
+    ),
+    DeviceScopedField(
+        "kioskCodeFromImport",
+        lambda p, s, c, n: not p.get("kioskCodeFromImport"),
+        lambda p, s, c, n: (
+            "a per-unit code was flagged as imported, which would warn on the "
+            "one case that is correct"
+        ),
+        # Load-bearing, but against ProvisioningLoader's override rather than
+        # SettingsImport.merge's derivation, which is what the rows above guard.
+        # merge sets this from `imported.kioskCode.isNotBlank()`, then
+        # ProvisioningLoader.kt:73 clears it whenever a code override is passed
+        # -- and P1 always passes one. So deleting merge's derivation changes
+        # nothing here, while deleting the override's clear makes this fail.
+        # Verify against the override when this row stops passing, not against
+        # merge.
+        lambda s: True,
+    ),
+]
+
+
+@check("P1", "P", "A provisioned device exports the configuration it was given")
+def p1(ctx):
+    """Round trip: provision from a known payload, export, compare.
+
+    Run only against a clean device (reinstall_clean() below does this). On a
+    device with pre-existing stored settings, MainActivity's onCreate migration
+    blocks also rewrite longDowntimeThresholdSec, the four autoUpdate fields,
+    and analyticsEnabled, which makes the diff unexplainable. On a clean
+    device only the longDowntimeThresholdSec floor (300) applies, and the
+    fixture is built above it so that floor never fires either.
+
+    A raw file comparison fails on a CORRECT provisioning: salt, iv and
+    ciphertext are regenerated from SecureRandom on every export, so the
+    envelope differs even for identical plaintext. This compares decoded
+    settings against PROVISION_DEVICE_SCOPED, in both directions.
+
+    What this check does NOT cover: the credentials themselves. It compares the
+    settings block only. The sole credential evidence is the two booleans the
+    app reports -- affiliateKeyRestored and destinationConfigured -- and those
+    say a key was RESTORED, not that it is CORRECT. A truncated key, or an
+    affiliate key and a telemetry key swapped into each other's slots, passes
+    here. What blocks closing it is the EXPECTED value, not the actual one: the
+    affiliate key sits in plaintext in app_prefs.xml and this harness already
+    reads it, but the payload's copy is inside the encrypted envelope, and
+    decrypting that here means reimplementing SecretsCrypto -- the second
+    implementation this check exists to avoid. The telemetry key is harder
+    still; it never leaves the Keystore. Accepted on 2026-09-16
+    because the affiliate key is identical on every device in the fleet, so
+    there is no per-unit divergence for it to catch. If that stops being true,
+    this is the gap to close first.
+    """
+    payload_path = os.environ.get("KIOSK_PAYLOAD")
+    password = os.environ.get("KIOSK_PAYLOAD_PASSWORD")
+    if not payload_path or not password:
+        raise Skip(
+            "set KIOSK_PAYLOAD to an export taken from a configured device and "
+            "KIOSK_PAYLOAD_PASSWORD to its password. The fixture must come from "
+            "the app's own exporter -- a reimplementation of SecretsCrypto here "
+            "would be a second implementation that can drift, and a drift makes "
+            "this check pass against a format the app no longer writes."
+        )
+    if not os.path.isfile(payload_path):
+        raise Failure(f"KIOSK_PAYLOAD does not exist: {payload_path}")
+
+    with open(payload_path, encoding="utf-8") as f:
+        source = json.load(f)["settings"]
+
+    reinstall_clean(ctx.apk)
+    launch()
+
+    was_root = "root" in sh("whoami")
+    code = "nl-gld-arnhem-nour_al_houda-07"
+    name = "Arnhem hal"
+    try:
+        # provision.ps1's own `adb push` has to land the payload under
+        # /sdcard/Android/data/<pkg>/... as the app's own uid would see it. Rooted,
+        # the push writes the file owned by root, the app's scoped-storage view of
+        # it comes back permission-denied, and provisioning fails with "no_payload"
+        # -- reproduced twice on this emulator. Drop root for the run, restore it
+        # after: settings_json() below needs it to read app_prefs.xml.
+        #
+        # This has to sit inside the try: if wait-for-device times out here, the
+        # daemon is left unrooted, and without the finally below every check
+        # after this one in the same session fails to read app_prefs.xml for a
+        # reason nowhere near this line.
+        if was_root:
+            adb("unroot")
+            adb("wait-for-device", timeout=30)
+        try:
+            result = subprocess.run(
+                ["powershell", "-File", "tools/provision/provision.ps1",
+                 "-Apk", ctx.apk, "-Payload", payload_path, "-Password", password,
+                 "-KioskCode", code, "-KioskName", name],
+                capture_output=True, timeout=600,
+            )
+        except subprocess.TimeoutExpired:
+            raise Failure("provision.ps1 did not finish within 600s")
+        if result.returncode != 0:
+            # Not check=True: CalledProcessError's default message echoes the
+            # whole argv, including -Password in plain text. redact() only
+            # catches long token-shaped secrets, and this password can be
+            # anything, so that path would print it straight into the results
+            # file. Report the script's own output instead, redacted.
+            out = redact((result.stdout or b"").decode(errors="replace"))
+            raise Failure(f"provision.ps1 failed (exit {result.returncode}):\n{out}")
+    finally:
+        # Unconditional: a Failure raised above must not leave the daemon
+        # unrooted for every check that runs after this one in the same session.
+        if was_root:
+            adb("root")
+            adb("wait-for-device", timeout=30)
+
+    provisioned = settings_json()
+    expect(provisioned, "no settings on the device after provisioning")
+
+    # A field renamed in Settings.kt without this table being updated would
+    # otherwise fail silent: `source.get()` and `provisioned.get()` both just
+    # return None for a name that no longer exists, and the assertion below
+    # would pass against two absences instead of catching the drift.
+    for entry in PROVISION_DEVICE_SCOPED:
+        expect(
+            entry.field in source,
+            f"fixture is missing device-scoped field {entry.field!r}; "
+            "Settings.kt may have renamed it and PROVISION_DEVICE_SCOPED in "
+            "run.py needs to follow",
+        )
+
+    device_scoped = {entry.field for entry in PROVISION_DEVICE_SCOPED}
+    mismatched = []
+    for key, want in source.items():
+        if key in device_scoped:
+            continue
+        got = provisioned.get(key)
+        if got != want:
+            mismatched.append(f"{key}: payload={want!r} device={got!r}")
+    expect(
+        not mismatched,
+        "fields that should have transferred did not:\n  " + "\n  ".join(mismatched),
+    )
+
+    # The other direction: every entry's own assertion runs here, not just
+    # installId's. A reverse check that only re-tested installId is exactly
+    # how the other eight fields regressed without this check ever turning
+    # red -- excluding a field from the forward comparison is a claim that
+    # something checks it going the other way, and only actually running that
+    # something makes the claim true.
+    load_bearing = 0
+    vacuous = []
+    for entry in PROVISION_DEVICE_SCOPED:
+        expect(
+            entry.assert_ok(provisioned, source, code, name),
+            entry.reason(provisioned, source, code, name),
+        )
+        if entry.load_bearing(source):
+            load_bearing += 1
+        else:
+            vacuous.append(entry.field)
+
+    total = len(PROVISION_DEVICE_SCOPED)
+    coverage = f"{total} device-scoped fields asserted"
+    if vacuous:
+        coverage += (
+            f" ({load_bearing} load-bearing, {len(vacuous)} vacuous: "
+            + ", ".join(vacuous)
+            + " -- nothing this fixture can produce would make these fail, so "
+            "they prove nothing about the guards behind them)"
+        )
+    else:
+        coverage += " (all load-bearing)"
+
+    checked = len(source) - len(device_scoped & set(source))
+    return [
+        f"{checked} configuration fields transferred exactly",
+        coverage,
+        f"overrides applied: {code} / {name}",
+    ]
+
+
+# --------------------------------------------------------------------------
 # Checks that cannot run here, declared rather than omitted
 # --------------------------------------------------------------------------
 
@@ -1343,6 +1678,12 @@ def run(selected_sessions, apk, out_path):
             print(f"\r  PASS  {cid}  {title}")
             for line in observed:
                 print(f"        {redact(line)}")
+        except Skip as e:
+            # Reported exactly like a registration-time skip -- same status,
+            # same detail line -- so the two are indistinguishable in output;
+            # only the timing (known up front vs. discovered mid-run) differs.
+            results.append(Result(cid, title, "SKIP", str(e)))
+            print(f"\r  SKIP  {cid}  {title}\n        {str(e)}")
         except Failure as e:
             results.append(Result(cid, title, "FAIL", redact(str(e))))
             print(f"\r  FAIL  {cid}  {title}\n        {redact(str(e))}")

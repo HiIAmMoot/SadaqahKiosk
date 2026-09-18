@@ -182,6 +182,93 @@ fleet rollout.
 
 ---
 
+## Provisioning a fleet
+
+`tools/provision/provision.ps1` configures a freshly reset tablet end to end
+in one run: it connects wifi, stops the screen timing out, turns on Bluetooth
+and location, enables adaptive brightness, allows screen pinning, installs the
+APK, makes the app device owner, imports settings including every credential,
+applies a logo, stamps the per-unit kiosk code and name, and sets a device PIN
+last of all.
+
+### The golden-kiosk workflow
+
+An operator configures one kiosk by hand and exports its encrypted settings
+from the Settings screen. That single export serves as the payload for
+provisioning every other unit in the fleet. The export carries the
+credentials — SumUp affiliate key, analytics destination, and any others — so
+no operator ever has to retype them.
+
+### Per-unit overrides are required
+
+Whenever you pass `-Payload`, the script also requires `-KioskCode` and
+`-KioskName`, and refuses to run without them. Each one guards something
+different.
+
+The kiosk code travels on import by design — when a tablet is replaced, the new
+unit keeps the original kiosk's printed code. The cost is that a whole fleet
+provisioned from one export would otherwise stamp every unit with the source
+kiosk's code. Paired with distinct install IDs, a shared code emits the signal
+reserved for a re-provisioned unit. The app flags an imported code on screen,
+and the flag clears the moment an operator edits the field.
+
+The kiosk name is attached to every SumUp transaction, so a fleet cloned from
+one export would bill under a single name.
+
+### Example invocation
+
+```powershell
+.\tools\provision\provision.ps1 `
+  -Apk ".\app\build\outputs\apk\debug\app-debug.apk" `
+  -Payload "C:\exports\golden_config.json" `
+  -Password "export_password_here" `
+  -Ssid "kiosk_wifi_network" `
+  -WifiPassword "wifi_passphrase_here" `
+  -KioskCode "nl-gld-arnhem-nour_al_houda-07" `
+  -KioskName "Arnhem central"
+```
+
+### Two manual steps
+
+1. **Factory reset with the setup wizard skipped — before running the script.**
+   Device owner cannot be set once any account exists on the device or once the
+   setup wizard has completed. This is an Android restriction, not a limitation
+   of the script.
+2. **Battery protection — afterwards.** Limiting charge on a device that stays
+   permanently plugged in has no universal Android API: `BatteryManager` exposes
+   only read-only properties and `DevicePolicyManager` has no battery symbols at
+   all. Every vendor implements it themselves, so it has to be set by hand in the
+   device's own settings.
+
+### Timing and re-provisioning
+
+The PIN is set last, after the app has provisioned and restarted. If you
+re-provision a device that already has a PIN, pass the existing PIN with
+`-OldPin`, because every `lock_settings` command refuses without it.
+
+Once the PIN is set, the app starts on its own; you do not need to launch it.
+
+### Parameters
+
+The script accepts these parameters. Only `-Apk` is mandatory; others may be
+omitted depending on what you are configuring.
+
+| Parameter | Purpose |
+|-----------|---------|
+| `-Apk` | Path to the APK to install (mandatory) |
+| `-Serial` | Device serial number, for multi-device provisioning |
+| `-Ssid` | WiFi network name |
+| `-WifiPassword` | WiFi password |
+| `-Payload` | Path to an exported settings JSON file |
+| `-Password` | Password for the exported settings |
+| `-KioskCode` | Kiosk identifier (required when using `-Payload`) |
+| `-KioskName` | Display name; appears on every SumUp transaction (required with `-Payload`) |
+| `-Logo` | Path to a logo PNG/JPEG |
+| `-Pin` | Device PIN to set at the end |
+| `-OldPin` | Existing PIN when re-provisioning a device |
+
+---
+
 ## Auto-Update
 
 The app can update itself directly from a GitHub releases feed — no Play Store, no MDM, no operator intervention. Designed for unattended kiosks. **Requires device-owner provisioning** (see above); a non-DO install will detect updates but never install them, since silent install isn't available without that privilege.
