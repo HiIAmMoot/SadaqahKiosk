@@ -2,6 +2,7 @@ package com.sadaqah.kiosk.telemetry
 
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
+import com.sadaqah.kiosk.model.Settings
 import java.time.Instant
 import java.util.UUID
 
@@ -9,6 +10,11 @@ object TelemetryTables {
     const val DONATIONS = "donation_events"
     const val DIAGNOSTICS = "diagnostic_events"
     const val ACTIVATIONS = "telemetry_activations"
+
+    /** Enumerated so per-table persistence reads and writes the same set. A
+     *  fourth table added above and forgotten here would be written by one and
+     *  never read back by the other, which no test would fail on. */
+    val ALL = listOf(DONATIONS, DIAGNOSTICS, ACTIVATIONS)
 }
 
 /**
@@ -19,7 +25,19 @@ data class EventIdentity(
     val code: String,
     val installId: String,
     val appVersion: String
-)
+) {
+    companion object {
+        /** Identity is built here rather than at each call site, so the manager's
+         *  runtime snapshot and a donation event can never disagree about who this
+         *  kiosk is. Callers take identity from here rather than mapping the fields
+         *  themselves. */
+        fun from(settings: Settings, appVersion: String) = EventIdentity(
+            code = settings.kioskCode,
+            installId = settings.installId,
+            appVersion = appVersion
+        )
+    }
+}
 
 enum class DiagnosticSeverity {
     INFO, WARN, ERROR;

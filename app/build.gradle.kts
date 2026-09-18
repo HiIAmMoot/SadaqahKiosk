@@ -13,7 +13,7 @@ android {
         minSdk = 30
         targetSdk = 35
         versionCode = 15
-        versionName = "1.3.6-preview"
+        versionName = "1.4.0-preview"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -79,5 +79,8 @@ dependencies {
 
     // Palette (logo colour extraction for the colour picker)
     implementation(libs.androidx.palette)
+
+    // QR encoding for the disclosure screen
+    implementation(libs.zxing.core)
 
 }

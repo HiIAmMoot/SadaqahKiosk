@@ -5,8 +5,7 @@ data class GateInputs(
     val configured: Boolean,
     val activated: Boolean,
     val networkAvailable: Boolean,
-    val queueDepth: Int,
-    val backoffUntilMs: Long
+    val queueDepth: Int
 )
 
 // Precedence lives in evaluate's branch order, not here — nothing should sort
@@ -40,14 +39,19 @@ object TelemetryGate {
         !inputs.activated -> FlushBlock.NOT_ACTIVATED
         !inputs.networkAvailable -> FlushBlock.NO_NETWORK
         inputs.queueDepth <= 0 -> FlushBlock.EMPTY_QUEUE
-        // A deadline further out than the ceiling cannot have come from
-        // backoffDelayMs, so it was computed against a clock that has since been
-        // corrected. Failing open toward flushing is the safe direction: the
-        // alternative is a kiosk that silently stops reporting for years.
-        inputs.backoffUntilMs - nowMs > MAX_BACKOFF_MS -> FlushBlock.NONE
-        nowMs < inputs.backoffUntilMs -> FlushBlock.BACKING_OFF
         else -> FlushBlock.NONE
     }
+
+    /**
+     * Whether one table's deadline is still in force.
+     *
+     * A deadline further out than the ceiling cannot have come from
+     * [backoffDelayMs], so it was computed against a clock that has since been
+     * corrected. Failing open toward flushing is the safe direction: the
+     * alternative is a kiosk that silently stops reporting for years.
+     */
+    fun isTableBackedOff(backoffUntilMs: Long, nowMs: Long): Boolean =
+        backoffUntilMs - nowMs <= MAX_BACKOFF_MS && nowMs < backoffUntilMs
 
     /** Exponential from one minute, capped at an hour. Shifting is bounded before
      *  it is applied so a runaway failure count cannot overflow into a negative. */

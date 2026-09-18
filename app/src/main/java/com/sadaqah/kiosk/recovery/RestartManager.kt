@@ -19,7 +19,15 @@ class RestartManager(
         const val KEY_LAST_RESTART = "last_restart_timestamp"
         const val KEY_CARD_READER_FAILURES = "consecutive_card_reader_failures"
         const val KEY_REINIT_FAILURES = "consecutive_reinit_failures"
+        const val KEY_GAVE_UP_REPORTED = "gave_up_reported"
     }
+
+    /** Int 0/1 rather than a boolean: KeyValueStore exposes only int and long
+     *  accessors, and widening it would drag the SharedPreferences
+     *  implementation and the in-memory test fake along for one flag. */
+    val gaveUpReported: Boolean get() = store.getInt(KEY_GAVE_UP_REPORTED) == 1
+
+    fun markGaveUpReported() { store.putInt(KEY_GAVE_UP_REPORTED, 1) }
 
     /** Records a card reader connection failure.
      *  If the failure count reaches the threshold and restart guards allow it,
@@ -58,15 +66,29 @@ class RestartManager(
         store.putInt(KEY_RESTART_COUNT, 0)
         store.putInt(KEY_CARD_READER_FAILURES, 0)
         store.putInt(KEY_REINIT_FAILURES, 0)
+        store.putInt(KEY_GAVE_UP_REPORTED, 0)
         return had
     }
 
-    /** Resets just the card reader failure counter (e.g. after a successful connection). */
+    /** Resets the card reader failure counter and the give-up latch (e.g.
+     *  after a successful connection). The latch has to come down here too:
+     *  restartCount is untouched by this call and only clearCounters() resets
+     *  it, so leaving the latch up lets a kiosk that recovers and re-fails
+     *  inside restartCountResetSec hit MAX_RESTARTS again with alreadyGaveUp
+     *  already true — a second give-up with no restart_triggered row, the
+     *  exact silent failure anActualRestartClearsTheGiveUpLatch prevents on
+     *  the RESTART path. */
     fun clearCardReaderFailures() {
         store.putInt(KEY_CARD_READER_FAILURES, 0)
+        store.putInt(KEY_GAVE_UP_REPORTED, 0)
     }
 
     val restartCount: Int get() = store.getInt(KEY_RESTART_COUNT)
+    // Read by tests only, and deliberately kept: nine reads in RestartManagerTest,
+    // two of them asserting counter isolation — that a card-reader failure does not
+    // move the reinit count, and that clearCardReaderFailures leaves it alone. The
+    // second has no RestartResult of its own to lean on, and both read more directly
+    // than inferring the counts from a threshold crossing.
     val cardReaderFailures: Int get() = store.getInt(KEY_CARD_READER_FAILURES)
     val reinitFailures: Int get() = store.getInt(KEY_REINIT_FAILURES)
 
@@ -83,6 +105,9 @@ class RestartManager(
 
         store.putInt(KEY_RESTART_COUNT, restartCount + 1)
         store.putLong(KEY_LAST_RESTART, now)
+        // Otherwise raising maxRestartsBeforeGiveUp on a kiosk that already
+        // gave up lets it restart, then give up a second time in silence.
+        store.putInt(KEY_GAVE_UP_REPORTED, 0)
         return RestartResult.RESTART
     }
 }
