@@ -224,8 +224,7 @@ The cost is that it appears in the bench machine's shell history and process lis
 ## The trigger
 
 ```
-adb shell am force-stop com.sadaqah.kiosk
-adb shell am start -n com.sadaqah.kiosk/.MainActivity \
+adb shell am start -n com.sadaqah.kiosk/.MainActivity -f 0x10008000 \
   --es provision_run_id '<uuid>' \
   --es provision_password '<password>' \
   --es provision_kiosk_code '<code>' \
@@ -236,15 +235,19 @@ adb shell am start -n com.sadaqah.kiosk/.MainActivity \
 
 An extra alone does nothing: the payload must also be present in a directory only adb or the app can write. Both together mean physical access with debugging enabled.
 
-### The force-stop is mandatory, not hygiene
+### The trigger must force a fresh `onCreate`, and force-stop cannot do it
 
-`MainActivity` is declared with **no `android:launchMode`** (`AndroidManifest.xml:50-61`), so it is `standard`, and there is **no `onNewIntent` override** in the codebase. `am start` carries `FLAG_ACTIVITY_NEW_TASK`; against an already-running app it brings the existing task to the front and **discards the intent, extras and all**. `onCreate` does not re-run.
+`MainActivity` is declared with **no `android:launchMode`**, so it is `standard`, and there is **no `onNewIntent` override** in the codebase. `am start` carries `FLAG_ACTIVITY_NEW_TASK`; against an already-running app it brings the existing task to the front and **discards the intent, extras and all**. `onCreate` does not re-run.
 
 So a trigger against a running kiosk silently does nothing. No result, no failure, no reason — and lock task guarantees the app is always running after the first launch.
 
-This project has already been bitten by this. `tools/kiosk-check/run.py:127-131` carries the note: *"`monkey` merely foregrounded an already-running task so onCreate never re-ran."*
+This project has already been bitten by this. `force_stop()` and `launch()` in `tools/kiosk-check/run.py` carry the note: *"`monkey` merely foregrounded an already-running task so onCreate never re-ran."*
 
-The script therefore force-stops before every trigger. `onNewIntent` is deliberately **not** added: it would make provisioning reachable on a live, configured kiosk, which is the one thing the bench-only model exists to prevent.
+**This section originally specified `am force-stop` as the answer. That was wrong, and the implementation deliberately contradicts it.** Android refuses `force-stop` *unconditionally* for a device-owner package — `ActivityManagerService` logs `Ignoring request to force stop protected package` and returns success, so the script cannot even detect the refusal from the exit code. Since setting device owner is a mandatory provisioning step that precedes the trigger, the package is always protected by the time the trigger fires. Force-stop is never available here.
+
+The trigger instead launches with `NEW_TASK|CLEAR_TASK` (`0x10008000`), which tears down the existing task and forces a fresh `onCreate` in the same process. That is what makes the trigger repeatable, and re-running the script twice in a row is the check for it.
+
+`onNewIntent` is deliberately **not** added: it would make provisioning reachable on a live, configured kiosk, which is the one thing the bench-only model exists to prevent.
 
 ### The extras are consumed once
 
@@ -487,9 +490,9 @@ A hand-maintained list is the thing that drifts: the next device-scoped field ad
 
 Not from a Python reimplementation of PBKDF2 and AES-GCM in `run.py`. A second implementation of `SecretsCrypto` can drift from the first, and a drift makes the check pass against a format the app no longer writes. Export from a configured device, or build the fixture with `SettingsExportFile.build` from a JVM test.
 
-#### And the device check must force-stop first
+#### And the device check must force a fresh start too
 
-`run.py:117-118` has `force_stop()`; `launch()` at `:125` documents why a foregrounded process never re-runs `onCreate`.
+`run.py` has `force_stop()`, and `launch()` documents why a foregrounded process never re-runs `onCreate`. Checks that run against a device where this package is NOT device owner use it freely. The provisioning round-trip cannot: it runs against a provisioned device, where force-stop is refused for the reason given under "The trigger" above. It reinstalls instead, which is also what gives it the clean device its comparison depends on.
 
 ---
 
