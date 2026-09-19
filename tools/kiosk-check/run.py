@@ -1342,10 +1342,15 @@ PROVISION_DEVICE_SCOPED = [
             "the device kept the payload's installId; SettingsImport.merge is "
             "no longer guarding it and a cloned fleet would share one identity"
         ),
-        # True regardless of the fixture: the non-blank half of the assertion
+        # Two clauses, and they test different things. `bool(p.installId)`
         # catches a device that finished provisioning with no identity at all,
-        # and no fixture can make that check vacuous.
-        lambda s: True,
+        # which no fixture can make vacuous -- but that tests SettingsBootstrap,
+        # not the merge guard this table exists to prove. The inequality is what
+        # tests the guard, and it can only fail when the fixture's own installId
+        # is non-blank: with a blank one, deleting the guard leaves "" and
+        # bootstrap mints a fresh UUID anyway, so both clauses pass. Report the
+        # guard's coverage, not the bootstrap's.
+        lambda s: bool(s.get("installId")),
     ),
     DeviceScopedField(
         "testMode",
@@ -1444,15 +1449,20 @@ PROVISION_DEVICE_SCOPED = [
             "a per-unit code was flagged as imported, which would warn on the "
             "one case that is correct"
         ),
-        # Load-bearing, but against ProvisioningLoader's override rather than
-        # SettingsImport.merge's derivation, which is what the rows above guard.
-        # merge sets this from `imported.kioskCode.isNotBlank()`, then
-        # ProvisioningLoader.kt:73 clears it whenever a code override is passed
-        # -- and P1 always passes one. So deleting merge's derivation changes
-        # nothing here, while deleting the override's clear makes this fail.
-        # Verify against the override when this row stops passing, not against
-        # merge.
-        lambda s: True,
+        # Guards ProvisioningLoader's override clear, not SettingsImport.merge's
+        # derivation -- merge sets this from `imported.kioskCode.isNotBlank()`,
+        # then the override clears it whenever a code is passed, and P1 always
+        # passes one.
+        #
+        # Conditional on the FIXTURE carrying a code, which an ordinary export
+        # need not: a blank kioskCode is the Settings default and decide() only
+        # demands the override when the imported code is non-blank, so a
+        # blank-code fixture runs to completion. On one, merge computes false by
+        # itself, deleting the override's clear changes nothing, and this
+        # assertion passes either way. This row was declared unconditionally
+        # load-bearing until a review found otherwise; the condition is the
+        # whole finding.
+        lambda s: bool(s.get("kioskCode")),
     ),
 ]
 
