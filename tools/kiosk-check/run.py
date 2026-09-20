@@ -1549,7 +1549,14 @@ def p1(ctx):
             adb("wait-for-device", timeout=30)
         try:
             result = subprocess.run(
-                ["powershell", "-File", "tools/provision/provision.ps1",
+                # -NoProfile: a bench machine's PowerShell profile can throw or
+                # print, and either lands in a stream this check used to
+                # discard. -ExecutionPolicy Bypass: on a default Windows install
+                # the policy alone refuses an unsigned .ps1, and that refusal is
+                # the only output -- so without this flag the commonest failure
+                # of all reported as an unexplained exit 1.
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+                 "-File", "tools/provision/provision.ps1",
                  "-Apk", ctx.apk, "-Payload", payload_path, "-Password", password,
                  "-KioskCode", code, "-KioskName", name],
                 capture_output=True, timeout=600,
@@ -1562,8 +1569,23 @@ def p1(ctx):
             # catches long token-shaped secrets, and this password can be
             # anything, so that path would print it straight into the results
             # file. Report the script's own output instead, redacted.
-            out = redact((result.stdout or b"").decode(errors="replace"))
-            raise Failure(f"provision.ps1 failed (exit {result.returncode}):\n{out}")
+            # Both streams. A PowerShell TERMINATING error -- a method call on
+            # null, a refused execution policy, a profile that throws -- writes
+            # to stderr and leaves stdout nearly empty, so reporting stdout
+            # alone turned the loudest failures into the quietest output, from
+            # a harness whose entire purpose is the opposite. redact() covers
+            # stderr adequately: nothing PowerShell writes there carries the
+            # argv, which is what the check=True note above is about.
+            #
+            # Decoded as mbcs on Windows, not utf-8: `powershell -File` writes
+            # in the console code page and this script emits em dashes, so
+            # utf-8 rendered real failure text as mojibake exactly when someone
+            # needed to read it.
+            enc = "mbcs" if sys.platform == "win32" else "utf-8"
+            out = redact((result.stdout or b"").decode(enc, errors="replace"))
+            err = redact((result.stderr or b"").decode(enc, errors="replace"))
+            detail = "\n".join(p for p in (out.strip(), err.strip()) if p) or "(no output)"
+            raise Failure(f"provision.ps1 failed (exit {result.returncode}):\n{detail}")
     finally:
         # Unconditional: a Failure raised above must not leave the daemon
         # unrooted for every check that runs after this one in the same session.
