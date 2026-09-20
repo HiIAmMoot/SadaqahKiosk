@@ -409,6 +409,23 @@ class TelemetryOutboxTest {
         assertEquals(listOf("good1", "good2"), box.peek().map { it.id })
     }
 
+    /** The shape a real power loss leaves behind, which none of the tests
+     *  above can produce: the previous write reached disk but its own
+     *  trailing newline never did. Without a fix, the next appendText
+     *  concatenates directly onto that torn tail, producing one line that
+     *  fails to parse — losing the new row along with the torn one, not
+     *  just the torn one. */
+    @Test
+    fun appendRecoversFromATornTailMissingItsTerminatingNewline() {
+        val box = outbox()
+        box.appendDonation("good1")
+        // Simulates a crash mid-write: bytes reached disk, the newline did not.
+        file.appendText("""{"id":"lost","table":"donation_events","queuedAt":1,"payload":"{\"amount""")
+        box.appendDonation("good2")
+
+        assertEquals(listOf("good1", "good2"), box.peek().map { it.id })
+    }
+
     /** A kiosk with a dead RTC stamps events near 1970. Once NTP corrects the
      *  clock, ageing them out would silently delete real donation telemetry. */
     @Test

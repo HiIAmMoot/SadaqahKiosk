@@ -3,6 +3,7 @@ package com.sadaqah.kiosk.telemetry
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.io.File
+import java.io.RandomAccessFile
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -68,14 +69,35 @@ class TelemetryOutbox(
         val now = clock()
         ensureLoaded()
         file.parentFile?.mkdirs()
-        // A real append never puts existing bytes at risk, so an unclean death
-        // costs at most the line being written — which parseLine already skips.
-        // Rewriting the file instead would place the entire queue inside a
-        // truncate window on every call.
-        file.appendText(serialise(QueuedEvent(id, table, payload, now)))
+        // A real append never puts existing bytes at risk the way a rewrite
+        // would — but on its own that understates what "at risk" covers. A
+        // power loss mid-write is the normal failure shape here, not an edge
+        // case, and it can leave the file's last line without its
+        // terminating newline. appendText would then concatenate this row
+        // directly onto that torn tail, producing one physical line that
+        // fails to parse — which destroys the new row along with the torn
+        // one, not just the torn one. leadingNewlineIfTornTail() closes that
+        // gap by checking the file's own last byte first, so a torn tail can
+        // only ever cost the row that was actually torn.
+        file.appendText(leadingNewlineIfTornTail() + serialise(QueuedEvent(id, table, payload, now)))
         // After the write, so a throwing append cannot inflate the count.
         state.rows += 1
         compactIfDue(now)
+    }
+
+    /** Reads only the file's final byte — via [RandomAccessFile], not a full
+     *  read — so this costs nothing on the common path where the file
+     *  already ends cleanly. Returns a leading newline exactly when the file
+     *  has content and that content does not already end in one. */
+    private fun leadingNewlineIfTornTail(): String {
+        if (!file.exists()) return ""
+        val length = file.length()
+        if (length == 0L) return ""
+        val lastByte = RandomAccessFile(file, "r").use { raf ->
+            raf.seek(length - 1)
+            raf.read()
+        }
+        return if (lastByte == '\n'.code) "" else "\n"
     }
 
     /**
