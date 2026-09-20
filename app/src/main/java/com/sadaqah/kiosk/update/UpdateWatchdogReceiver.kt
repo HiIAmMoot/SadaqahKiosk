@@ -107,7 +107,13 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
 
         /** Schedules the watchdog to fire [delayMs] from now. */
         fun arm(ctx: Context, delayMs: Long = 60_000L) {
-            prefs(ctx).edit { putLong(KEY_INSTALL_ATTEMPTED_AT, System.currentTimeMillis()) }
+            // commit() rather than apply(), same reason as the rollback marker
+            // below: the very next thing that happens after this call is
+            // UpdateManager handing the APK to an installer that replaces this
+            // process, which an asynchronous write has no guarantee of beating.
+            // A lost write here means "no pending install marker — nothing to
+            // do", which is a bricked build never rolled back.
+            prefs(ctx).edit().putLong(KEY_INSTALL_ATTEMPTED_AT, System.currentTimeMillis()).commit()
             val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val intent = Intent(ctx, UpdateWatchdogReceiver::class.java).setAction(ACTION)
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or
