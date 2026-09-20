@@ -30,13 +30,14 @@ class SettingsFieldClassificationTest {
         "testMode"
     )
 
-    /** Neither kept nor taken: `merge` DERIVES this one from the imported
-     *  code (`kioskCodeFromImport = imported.kioskCode.isNotBlank()`). It needs
-     *  its own bucket — the guarded-set derivation below looks for fields where
-     *  merge refused the imported value outright, and a computed field's result
-     *  can coincide with the imported value, so listing it as guarded would be
+    /** Neither kept nor taken: `merge` DERIVES these from the imported value
+     *  (`kioskCodeFromImport = imported.kioskCode.isNotBlank()`, and
+     *  `kioskNameFromImport` the same way for the name). They need their own
+     *  bucket — the guarded-set derivation below looks for fields where merge
+     *  refused the imported value outright, and a computed field's result can
+     *  coincide with the imported value, so listing it as guarded would be
      *  unreliable. */
-    private val expectedComputed = setOf("kioskCodeFromImport")
+    private val expectedComputed = setOf("kioskCodeFromImport", "kioskNameFromImport")
 
     /** Fields that travel, each a deliberate decision that sharing it across a
      *  fleet is correct. Thirty. */
@@ -82,7 +83,7 @@ class SettingsFieldClassificationTest {
         kioskCode = "mine-01", installId = "mine-install",
         logoUri = "file:///mine.png", donationStatsStartedAtMs = 111L,
         analyticsActivatedAtMs = 111L, skipApkSignatureCheckOnce = false,
-        testMode = false, kioskCodeFromImport = false,
+        testMode = false, kioskCodeFromImport = false, kioskNameFromImport = false,
         analyticsEnabled = false, analyticsPrivacyPolicyUrl = "https://mine/p",
         analyticsTermsUrl = "https://mine/t", autoUpdateEnabled = false,
         autoUpdateGraceDays = 1, hideUpdatePrompts = false,
@@ -103,7 +104,7 @@ class SettingsFieldClassificationTest {
         kioskCode = "theirs-02", installId = "theirs-install",
         logoUri = "file:///theirs.png", donationStatsStartedAtMs = 999L,
         analyticsActivatedAtMs = 999L, skipApkSignatureCheckOnce = true,
-        testMode = true, kioskCodeFromImport = true,
+        testMode = true, kioskCodeFromImport = true, kioskNameFromImport = true,
         analyticsEnabled = true, analyticsPrivacyPolicyUrl = "https://theirs/p",
         analyticsTermsUrl = "https://theirs/t", autoUpdateEnabled = true,
         autoUpdateGraceDays = 9, hideUpdatePrompts = true,
@@ -213,6 +214,20 @@ class SettingsFieldClassificationTest {
             "a blank imported code leaves nothing to warn about, whatever the " +
                 "source device's own flag said",
             withoutCode.kioskCodeFromImport
+        )
+    }
+
+    /** Same derivation, same reason, for the name flag CR-4 added. */
+    @Test
+    fun theImportedNameFlagIsDerivedFromTheImportedName() {
+        val withName = SettingsImport.merge(mine, theirs.copy(kioskName = "theirs"))
+        assertTrue("an imported non-blank name must be flagged", withName.kioskNameFromImport)
+
+        val withoutName = SettingsImport.merge(mine, theirs.copy(kioskName = ""))
+        assertFalse(
+            "a blank imported name leaves nothing to warn about, whatever the " +
+                "source device's own flag said",
+            withoutName.kioskNameFromImport
         )
     }
 }

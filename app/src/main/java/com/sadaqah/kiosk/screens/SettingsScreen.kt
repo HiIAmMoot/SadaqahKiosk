@@ -212,7 +212,18 @@ fun SettingsScreen(
                     SettingsSection(title = strings.kioskName, settings = settings) {
                         OutlinedTextField(
                             value = settings.kioskName ?: "",
-                            onValueChange = { onSettingsChange(settings.copy(kioskName = it)) },
+                            onValueChange = {
+                                onSettingsChange(
+                                    settings.copy(
+                                        kioskName = it,
+                                        // Typing here is the operator claiming this
+                                        // name for this kiosk, the same condition
+                                        // MainActivity's onAnalyticsKioskCodeChange
+                                        // clears kioskCodeFromImport on.
+                                        kioskNameFromImport = false
+                                    )
+                                )
+                            },
                             placeholder = { Text(strings.kioskNamePlaceholder, fontSize = responsiveSp(14.0)) },
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(

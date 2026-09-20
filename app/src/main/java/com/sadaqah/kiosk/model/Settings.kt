@@ -62,6 +62,20 @@ data class Settings(
      *  field on this device. That is what keeps the warning honest: it cannot
      *  outlive the condition it describes. */
     val kioskCodeFromImport: Boolean = false,
+    /** True when [kioskName] arrived from an imported settings file rather than
+     *  being typed on this device.
+     *
+     *  The name travels on import for the same reason the code does — a
+     *  replacement tablet keeps the kiosk's existing name — but `makePayment`
+     *  sends it to SumUp as the checkout title and attaches it to every
+     *  transaction as `KioskNaam`. A fleet provisioned from one export would
+     *  otherwise book every donation in the merchant's own records against
+     *  the golden kiosk's name, with nothing on screen saying so.
+     *
+     *  Set by [SettingsImport.merge], cleared the moment an operator edits the
+     *  field on this device — the same self-healing rule as
+     *  [kioskCodeFromImport]. */
+    val kioskNameFromImport: Boolean = false,
     /** Random UUID minted on first run. Never a hardware identifier: ANDROID_ID
      *  and friends carry restrictions and privacy baggage for no benefit here. */
     val installId: String = ""

@@ -100,6 +100,7 @@ interface Strings {
     val settings: String
     val kioskName: String
     val kioskNamePlaceholder: String
+    val kioskNameFromImportWarning: String
     val logoImage: String
     val selectLogo: String
     val colors: String
@@ -395,6 +396,7 @@ object DutchStrings : Strings {
     override val settings = "INSTELLINGEN"
     override val kioskName = "Kiosk Naam"
     override val kioskNamePlaceholder = "Bijv: Moskee Rotterdam"
+    override val kioskNameFromImportWarning = "Deze naam komt uit een geïmporteerd bestand. Betalingen kunnen op naam van een andere kiosk worden geregistreerd totdat u dit veld aanpast."
     override val logoImage = "Logo Afbeelding"
     override val selectLogo = "Selecteer Logo"
     override val colors = "Kleuren"
@@ -681,6 +683,7 @@ object EnglishStrings : Strings {
     override val settings = "SETTINGS"
     override val kioskName = "Kiosk Name"
     override val kioskNamePlaceholder = "E.g: Rotterdam Mosque"
+    override val kioskNameFromImportWarning = "This name came from an imported file. Payments may be recorded under another kiosk's name until you edit it."
     override val logoImage = "Logo Image"
     override val selectLogo = "Select Logo"
     override val colors = "Colors"
@@ -883,6 +886,7 @@ object GermanStrings : Strings {
     override val settings = "EINSTELLUNGEN"
     override val kioskName = "Kiosk-Name"
     override val kioskNamePlaceholder = "Z.B: Moschee Hamburg"
+    override val kioskNameFromImportWarning = "Dieser Name stammt aus einer importierten Datei. Zahlungen können bis zur Bearbeitung unter dem Namen eines anderen Kiosks erfasst werden."
     override val logoImage = "Logo Bild"
     override val selectLogo = "Logo Auswählen"
     override val colors = "Farben"
@@ -1169,6 +1173,7 @@ object FrenchStrings : Strings {
     override val settings = "PARAMÈTRES"
     override val kioskName = "Nom du Kiosque"
     override val kioskNamePlaceholder = "Ex: Mosquée Paris"
+    override val kioskNameFromImportWarning = "Ce nom provient d'un fichier importé. Les paiements peuvent être enregistrés sous le nom d'une autre borne tant que vous ne modifiez pas ce champ."
     override val logoImage = "Image Logo"
     override val selectLogo = "Sélectionner Logo"
     override val colors = "Couleurs"
@@ -1455,6 +1460,7 @@ object SpanishStrings : Strings {
     override val settings = "CONFIGURACIÓN"
     override val kioskName = "Nombre del Kiosco"
     override val kioskNamePlaceholder = "Ej: Mezquita Madrid"
+    override val kioskNameFromImportWarning = "Este nombre procede de un archivo importado. Los pagos pueden registrarse con el nombre de otro quiosco hasta que edite este campo."
     override val logoImage = "Imagen Logo"
     override val selectLogo = "Seleccionar Logo"
     override val colors = "Colores"
@@ -1741,6 +1747,7 @@ object ItalianStrings : Strings {
     override val settings = "IMPOSTAZIONI"
     override val kioskName = "Nome Kiosk"
     override val kioskNamePlaceholder = "Es: Moschea Milano"
+    override val kioskNameFromImportWarning = "Questo nome proviene da un file importato. I pagamenti potrebbero essere registrati con il nome di un altro chiosco finché non modifichi questo campo."
     override val logoImage = "Immagine Logo"
     override val selectLogo = "Seleziona Logo"
     override val colors = "Colori"
@@ -2027,6 +2034,7 @@ object TurkishStrings : Strings {
     override val settings = "AYARLAR"
     override val kioskName = "Kiosk Adı"
     override val kioskNamePlaceholder = "Örn: İstanbul Camii"
+    override val kioskNameFromImportWarning = "Bu ad içe aktarılan bir dosyadan geldi. Bu alanı düzenleyene kadar ödemeler başka bir kioskun adı altında kaydedilebilir."
     override val logoImage = "Logo Resmi"
     override val selectLogo = "Logo Seç"
     override val colors = "Renkler"
@@ -2313,6 +2321,7 @@ object ArabicStrings : Strings {
     override val settings = "الإعدادات"
     override val kioskName = "اسم الكشك"
     override val kioskNamePlaceholder = "مثال: مسجد لندن"
+    override val kioskNameFromImportWarning = "هذا الاسم مأخوذ من ملف مُستورَد. قد تُسجَّل المدفوعات باسم كشك آخر إلى أن تُعدِّل هذا الحقل."
     override val logoImage = "صورة الشعار"
     override val selectLogo = "اختر الشعار"
     override val colors = "الألوان"

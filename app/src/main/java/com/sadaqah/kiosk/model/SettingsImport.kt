@@ -24,6 +24,13 @@ object SettingsImport {
         // device, which is what makes the warning self-healing: it cannot
         // outlive the condition it describes.
         kioskCodeFromImport = imported.kioskCode.isNotBlank(),
+        // Same reasoning, same self-healing rule, for the name: it travels
+        // because a replacement tablet should keep the kiosk's name, but
+        // makePayment sends it to SumUp as the checkout title and attaches it
+        // to every transaction, so a fleet cloned from one export would
+        // otherwise book every donation against the golden kiosk's name in
+        // the merchant's own records with nothing on screen saying so.
+        kioskNameFromImport = !imported.kioskName.isNullOrBlank(),
         // A logo is a local file URI that means nothing on another device.
         logoUri = null,
         // Bootstrapped per device and used as the donation-throughput denominator

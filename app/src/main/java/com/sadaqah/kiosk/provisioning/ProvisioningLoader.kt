@@ -74,7 +74,13 @@ object ProvisioningLoader {
             )
         }
         if (!kioskNameOverride.isNullOrBlank()) {
-            merged = merged.copy(kioskName = kioskNameOverride.trim())
+            merged = merged.copy(
+                kioskName = kioskNameOverride.trim(),
+                // Same reasoning as kioskCodeFromImport above: supplied per
+                // unit by the operator, so it is this kiosk's own name rather
+                // than one inherited from a shared file.
+                kioskNameFromImport = false
+            )
         }
 
         return ProvisioningOutcome.Apply(merged)

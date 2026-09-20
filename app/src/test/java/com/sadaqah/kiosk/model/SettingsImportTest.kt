@@ -56,6 +56,37 @@ class SettingsImportTest {
         assertFalse(merged.kioskCodeFromImport)
     }
 
+    /** kioskName travels the same way kioskCode does, and needs the same
+     *  paper trail: a cloned fleet must not silently attribute every payment
+     *  to the golden kiosk with nothing on screen saying so. */
+    @Test
+    fun anImportedKioskNameIsMarkedAsComingFromAFile() {
+        val merged = SettingsImport.merge(
+            Settings(kioskName = ""),
+            Settings(kioskName = "Golden Bench Unit")
+        )
+        assertEquals("Golden Bench Unit", merged.kioskName)
+        assertTrue(merged.kioskNameFromImport)
+    }
+
+    /** An import carrying no name leaves nothing to warn about. */
+    @Test
+    fun anImportWithNoKioskNameIsNotMarked() {
+        val merged = SettingsImport.merge(Settings(kioskName = "mine"), Settings(kioskName = ""))
+        assertFalse(merged.kioskNameFromImport)
+    }
+
+    /** Same reasoning as the kioskCode flag: this describes THIS import, so a
+     *  stale flag from the source device's own export must not ride across. */
+    @Test
+    fun theKioskNameFlagIsRecomputedRatherThanInherited() {
+        val merged = SettingsImport.merge(
+            Settings(),
+            Settings(kioskName = "", kioskNameFromImport = true)
+        )
+        assertFalse(merged.kioskNameFromImport)
+    }
+
     @Test
     fun theLogoIsNotCarriedAcrossDevices() {
         assertNull(SettingsImport.merge(Settings(), Settings(logoUri = "file:///data/logo.png")).logoUri)

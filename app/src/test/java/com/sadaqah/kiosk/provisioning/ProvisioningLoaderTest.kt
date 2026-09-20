@@ -105,6 +105,14 @@ class ProvisioningLoaderTest {
         assertFalse(applied(decide()).settings.kioskCodeFromImport)
     }
 
+    /** Same reasoning as the code above: a name supplied per unit at
+     *  provisioning time is this kiosk's own, not one inherited from a shared
+     *  file. */
+    @Test
+    fun anOverriddenNameIsNotMarkedAsImported() {
+        assertFalse(applied(decide()).settings.kioskNameFromImport)
+    }
+
     @Test
     fun anOverriddenCodeIsTrimmed() {
         val result = applied(decide(code = "  nl-gld-arnhem-nour_al_houda-07  "))

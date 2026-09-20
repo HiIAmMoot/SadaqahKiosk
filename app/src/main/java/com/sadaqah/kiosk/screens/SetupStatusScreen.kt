@@ -81,7 +81,17 @@ fun SetupStatusScreen(
                 ChecklistRow("Bluetooth", isBluetoothEnabled, settings)
                 ChecklistRow(strings.logIn, isLoggedIn, settings)
                 ChecklistRow(strings.cardReader, isCardReaderConnected, settings)
-                ChecklistRow(strings.kioskName, kioskNameSet, settings)
+                ChecklistRow(
+                    strings.kioskName,
+                    kioskNameSet,
+                    settings,
+                    // A satisfied checklist row is what CR-4 found: an
+                    // inherited name from a cloned export reads here as
+                    // "done" even though it is attributing this kiosk's
+                    // payments to the source device's name in SumUp's own
+                    // records. Surface that rather than staying silent.
+                    warning = if (settings.kioskNameFromImport) strings.kioskNameFromImportWarning else null
+                )
             }
 
             Spacer(modifier = Modifier.height(responsiveDp(40.dp)))
@@ -147,23 +157,35 @@ fun SetupStatusScreen(
 }
 
 @Composable
-private fun ChecklistRow(label: String, isOk: Boolean, settings: Settings) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            color = Color(settings.buttonBorderColor),
-            fontSize = responsiveSp(28.0),
-            fontWeight = FontWeight.Medium
-        )
-        Text(
-            text = if (isOk) "✓" else "✗",
-            color = if (isOk) Color(0xFF4CAF50) else Color(0xFFF44336),
-            fontSize = responsiveSp(32.0),
-            fontWeight = FontWeight.Bold
-        )
+private fun ChecklistRow(label: String, isOk: Boolean, settings: Settings, warning: String? = null) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = label,
+                color = Color(settings.buttonBorderColor),
+                fontSize = responsiveSp(28.0),
+                fontWeight = FontWeight.Medium
+            )
+            Text(
+                text = if (isOk) "✓" else "✗",
+                color = if (isOk) Color(0xFF4CAF50) else Color(0xFFF44336),
+                fontSize = responsiveSp(32.0),
+                fontWeight = FontWeight.Bold
+            )
+        }
+        // Shown alongside the checkmark rather than instead of it: the row
+        // itself is still satisfied (a name is set), the warning is a
+        // separate, narrower claim about where that name came from.
+        if (warning != null) {
+            Text(
+                text = warning,
+                color = Color(0xFFF9A825),
+                fontSize = responsiveSp(14.0)
+            )
+        }
     }
 }
