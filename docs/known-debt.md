@@ -282,3 +282,22 @@ refuse or warn on the install path when it does not.
 Items here have been closed; kept briefly so their history is findable.
 
 - *(none yet)*
+
+## The `onCreate` migration block is not unit-testable
+
+`MainActivity.onCreate` carries four settings migrations inline (`:538`, `:556-576`). Three
+separate defects have now been found in that block — two value-gated conditions that re-fired
+on every boot and silently overwrote deliberate configuration, and a docstring elsewhere that
+described its behaviour wrongly.
+
+None of them could be caught by a test, because the logic is inline in `onCreate` and no unit
+test on this project can reach it. The same argument already drove two extractions that paid
+off: `SettingsBootstrap` (whose KDoc says the inline version "ran inside a 'did we have
+stored settings?' branch, so on a genuinely fresh install neither bootstrap fired at all —
+invisible to every test because none could reach the code") and `UpdateWatchdogDecision`.
+
+The migration block should be extracted to a pure function over `(storedJson, Settings) ->
+Settings` and tested directly, including that a deliberate `autoUpdateGraceDays = 0` and a
+provisioned `longDowntimeThresholdSec` below the old floor both survive a second boot.
+
+Not done in the review fix wave because the fix itself was small and the extraction is not.
