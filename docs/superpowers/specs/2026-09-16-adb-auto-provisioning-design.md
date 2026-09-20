@@ -58,7 +58,7 @@ The command is order-free except for one hard pair:
 1. `pm install` — the admin component must exist before it can be named.
 2. `dpm set-device-owner` — and this **fails if any account exists on the device**, which in practice means provisioning runs against a freshly reset tablet.
 
-Everything else can run in any order.
+Everything else is order-free only in the sense that no further pair is mutually constrained. Several steps are still constrained relative to the trigger — device owner, the wifi association and the radios all precede it, and the PIN follows the restart. See Ordering and the header comment in `tools/provision/provision.ps1`, which carries the current argument.
 
 ### The device PIN — last, and after the restart
 
@@ -248,7 +248,9 @@ The script therefore force-stops before every trigger. `onNewIntent` is delibera
 
 ### The extras are consumed once
 
-After reading them, the app calls `setIntent(Intent(intent).apply { replaceExtras(Bundle()) })`.
+**This spec originally specified `setIntent(Intent(intent).apply { replaceExtras(Bundle()) })`, and that does not work.** A configuration-change recreation re-delivers the ORIGINAL launching intent from `ActivityClientRecord`, which `Activity.setIntent()` cannot touch — so the extras come back regardless. The code calls `setIntent` nowhere.
+
+Re-entry is blocked by a durable record instead: the run id is written to `PROVISIONING_CONSUMED_RUN_ID_KEY` synchronously, before any async work starts, and the gate compares the incoming run id against it. That survives recreation, process death and task restore, none of which `setIntent` covers.
 
 `getIntent()` otherwise returns the launching intent for the life of the Activity **and across every recreation** — configuration change, locale change, task restore after process death. `onCreate` is written to run again on recreation (see the guards at `MainActivity.kt:382-384`). Without consuming them, the first rotation after a successful provision re-enters `onCreate` with `provision_password` still set, finds the payload deleted, and overwrites the `applied` result with `failed / no_payload`.
 
@@ -295,7 +297,7 @@ The app already restarts itself — `hardRestart` exists and the crash path uses
 
 Boot 1, when `provision_run_id` and `provision_password` are both present:
 
-1. Consume the extras (`setIntent`), so a recreation cannot re-enter this path.
+1. Record the run id durably, so a recreation cannot re-enter this path. (Not `setIntent` — see above.)
 2. Show a minimal "Provisioning…" surface. No translations: this is only ever seen on a bench, by one person, in English.
 3. On `Dispatchers.Default`: read the payload, call `ProvisioningLoader.decide`.
 4. On `Apply` — **route through `importSettings`**, not a parallel apply path. See below.
@@ -324,10 +326,11 @@ Pure, does no I/O. `MainActivity` is unreachable from unit tests, so a decision 
 
 ```kotlin
 sealed class ProvisioningOutcome {
-    data class Apply(
-        val settings: Settings,
-        val secrets: Map<String, String>
-    ) : ProvisioningOutcome()
+    // Settings only. This spec originally declared `secrets: Map<String, String>`
+    // here; a data class holding it prints the affiliate key and the Supabase
+    // publishable key through the generated toString the moment anything logs an
+    // outcome. applyProvisioning re-reads and re-parses the payload instead.
+    data class Apply(val settings: Settings) : ProvisioningOutcome()
     data class Failed(val reason: String) : ProvisioningOutcome()
 }
 
@@ -425,7 +428,9 @@ Only `pm install` → `dpm set-device-owner` is forced by the platform, but **th
 - **After Wi-Fi is associated** — `:312-313` reads `isNetworkAvailable` once at startup and the `authenticate()` path at `:351` is network-gated, so the freshly imported affiliate key would not be authenticated. And `SettingsBootstrap` anchors `donationStatsStartedAtMs` to the clock, which on a factory-reset tablet with no network is whatever the RTC said — an anchor that `SettingsImport.kt:30-35` explains never self-heals.
 - **After `svc bluetooth enable`** — or `:511-514` seeds the Bluetooth watchdog into recovery on a device that is fine.
 
-The script also creates the payload directory before pushing: `/sdcard/Android/data/com.sadaqah.kiosk/` does not exist until the app first calls `getExternalFilesDir`, and provisioning pushes to a package that has never run. `adb shell mkdir -p …/files/provisioning` first.
+The payload directory does not exist until the app first calls `getExternalFilesDir`, and provisioning pushes to a package that has never run. **The script must NOT create it with `mkdir`.** This spec originally said to, and that is wrong: a shell-created directory is owned `shell:ext_data_rw`, the app is then refused when it writes `provision-result.json`, and the run fails as "no result after 120s" with nothing naming the cause.
+
+The directory has to be created **by the app**. That is the entire reason the priming step exists: a first trigger with no payload present, which the app answers with `failed`/`no_payload` — harmless, and it creates the directory as the app's own uid. Do not remove priming as redundant; it is load-bearing.
 
 **Do not use `run.py`'s `push_app_file` helper for this.** It exists for `/data/data` and does `chown`/`restorecon` against the parent, which is wrong for the FUSE-backed external path. A plain `adb push` is correct here.
 
