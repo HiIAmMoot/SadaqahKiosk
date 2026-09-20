@@ -2660,31 +2660,47 @@ class MainActivity : FragmentActivity() {
     fun onAnalyticsTestConnection() {
         analyticsTestState = TestConnectionState.Running
         lifecycleScope.launch {
-            // The flush dispatcher, not Dispatchers.IO: activate() reads the
-            // manager's last-outcome fields, and a scheduled flush running
-            // concurrently on a shared pool could overwrite them between this
-            // call's own flush and its read.
-            val result = withContext(telemetryFlushDispatcher) { telemetryManager.activate() }
-            val strings = TranslationManager.currentStrings()
-            analyticsTestState = when (result) {
-                is ActivationResult.Succeeded -> {
-                    // The screen would otherwise keep reporting "not yet
-                    // reporting" after a proven-good test.
-                    // Stamped once. The field names when this kiosk began reporting, and
-                    // overwriting it on every later test press would make that drift
-                    // forward forever, so it would never answer the question it exists for.
-                    if (settings.analyticsActivatedAtMs == 0L) {
-                        onSettingsChange(settings.copy(analyticsActivatedAtMs = System.currentTimeMillis()))
+            try {
+                // The flush dispatcher, not Dispatchers.IO: activate() reads the
+                // manager's last-outcome fields, and a scheduled flush running
+                // concurrently on a shared pool could overwrite them between this
+                // call's own flush and its read.
+                val result = withContext(telemetryFlushDispatcher) { telemetryManager.activate() }
+                val strings = TranslationManager.currentStrings()
+                analyticsTestState = when (result) {
+                    is ActivationResult.Succeeded -> {
+                        // The screen would otherwise keep reporting "not yet
+                        // reporting" after a proven-good test.
+                        // Stamped once. The field names when this kiosk began reporting, and
+                        // overwriting it on every later test press would make that drift
+                        // forward forever, so it would never answer the question it exists for.
+                        if (settings.analyticsActivatedAtMs == 0L) {
+                            onSettingsChange(settings.copy(analyticsActivatedAtMs = System.currentTimeMillis()))
+                        }
+                        TestConnectionState.Succeeded(strings.analyticsTestSucceeded)
                     }
-                    TestConnectionState.Succeeded(strings.analyticsTestSucceeded)
+                    is ActivationResult.Queued -> TestConnectionState.Queued(strings.analyticsTestQueued)
+                    is ActivationResult.Blocked -> TestConnectionState.Blocked(analyticsBlockedMessage(result.reason, strings))
+                    // result.error is already redacted by the uploader, but the screen
+                    // renders view.error (from status) for that — never the raw string here.
+                    is ActivationResult.Failed -> TestConnectionState.Failed(strings.analyticsTestFailed)
                 }
-                is ActivationResult.Queued -> TestConnectionState.Queued(strings.analyticsTestQueued)
-                is ActivationResult.Blocked -> TestConnectionState.Blocked(analyticsBlockedMessage(result.reason, strings))
-                // result.error is already redacted by the uploader, but the screen
-                // renders view.error (from status) for that — never the raw string here.
-                is ActivationResult.Failed -> TestConnectionState.Failed(strings.analyticsTestFailed)
+                refreshAnalyticsSnapshot()
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                // activate() can throw from four places in TelemetryManager
+                // (statusStore.update, outbox.size/peek/remove — writeAll /
+                // Files.move on a full disk), and its own internal flush()
+                // repeats two of those unwrapped. Same reasoning as this
+                // function's five siblings: lifecycleScope installs no
+                // CoroutineExceptionHandler, so an escape reaches the default
+                // handler and kills the process. This one is a button the
+                // operator just pressed, so it must land on Failed rather than
+                // leaving the screen stuck on Running or dying silently.
+                Log.e("Telemetry", "analytics test connection failed: ${t::class.java.name}")
+                analyticsTestState = TestConnectionState.Failed(TranslationManager.currentStrings().analyticsTestFailed)
             }
-            refreshAnalyticsSnapshot()
         }
     }
 
@@ -2719,17 +2735,46 @@ class MainActivity : FragmentActivity() {
             strings.analyticsBackingOff
     }
 
+    /**
+     * Runs the teardown on `telemetryFlushDispatcher` rather than the main
+     * thread it used to run on synchronously. A flush that has already
+     * peeked a batch holds a decrypted config and up to 100 identified rows
+     * across a network call that can run for minutes; without this, the
+     * clear could complete and then that in-flight upload would still POST
+     * those rows to the destination the operator just withdrew, and its
+     * completion would write `lastError`/`lastSuccessMs` back afterward —
+     * the exact thing `TelemetryTeardown`'s own comment forbids. Routing
+     * through the single-thread dispatcher serialises the teardown behind
+     * any in-flight flush by construction, the same mechanism
+     * `onAnalyticsTestConnection` already relies on, so the screen refresh
+     * below only ever runs after the teardown has actually happened.
+     */
     fun onAnalyticsClearCredentials() {
-        TelemetryTeardown.clearEverything(telemetryCredentials, telemetryOutbox, telemetryStatusStore)
-        refreshAnalyticsSnapshot()
-        // An arm from a destination saved earlier in this same visit must not
-        // outlive a clear: DisclosurePresenter.view only needs a non-blank URL
-        // and a non-blank privacy policy URL, neither of which this touches, so
-        // without this the exit branch would still show a destination this
-        // function just tore down. disclosureView needs no clearing here — a
-        // non-null one wins the switch chain, so this control is unreachable
-        // while one is showing.
-        disclosurePendingUrl = null
+        lifecycleScope.launch {
+            try {
+                withContext(telemetryFlushDispatcher) {
+                    TelemetryTeardown.clearEverything(telemetryCredentials, telemetryOutbox, telemetryStatusStore)
+                }
+                refreshAnalyticsSnapshot()
+                // An arm from a destination saved earlier in this same visit must not
+                // outlive a clear: DisclosurePresenter.view only needs a non-blank URL
+                // and a non-blank privacy policy URL, neither of which this touches, so
+                // without this the exit branch would still show a destination this
+                // function just tore down. disclosureView needs no clearing here — a
+                // non-null one wins the switch chain, so this control is unreachable
+                // while one is showing.
+                disclosurePendingUrl = null
+            } catch (c: CancellationException) {
+                throw c
+            } catch (t: Throwable) {
+                // credentials.clear() and statusStore.write() both touch
+                // SharedPreferences (one Keystore-backed), which can throw.
+                // Same reasoning as this function's siblings: lifecycleScope
+                // installs no CoroutineExceptionHandler, so an escape reaches
+                // the default handler and kills the process.
+                Log.e("Telemetry", "clear credentials failed: ${t::class.java.name}")
+            }
+        }
     }
 
     /**
