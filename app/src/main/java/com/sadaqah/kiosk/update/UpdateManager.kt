@@ -424,6 +424,20 @@ class UpdateManager(
                 Log.w("UpdateManager", "prepareForInstall threw: ${e.message}")
             }
 
+            // Cleared HERE, not only in the finally below, and the difference is
+            // the whole point. persistSettings lands in saveSettings, which uses
+            // apply() -- an async write handed to QueuedWork. On the success path
+            // the finally runs microseconds before PackageInstaller replaces this
+            // process, and exit does not drain that queue, so the clear can be
+            // lost and the bypass survives into the next unattended 02:00 run.
+            // That is the exact hole this flag's "once" exists to close.
+            //
+            // Safe to clear before the install: validation at :401 already read
+            // the captured local, not this field, so nothing downstream consults
+            // it again. The finally still covers every failure path, and is a
+            // no-op once this has run.
+            consumeSkipSignatureCheckOnce()
+
             val result = withContext(Dispatchers.IO) { installer.install(apkFile) }
             when (result) {
                 is ApkInstaller.Result.Success -> {
