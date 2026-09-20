@@ -520,9 +520,22 @@ class MainActivity : FragmentActivity() {
         }
 
         // Migration: GSON ignores Kotlin data-class defaults when deserialising, so
-        // existing installs may still have the old 120s threshold (or 0 if the field
-        // was never persisted). Bump anything below 5 min up to the new default.
-        if (settings.longDowntimeThresholdSec < 300) {
+        // an install predating this field has 0 for it. Fill that in.
+        //
+        // Gated on ABSENCE, not on the value being below 300, and the difference
+        // matters. A value test never stops being true, so it is not a migration
+        // at all — it is a floor re-imposed on every boot, and it silently
+        // overwrites any shorter threshold a provisioning payload or an imported
+        // settings file deliberately set. Provisioning restarts into an ordinary
+        // boot by design, so a provisioned kiosk passes through here on boot 2
+        // and loses the value while its result file still reports APPLIED. The
+        // device-check harness documents this as the reason its round-trip check
+        // demands a clean device; that is the harness working around this line.
+        //
+        // The historical 120s installs this originally also caught are already
+        // migrated: the old test rewrote them to 300 on first boot under any
+        // build carrying it, and 300 is not below 300.
+        if (json != null && !json.contains("\"longDowntimeThresholdSec\"")) {
             settings = settings.copy(longDowntimeThresholdSec = 300)
             saveSettings(settings)
         }
@@ -539,7 +552,14 @@ class MainActivity : FragmentActivity() {
             if (!json.contains("\"autoUpdateTargetVersion\"") || migrated.autoUpdateTargetVersion.isBlank()) {
                 migrated = migrated.copy(autoUpdateTargetVersion = "latest"); dirty = true
             }
-            if (!json.contains("\"autoUpdateGraceDays\"") || migrated.autoUpdateGraceDays <= 0) {
+            // Absence only. `<= 0` made this a floor rather than a migration,
+            // and 0 is a value the settings screen explicitly accepts and
+            // persists (it validates `parsed in 0..90`). An operator who set the
+            // grace period to 0 had it rewritten to 14 on the next restart, with
+            // the input field re-seeded from settings so nothing on screen said
+            // it had happened — on a kiosk that restarts nightly, after failures,
+            // and after every update.
+            if (!json.contains("\"autoUpdateGraceDays\"")) {
                 migrated = migrated.copy(autoUpdateGraceDays = 14); dirty = true
             }
             if (!json.contains("\"updateRepoUrl\"") || migrated.updateRepoUrl.isBlank()) {
@@ -1835,22 +1855,41 @@ class MainActivity : FragmentActivity() {
         }
         registerReceiver(receiver, IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION))
 
-        val started = try {
-            @Suppress("DEPRECATION")
-            wm.startScan()
-        } catch (e: Exception) {
-            Log.e("WifiFallback", "startScan threw: ${e.message}")
-            false
-        }
-        Log.d("WifiFallback", "startScan() → $started")
+        // The unregister lives in a finally, not only on the two paths that
+        // used to carry it. onReceive and the timeout branch both handle their
+        // own exit, but neither runs when this coroutine is CANCELLED while
+        // suspended in await(): withTimeoutOrNull swallows only its own
+        // TimeoutCancellationException, and an external one propagates straight
+        // past both. That cancellation is the normal case rather than an edge
+        // one — savedNetworkFallbackJob is cancelled by startConnectivityPolling
+        // on the offline→online transition, which is precisely the event this
+        // scan is waiting for, as well as by its own re-arm, by onDestroy, and
+        // by lifecycleScope on every configuration change (this Activity
+        // declares no android:configChanges). The receiver closes over the
+        // Activity, so a leak here retains a destroyed one.
+        //
+        // Unregistering twice is harmless — the second throws and is swallowed
+        // — which is why the existing onReceive call can stay where it is.
+        // ApkInstaller.install does the same thing for the same reason.
+        try {
+            val started = try {
+                @Suppress("DEPRECATION")
+                wm.startScan()
+            } catch (e: Exception) {
+                Log.e("WifiFallback", "startScan threw: ${e.message}")
+                false
+            }
+            Log.d("WifiFallback", "startScan() → $started")
 
-        val result = withTimeoutOrNull(15_000L) { deferred.await() }
-        if (result == null) {
+            val result = withTimeoutOrNull(15_000L) { deferred.await() }
+            if (result == null) {
+                Log.w("WifiFallback", "Scan broadcast timed out — using cached scanResults")
+                return try { wm.scanResults ?: emptyList() } catch (_: Exception) { emptyList() }
+            }
+            return result
+        } finally {
             try { unregisterReceiver(receiver) } catch (_: Exception) {}
-            Log.w("WifiFallback", "Scan broadcast timed out — using cached scanResults")
-            return try { wm.scanResults ?: emptyList() } catch (_: Exception) { emptyList() }
         }
-        return result
     }
 
     fun handleNetworkLost() {
@@ -2016,26 +2055,29 @@ class MainActivity : FragmentActivity() {
         Log.i("Provisioning", "Provisioning complete, restarting into a normal boot")
         // saveSettings and the affiliate-key write inside importSettings both
         // use apply(), which hands the disk write to QueuedWork's background
-        // thread; Runtime.exit(0) below does not drain that queue (only
-        // ActivityThread's pause/stop handling does, which exit(0) skips). A
-        // synchronous no-op commit() blocks until every prior write to this
-        // SharedPreferences file — settings included — is actually on disk,
-        // so the one write this whole feature exists to make cannot be lost
-        // to a race with the process exit two lines below.
-        prefs.edit(commit = true) {}
-        val intent = Intent(applicationContext, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-        }
-        // Guarded: if startActivity itself throws, exit(0) below must still
-        // run. Without this try, that throw would escape relaunchAfterProvisioning
-        // — called from a `finally` specifically so the process always exits —
-        // and reintroduce C-1 through the one block that exists to prevent it,
-        // leaving the kiosk on the "Provisioning…" screen with the process
-        // never dying and nothing left to relaunch it.
+        // thread; the Runtime.exit(0) at the end of this method does not drain
+        // that queue (only ActivityThread's pause/stop handling does, which
+        // exit(0) skips). A synchronous no-op commit() blocks until every prior
+        // write to this SharedPreferences file — settings included — is
+        // actually on disk, so the one write this whole feature exists to make
+        // cannot be lost to a race with the process exit.
+        //
+        // The try covers the commit as well as the launch, because neither may
+        // stop that exit(0). This method runs from a `finally` specifically so
+        // the process always dies, and anything escaping here leaves the kiosk
+        // on the "Provisioning…" screen with nothing left to relaunch it — the
+        // exact stranding the finally exists to prevent. commit() swallows IO
+        // failures and returns false rather than throwing, so including it is
+        // defensive; it costs nothing, and excluding it would read to the next
+        // reader as a deliberate judgement that it cannot throw.
         try {
+            prefs.edit(commit = true) {}
+            val intent = Intent(applicationContext, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+            }
             startActivity(intent)
         } catch (t: Throwable) {
-            Log.e("Provisioning", "Could not start the relaunch activity: ${t::class.simpleName}")
+            Log.e("Provisioning", "Could not complete the relaunch: ${t::class.simpleName}")
         }
         Runtime.getRuntime().exit(0)
     }
