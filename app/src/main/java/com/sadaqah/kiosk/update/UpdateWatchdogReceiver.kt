@@ -31,54 +31,61 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
             return
         }
         val lastStart = prefs(context).getLong(KEY_LAST_STARTUP_MS, 0L)
-        val healthyStart = lastStart >= installAttemptedAt
-        Log.d("UpdateWatchdog",
-            "installedAt=$installAttemptedAt lastStart=$lastStart healthyStart=$healthyStart")
+        val backupApk = BackupStore(context).backupApkFile()
+        val decision = UpdateWatchdogDecision.decide(
+            installAttemptedAt = installAttemptedAt,
+            lastStartupMs = lastStart,
+            backupApkExists = backupApk.exists()
+        )
+        Log.d("UpdateWatchdog", "installedAt=$installAttemptedAt lastStart=$lastStart decision=$decision")
 
         // Clear marker so we don't loop on the next boot.
         prefs(context).edit { remove(KEY_INSTALL_ATTEMPTED_AT) }
 
-        if (healthyStart) {
-            Log.d("UpdateWatchdog", "Install succeeded — app reported a fresh startup")
-            return
-        }
+        when (decision) {
+            is UpdateWatchdogDecision.Decision.NoPendingInstall -> {
+                // Unreachable: installAttemptedAt == 0L already returned above.
+            }
+            is UpdateWatchdogDecision.Decision.HealthyStart -> {
+                Log.d("UpdateWatchdog", "Install succeeded — app reported a fresh startup")
+            }
+            is UpdateWatchdogDecision.Decision.NoBackupToRollBackTo -> {
+                Log.w("UpdateWatchdog", "No backup APK to roll back to — giving up")
+            }
+            is UpdateWatchdogDecision.Decision.RollBack -> {
+                Log.w("UpdateWatchdog", "Rolling back to ${backupApk.absolutePath}")
 
-        val backupApk = BackupStore(context).backupApkFile()
-        if (!backupApk.exists()) {
-            Log.w("UpdateWatchdog", "No backup APK to roll back to — giving up")
-            return
-        }
-        Log.w("UpdateWatchdog", "Rolling back to ${backupApk.absolutePath}")
+                // Before the install, so a process that dies mid-install still leaves
+                // the fact behind — and commit() rather than apply(), because the very
+                // next thing that happens is an installer replacing this process, which
+                // an asynchronous write has no guarantee of beating.
+                //
+                // Wrapped because nothing else in onReceive is: a throw here would
+                // abort the receiver before goAsync() and the bad build would never be
+                // rolled back. Telemetry must never be the reason a rollback is lost.
+                try {
+                    prefs(context).edit()
+                        .putLong(KEY_ROLLBACK_AT, System.currentTimeMillis())
+                        .putString(KEY_ROLLBACK_FROM_VERSION, BuildConfig.VERSION_NAME)
+                        .commit()
+                } catch (t: Throwable) {
+                    Log.e("UpdateWatchdog", "Could not record rollback marker: ${t::class.java.name}")
+                }
 
-        // Before the install, so a process that dies mid-install still leaves
-        // the fact behind — and commit() rather than apply(), because the very
-        // next thing that happens is an installer replacing this process, which
-        // an asynchronous write has no guarantee of beating.
-        //
-        // Wrapped because nothing else in onReceive is: a throw here would
-        // abort the receiver before goAsync() and the bad build would never be
-        // rolled back. Telemetry must never be the reason a rollback is lost.
-        try {
-            prefs(context).edit()
-                .putLong(KEY_ROLLBACK_AT, System.currentTimeMillis())
-                .putString(KEY_ROLLBACK_FROM_VERSION, BuildConfig.VERSION_NAME)
-                .commit()
-        } catch (t: Throwable) {
-            Log.e("UpdateWatchdog", "Could not record rollback marker: ${t::class.java.name}")
-        }
-
-        // Receivers must return quickly. goAsync() lets us run the install
-        // async, calling finish() once we're done so the system can release us.
-        val pending = goAsync()
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-        scope.launch {
-            try {
-                val result = ApkInstaller(context).install(backupApk)
-                Log.d("UpdateWatchdog", "Rollback install result: $result")
-            } catch (e: Exception) {
-                Log.e("UpdateWatchdog", "Rollback failed: ${e.message}")
-            } finally {
-                pending.finish()
+                // Receivers must return quickly. goAsync() lets us run the install
+                // async, calling finish() once we're done so the system can release us.
+                val pending = goAsync()
+                val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+                scope.launch {
+                    try {
+                        val result = ApkInstaller(context).install(backupApk)
+                        Log.d("UpdateWatchdog", "Rollback install result: $result")
+                    } catch (e: Exception) {
+                        Log.e("UpdateWatchdog", "Rollback failed: ${e.message}")
+                    } finally {
+                        pending.finish()
+                    }
+                }
             }
         }
     }
