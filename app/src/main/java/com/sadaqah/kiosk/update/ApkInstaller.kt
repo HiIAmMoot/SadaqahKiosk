@@ -11,6 +11,7 @@ import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
@@ -22,6 +23,10 @@ class ApkInstaller(private val context: Context) {
     sealed class Result {
         data object Success : Result()
         data class Failed(val status: Int, val message: String) : Result()
+    }
+
+    companion object {
+        private const val INSTALL_STATUS_TIMEOUT_MS = 45_000L
     }
 
     suspend fun install(apkFile: File): Result = withContext(Dispatchers.IO) {
@@ -77,7 +82,19 @@ class ApkInstaller(private val context: Context) {
                     piFlags
                 )
                 session.commit(pi.intentSender)
-                deferred.await()
+                // A missing status broadcast (observed on some OEM ROMs when
+                // the installer service is killed mid-verification) must not
+                // suspend forever: that leaves showUpdatingOverlay up with no
+                // recovery route besides the watchdog, and the watchdog only
+                // fires 60s after UpdateManager armed it — comfortably before
+                // this timeout so a real timeout still gets seen and disarmed
+                // as an ordinary Failed result instead of racing the watchdog's
+                // own backup reinstall. 45s is generous for verifying and
+                // committing this app's APK even on slow kiosk storage; it is
+                // not a hard ceiling on installation, just on waiting for the
+                // status broadcast that says the OS finished with it.
+                withTimeoutOrNull(INSTALL_STATUS_TIMEOUT_MS) { deferred.await() }
+                    ?: Result.Failed(-998, "timeout waiting for install status")
             }
         } catch (e: Exception) {
             Log.e("ApkInstaller", "session commit failed: ${e.message}")
