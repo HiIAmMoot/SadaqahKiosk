@@ -52,9 +52,17 @@ class TelemetryOutboxTest {
      * cap, 5000 parses to append one row. Asserted on a counting seam rather
      * than on elapsed time, because a timing assertion on a build machine
      * proves nothing.
+     *
+     * What this pins is the absence of a whole-queue PARSE, which is what the
+     * `readLines` seam counts. It is not a claim that an append touches no
+     * file: since the torn-tail fix, every append also opens the file to read
+     * its final byte. That is one seek and one byte inside the same lock, not
+     * a parse that scales with the queue, so the property this guards is
+     * unchanged — but the distinction is worth stating, because the obvious
+     * reading of the old assertion message was that appends do no IO at all.
      */
     @Test
-    fun appendingDoesNotReadTheQueueOncePerAppend() {
+    fun appendingDoesNotReParseTheQueuePerAppend() {
         var reads = 0
         val box = TelemetryOutbox(
             file, maxEvents = 5000, clock = { now },
@@ -64,7 +72,7 @@ class TelemetryOutboxTest {
         val afterLoad = reads
         repeat(20) { box.appendDonation("e$it") }
 
-        assertEquals("the first append loads once; the rest must not read at all",
+        assertEquals("the first append parses the queue once; no later append may parse it again",
             afterLoad, reads)
     }
 

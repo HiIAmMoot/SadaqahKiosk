@@ -31,11 +31,13 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
             return
         }
         val lastStart = prefs(context).getLong(KEY_LAST_STARTUP_MS, 0L)
-        val backupApk = BackupStore(context).backupApkFile()
+        // Deferred, not computed here: BackupStore's lazy backupDir calls
+        // mkdirs(), so evaluating this on a healthy start would create an empty
+        // backup directory on a path that has no business touching one.
         val decision = UpdateWatchdogDecision.decide(
             installAttemptedAt = installAttemptedAt,
             lastStartupMs = lastStart,
-            backupApkExists = backupApk.exists()
+            backupApkExists = { BackupStore(context).backupApkFile().exists() }
         )
         Log.d("UpdateWatchdog", "installedAt=$installAttemptedAt lastStart=$lastStart decision=$decision")
 
@@ -53,6 +55,9 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
                 Log.w("UpdateWatchdog", "No backup APK to roll back to — giving up")
             }
             is UpdateWatchdogDecision.Decision.RollBack -> {
+                // Resolved here rather than above: this is the only branch that
+                // needs it, and touching BackupStore creates its directory.
+                val backupApk = BackupStore(context).backupApkFile()
                 Log.w("UpdateWatchdog", "Rolling back to ${backupApk.absolutePath}")
 
                 // Before the install, so a process that dies mid-install still leaves

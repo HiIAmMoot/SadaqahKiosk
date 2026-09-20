@@ -2809,15 +2809,6 @@ class MainActivity : FragmentActivity() {
                 withContext(telemetryFlushDispatcher) {
                     TelemetryTeardown.clearEverything(telemetryCredentials, telemetryOutbox, telemetryStatusStore)
                 }
-                refreshAnalyticsSnapshot()
-                // An arm from a destination saved earlier in this same visit must not
-                // outlive a clear: DisclosurePresenter.view only needs a non-blank URL
-                // and a non-blank privacy policy URL, neither of which this touches, so
-                // without this the exit branch would still show a destination this
-                // function just tore down. disclosureView needs no clearing here — a
-                // non-null one wins the switch chain, so this control is unreachable
-                // while one is showing.
-                disclosurePendingUrl = null
             } catch (c: CancellationException) {
                 throw c
             } catch (t: Throwable) {
@@ -2827,6 +2818,24 @@ class MainActivity : FragmentActivity() {
                 // installs no CoroutineExceptionHandler, so an escape reaches
                 // the default handler and kills the process.
                 Log.e("Telemetry", "clear credentials failed: ${t::class.java.name}")
+            } finally {
+                // In the finally, not only on the success path. A partial
+                // teardown — credentials cleared, then outbox.clear() throws —
+                // is precisely when the screen must stop showing a destination,
+                // because the credentials behind it are already gone. Leaving
+                // the stale snapshot up after a failure told the operator the
+                // opposite of what had happened. Both calls only read state and
+                // assign, so neither can throw out of the finally and mask the
+                // original failure.
+                refreshAnalyticsSnapshot()
+                // An arm from a destination saved earlier in this same visit must not
+                // outlive a clear: DisclosurePresenter.view only needs a non-blank URL
+                // and a non-blank privacy policy URL, neither of which the teardown
+                // touches, so without this the exit branch would still show a
+                // destination this function just tore down. disclosureView needs no
+                // clearing — a non-null one wins the switch chain, so this control is
+                // unreachable while one is showing.
+                disclosurePendingUrl = null
             }
         }
     }

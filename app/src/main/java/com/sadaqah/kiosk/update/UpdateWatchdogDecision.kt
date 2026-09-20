@@ -29,13 +29,25 @@ object UpdateWatchdogDecision {
      * onCreate, so a build that starts and draws in the same millisecond an
      * install was marked is still a build that started. Treating equality as
      * unhealthy would fail a genuinely fast, correct boot.
+     *
+     * [backupApkExists] is a lambda rather than a Boolean so the caller does not
+     * have to answer a question this may never ask. Answering it means touching
+     * `BackupStore`, whose `backupDir` is a lazy that calls `mkdirs()`, so an
+     * eagerly-evaluated argument created an empty backup directory on every
+     * healthy start — a path that previously returned without going near it.
+     * Still pure and still trivially testable: tests pass `{ true }` or
+     * `{ false }`, and can assert it was never invoked.
      */
-    fun decide(installAttemptedAt: Long, lastStartupMs: Long, backupApkExists: Boolean): Decision {
+    fun decide(
+        installAttemptedAt: Long,
+        lastStartupMs: Long,
+        backupApkExists: () -> Boolean
+    ): Decision {
         if (installAttemptedAt == 0L) return Decision.NoPendingInstall
         val healthyStart = lastStartupMs >= installAttemptedAt
         return when {
             healthyStart -> Decision.HealthyStart
-            !backupApkExists -> Decision.NoBackupToRollBackTo
+            !backupApkExists() -> Decision.NoBackupToRollBackTo
             else -> Decision.RollBack
         }
     }
