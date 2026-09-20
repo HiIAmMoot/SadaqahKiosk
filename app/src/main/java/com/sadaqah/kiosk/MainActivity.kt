@@ -20,6 +20,7 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
+import android.view.ViewTreeObserver
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
 import android.util.Log
@@ -565,11 +566,6 @@ class MainActivity : FragmentActivity() {
         restartManager = RestartManager(store, settings)
         networkRecoveryManager = NetworkRecoveryManager(settings)
 
-        // Heartbeat for the update watchdog: prove that the freshly-installed APK
-        // (or any startup, really) reached running state. The watchdog rolls back
-        // if this isn't bumped within 60s of an install attempt.
-        UpdateWatchdogReceiver.recordHeartbeat(this)
-
         drainUpdateDiagnostics()
 
         updateManager = UpdateManager(
@@ -850,6 +846,22 @@ class MainActivity : FragmentActivity() {
                 )
             }
         }
+
+        // Heartbeat for the update watchdog: prove that the freshly-installed
+        // APK (or any startup, really) reached running state. Deliberately not
+        // recorded right after onCreate starts — setContent only queues
+        // composition, it does not prove anything reached the screen, and a
+        // build that crashes during composition or on its first frame would
+        // still have written this and been waved through as healthy. Waiting
+        // for the decorView's first predraw ties it to an actual frame having
+        // been laid out, which "reached this line" never did.
+        window.decorView.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
+            override fun onPreDraw(): Boolean {
+                window.decorView.viewTreeObserver.removeOnPreDrawListener(this)
+                UpdateWatchdogReceiver.recordHeartbeat(this@MainActivity)
+                return true
+            }
+        })
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {

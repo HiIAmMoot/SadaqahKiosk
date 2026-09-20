@@ -219,6 +219,64 @@ work.
 
 ---
 
+## The update watchdog alarm does not survive a reboot
+
+**What.** `UpdateWatchdogReceiver.arm()` schedules a one-shot `AlarmManager`
+alarm ~60s after an install attempt. `BootReceiver` only starts `MainActivity`
+on `ACTION_BOOT_COMPLETED`; nothing re-arms the watchdog alarm. A power cut
+during that 60s window — the single likeliest failure on an unattended kiosk
+mid-install — loses the alarm along with the reboot, so a build that never
+reaches a healthy start is never rolled back. `KEY_INSTALL_ATTEMPTED_AT` also
+stays on disk in that case, since it is only cleared inside the watchdog's own
+`onReceive`, so the marker survives with nothing left scheduled to read it.
+
+**Why deferred.** Out of scope for fix-wave-1, which was limited to the
+rollback heartbeat's own accuracy (CR-3). Fixing this needs `BootReceiver` to
+inspect the marker and either re-arm the watchdog with the remaining delay or
+run its rollback check immediately, which is a second, independent change to
+a different receiver.
+
+**What it costs to leave.** A power cut mid-install on a kiosk nobody is
+watching can strand it on a build that never rolled back, with the only
+recovery being an operator visiting in person.
+
+**What fixing it needs.** `BootReceiver` reading `KEY_INSTALL_ATTEMPTED_AT`
+and re-arming (or immediately invoking) the watchdog check on boot, tested
+for the case where the marker is absent (ordinary boot, must not fire).
+
+**Established in.** Fix-wave-1 (preview whole-branch review), CR-3, 2026-09-20.
+
+---
+
+## `BackupStore.saveCurrentApk` failures are invisible until a rollback is needed
+
+**What.** `saveCurrentApk` wraps its entire body in `catch (e: Exception)` and
+only logs. Nothing upstream checks that `backupApkFile()` actually exists (or
+matches the size just recorded) before the update flow commits to installing
+a new APK. If the copy silently fails — full disk, permission error, anything
+`copyTo` can throw — the kiosk proceeds as if a rollback target exists.
+`UpdateWatchdogReceiver.onReceive` does check `backupApk.exists()`, but only
+at the moment a rollback is actually needed, which is the worst possible time
+to discover there is nothing to roll back to.
+
+**Why deferred.** Out of scope for fix-wave-1, which was limited to the
+rollback heartbeat's own accuracy (CR-3). Surfacing this failure earlier is an
+update-flow change (likely: refuse to proceed with an install, or at least
+warn, when the pre-install backup did not verifiably succeed), not a
+heartbeat-timing fix.
+
+**What it costs to leave.** A kiosk can be one bad update away from a bricked
+build with no backup to fall back on, and nothing before that point tells
+anyone.
+
+**What fixing it needs.** Have `saveCurrentApk` return (or the caller check)
+whether the backup file exists and its size matches the source afterward, and
+refuse or warn on the install path when it does not.
+
+**Established in.** Fix-wave-1 (preview whole-branch review), CR-3, 2026-09-20.
+
+---
+
 ## Resolved
 
 Items here have been closed; kept briefly so their history is findable.
