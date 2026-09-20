@@ -3058,11 +3058,11 @@ class MainActivity : FragmentActivity() {
         // settings screen briefly while preflight + download runs. Preflight
         // failures will flip it back off via onFinishInstall.
         showUpdatingOverlay = true
-        // Tear down any pinning/lock-task state and the jobs that would re-pin
-        // us, so the post-install relaunch isn't competing with a stale lock
-        // task. Without this, MY_PACKAGE_REPLACED can land while the screen
-        // is still in pinned mode and we end up at the lock screen.
-        prepareForSelfUpdate()
+        // Lock task stays up through preflight + the multi-minute download —
+        // this kiosk stands in public. UpdateManager calls prepareForInstall()
+        // (wired to prepareForSelfUpdate below) immediately before the commit,
+        // the same place the nightly path drops it, so it's down for the
+        // shortest window that actually needs it rather than the whole fetch.
         lifecycleScope.launch {
             updateManager.startUpdateNow().join()
         }
