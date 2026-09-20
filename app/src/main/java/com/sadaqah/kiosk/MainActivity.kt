@@ -1970,6 +1970,17 @@ class MainActivity : FragmentActivity() {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
         }
         startActivity(intent)
+        // restartManager just wrote restart_count/last_restart_timestamp through
+        // SharedPreferencesStore, which uses apply() — a background, async write.
+        // exit(0) below does not drain QueuedWork (only the pause/stop path
+        // ActivityThread never runs here does), so without this drain the write
+        // races the process death and is dropped, silently uncounting this
+        // restart. Same hazard, same fix as relaunchAfterProvisioning's commit()
+        // below — see its comment. Draining here rather than making the store
+        // itself commit-synchronous keeps every other RestartManager write
+        // (a card reader failure or a successful login, both far more frequent
+        // than a hard restart) off the main thread.
+        prefs.edit(commit = true) {}
         Runtime.getRuntime().exit(0)
     }
 
