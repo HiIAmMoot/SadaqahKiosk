@@ -1463,10 +1463,22 @@ def p1(ctx):
 
     Run only against a clean device (reinstall_clean() below does this). On a
     device with pre-existing stored settings, MainActivity's onCreate migration
-    blocks also rewrite longDowntimeThresholdSec, the four autoUpdate fields,
-    and analyticsEnabled, which makes the diff unexplainable. On a clean
-    device only the longDowntimeThresholdSec floor (300) applies, and the
-    fixture is built above it so that floor never fires either.
+    blocks also rewrite settings, which makes the diff unexplainable.
+
+    Which ones can actually re-fire is narrower than it first looks, and worth
+    stating exactly. autoUpdateEnabled and analyticsEnabled are gated on the
+    field being ABSENT from the stored json; once any saveSettings has run Gson
+    emits them, so those two are genuinely one-shot. The ones that re-fire on
+    every boot are the value-gated blocks: longDowntimeThresholdSec (< 300),
+    autoUpdateGraceDays (<= 0), updateRepoUrl (blank) and
+    autoUpdateTargetVersion (blank). A payload that sets any of those below its
+    floor is silently reverted on boot 2 -- which is this check's problem,
+    because provisioning restarts into an ordinary boot by design.
+
+    The fixture is assumed to sit above those floors. Nothing asserts it: it
+    comes from KIOSK_PAYLOAD, so a fixture with, say, a 120s
+    longDowntimeThresholdSec produces a diff that reads as a provisioning bug
+    and is not one.
 
     A raw file comparison fails on a CORRECT provisioning: salt, iv and
     ciphertext are regenerated from SecureRandom on every export, so the
