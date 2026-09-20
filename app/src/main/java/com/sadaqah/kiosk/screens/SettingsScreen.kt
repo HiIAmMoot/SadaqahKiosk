@@ -1289,6 +1289,7 @@ fun UpdateSettingsSection(
 
     var advancedExpanded by remember { mutableStateOf(false) }
     var repoUrlError by remember { mutableStateOf(false) }
+    var showSkipSignatureConfirm by remember { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(responsiveDp(10.dp))) {
 
@@ -1482,7 +1483,16 @@ fun UpdateSettingsSection(
                     label = strings.skipSignatureCheckOnce,
                     description = strings.skipSignatureCheckOnceDesc,
                     checked = settings.skipApkSignatureCheckOnce,
-                    onChange = { onSettingsChange(settings.copy(skipApkSignatureCheckOnce = it)) },
+                    // Turning it off never needs confirmation — only enabling
+                    // the bypass does, matching the "clear credentials" dialog
+                    // for a strictly less dangerous action.
+                    onChange = { turningOn ->
+                        if (turningOn) {
+                            showSkipSignatureConfirm = true
+                        } else {
+                            onSettingsChange(settings.copy(skipApkSignatureCheckOnce = false))
+                        }
+                    },
                     border = border,
                     buttonColor = button
                 )
@@ -1522,6 +1532,34 @@ fun UpdateSettingsSection(
                 }
             }
         }
+    }
+
+    if (showSkipSignatureConfirm) {
+        AlertDialog(
+            onDismissRequest = { showSkipSignatureConfirm = false },
+            containerColor = Color(settings.backgroundColor),
+            title = { Text(strings.skipSignatureCheckConfirmTitle, color = Color.Red, fontWeight = FontWeight.Bold) },
+            text = { Text(strings.skipSignatureCheckConfirmMessage, color = border) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onSettingsChange(settings.copy(skipApkSignatureCheckOnce = true))
+                        showSkipSignatureConfirm = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) {
+                    Text(strings.skipSignatureCheckOnce, color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { showSkipSignatureConfirm = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Gray)
+                ) {
+                    Text(strings.cancel, color = Color.White)
+                }
+            }
+        )
     }
 }
 
