@@ -308,6 +308,10 @@ class UpdateManager(
         val apk = downloader.download(target) { /* nightly silent */ }
         if (apk == null) {
             Log.w("UpdateManager", "Daily download failed for v${target.version}")
+            // Only consumed when this download was actually for installing
+            // tonight (shouldInstall) — a pre-caching download outside the
+            // grace window was never an install attempt.
+            if (shouldInstall) consumeSkipSignatureCheckOnce()
             return
         }
         if (shouldInstall) installResolved(target, apk)
@@ -337,76 +341,110 @@ class UpdateManager(
             Log.e("UpdateManager", "Download failed for v${target.version}")
             onNotification(UpdateNotification.InstallFailed("download_failed"))
             state = UpdateState.Idle
+            // An operator-initiated call is always an install attempt, unlike
+            // the nightly path's pre-caching download — see consumeSkipSignatureCheckOnce.
+            consumeSkipSignatureCheckOnce()
             withContext(Dispatchers.Main) { onFinishInstall() }
             return@launch
         }
         installResolved(target, apk)
     }
 
-    private suspend fun installResolved(target: ReleaseInfo, apkFile: java.io.File) {
-        // Safety net for stale pins to a different major.minor track that
-        // would slip past the dropdown filter.
-        if (!isInstallable(target.version)) {
-            Log.w("UpdateManager", "Cross-track downgrade refused — target=${target.version} current=$currentVersion")
-            onNotification(UpdateNotification.InstallFailed("downgrade_blocked"))
-            state = UpdateState.Idle
-            withContext(Dispatchers.Main) { onFinishInstall() }
-            return
-        }
-
-        // Within the same major.minor track the new APK shares versionCode
-        // with the installed one, so the validator's `newCode < installedCode`
-        // check passes without needing allowDowngrade. If a build accidentally
-        // bumped versionCode within a track, this keeps validation strict.
-        val validation = validator.validate(
-            apkFile = apkFile,
-            allowDowngrade = false,
-            skipSignatureCheck = settings.skipApkSignatureCheckOnce
-        )
-        if (validation is ApkValidator.Result.Reject) {
-            Log.e("UpdateManager", "Validation rejected: ${validation.reason}")
-            onNotification(UpdateNotification.InstallFailed("validation_rejected"))
-            state = UpdateState.Idle
-            withContext(Dispatchers.Main) { onFinishInstall() }
-            return
-        }
-
-        state = UpdateState.ReadyToInstall(target, apkFile.absolutePath)
-        withContext(Dispatchers.Main) { onStartInstall(target) }
-        state = UpdateState.Installing(target)
-
-        backup.saveCurrentApk()
-        UpdateWatchdogReceiver.arm(context, delayMs = 60_000L)
-
-        // UI callback — switch to main thread because the body touches the
-        // Window/Activity (system bars, lock task). Synchronous so the install
-        // commit doesn't race the teardown.
+    /**
+     * Clears `skipApkSignatureCheckOnce` and persists the change, if it was
+     * set. Called on every exit from an install attempt that read it,
+     * including a failed download that never reached [installResolved] at
+     * all — "once" means one attempt, not one success. Leaving it set across
+     * a failed attempt would let the next unattended 02:00 run silently
+     * accept an APK signed by any key, against a `updateRepoUrl` an operator
+     * can already edit.
+     */
+    private fun consumeSkipSignatureCheckOnce() {
+        if (!settings.skipApkSignatureCheckOnce) return
+        settings = settings.copy(skipApkSignatureCheckOnce = false)
         try {
-            withContext(Dispatchers.Main) { prepareForInstall() }
+            persistSettings(settings)
         } catch (e: Exception) {
-            Log.w("UpdateManager", "prepareForInstall threw: ${e.message}")
+            Log.e("UpdateManager", "persistSettings (clear skip-sig) failed: ${e.message}")
         }
+    }
 
-        if (settings.skipApkSignatureCheckOnce) {
-            settings = settings.copy(skipApkSignatureCheckOnce = false)
-            try { persistSettings(settings) } catch (e: Exception) {
-                Log.e("UpdateManager", "persistSettings (clear skip-sig) failed: ${e.message}")
-            }
-        }
-
-        val result = withContext(Dispatchers.IO) { installer.install(apkFile) }
-        when (result) {
-            is ApkInstaller.Result.Success -> {
-                Log.d("UpdateManager", "Install commit returned SUCCESS")
-                downloader.cleanupAll()
-                // Process dies here; PackageReplacedReceiver relaunches us.
-            }
-            is ApkInstaller.Result.Failed -> {
-                Log.e("UpdateManager", "Install failed status=${result.status} msg=${result.message}")
-                UpdateWatchdogReceiver.disarm(context)
-                onNotification(UpdateNotification.InstallFailed("commit_failed"))
+    private suspend fun installResolved(target: ReleaseInfo, apkFile: java.io.File) {
+        // Captured before any early return so the finally below always
+        // consumes what was true when this attempt started, not whatever
+        // settings happens to hold by the time it runs.
+        val hadSkipSignatureCheck = settings.skipApkSignatureCheckOnce
+        // The process is replaced out from under a real success, so the
+        // watchdog must survive to check the new build's heartbeat; every
+        // other exit — including a cancelled scope — must disarm it, or a
+        // torn-down attempt leaves the marker armed and the watchdog "rolls
+        // back" the version that is still running 60s later.
+        var installSucceeded = false
+        try {
+            // Safety net for stale pins to a different major.minor track that
+            // would slip past the dropdown filter.
+            if (!isInstallable(target.version)) {
+                Log.w("UpdateManager", "Cross-track downgrade refused — target=${target.version} current=$currentVersion")
+                onNotification(UpdateNotification.InstallFailed("downgrade_blocked"))
                 state = UpdateState.Idle
                 withContext(Dispatchers.Main) { onFinishInstall() }
+                return
+            }
+
+            // Within the same major.minor track the new APK shares versionCode
+            // with the installed one, so the validator's `newCode < installedCode`
+            // check passes without needing allowDowngrade. If a build accidentally
+            // bumped versionCode within a track, this keeps validation strict.
+            val validation = validator.validate(
+                apkFile = apkFile,
+                allowDowngrade = false,
+                skipSignatureCheck = hadSkipSignatureCheck
+            )
+            if (validation is ApkValidator.Result.Reject) {
+                Log.e("UpdateManager", "Validation rejected: ${validation.reason}")
+                onNotification(UpdateNotification.InstallFailed("validation_rejected"))
+                state = UpdateState.Idle
+                withContext(Dispatchers.Main) { onFinishInstall() }
+                return
+            }
+
+            state = UpdateState.ReadyToInstall(target, apkFile.absolutePath)
+            withContext(Dispatchers.Main) { onStartInstall(target) }
+            state = UpdateState.Installing(target)
+
+            backup.saveCurrentApk()
+            UpdateWatchdogReceiver.arm(context, delayMs = 60_000L)
+
+            // UI callback — switch to main thread because the body touches the
+            // Window/Activity (system bars, lock task). Synchronous so the install
+            // commit doesn't race the teardown.
+            try {
+                withContext(Dispatchers.Main) { prepareForInstall() }
+            } catch (e: Exception) {
+                Log.w("UpdateManager", "prepareForInstall threw: ${e.message}")
+            }
+
+            val result = withContext(Dispatchers.IO) { installer.install(apkFile) }
+            when (result) {
+                is ApkInstaller.Result.Success -> {
+                    installSucceeded = true
+                    Log.d("UpdateManager", "Install commit returned SUCCESS")
+                    downloader.cleanupAll()
+                    // Process dies here; PackageReplacedReceiver relaunches us.
+                }
+                is ApkInstaller.Result.Failed -> {
+                    Log.e("UpdateManager", "Install failed status=${result.status} msg=${result.message}")
+                    onNotification(UpdateNotification.InstallFailed("commit_failed"))
+                    state = UpdateState.Idle
+                    withContext(Dispatchers.Main) { onFinishInstall() }
+                }
+            }
+        } finally {
+            if (!installSucceeded) {
+                UpdateWatchdogReceiver.disarm(context)
+            }
+            if (hadSkipSignatureCheck) {
+                consumeSkipSignatureCheckOnce()
             }
         }
     }
