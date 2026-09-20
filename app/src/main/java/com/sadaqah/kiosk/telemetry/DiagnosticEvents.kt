@@ -4,6 +4,27 @@ import com.google.gson.JsonObject
 import com.sadaqah.kiosk.model.Settings
 import java.time.Instant
 
+/**
+ * A closed, fixed set of causes a card-reader or checkout failure can be
+ * classified into. Every one of these three failure kinds is fed a vendor
+ * SDK's own free-text status message, and [DiagnosticEvents.checkoutNoReaderDetail]
+ * fires on a FAILED PAYMENT — exactly where that vendor is most likely to
+ * name the transaction. The donor-facing disclosure states in every language
+ * it ships that no transaction identifier is ever sent, so nothing narrower
+ * than membership in this list may reach an event payload for these kinds.
+ */
+enum class SumUpFailureCause(val wire: String) {
+    TIMEOUT("timeout"),
+    READER_NOT_FOUND("reader_not_found"),
+    NO_CONNECTIVITY("no_connectivity"),
+    CANCELLED("cancelled"),
+    DECLINED("declined"),
+    /** Every message that does not match one of the phrases above, including
+     *  one that happens to look like a transaction code — there is no
+     *  narrower bucket to fall back to, and that is deliberate. */
+    UNKNOWN("unknown")
+}
+
 sealed class DiagnosticEventResult {
     /** The operator declined analytics, or no identity is loaded yet. */
     object NotEnabled : DiagnosticEventResult()
@@ -155,6 +176,35 @@ object DiagnosticEvents {
         )
     }
 
+    /**
+     * Classifies a vendor status message into [SumUpFailureCause] by matching
+     * a small set of fixed English phrases SumUp's SDK is documented to use
+     * for these outcomes — never by forwarding any part of the message
+     * itself. The message is discarded the instant this returns; the caller
+     * never has the original text in hand to put on an event.
+     *
+     * This is deliberately not combined with the numeric result code: the
+     * code is already a closed, small integer enum from the SDK and was
+     * never the leak vector (it already travels unfiltered in the `code`
+     * field), and folding SumUp's constants in here would tie this pure,
+     * testable module to the SumUp SDK for no gain. Matching stays purely
+     * text-based, which is also what makes it exhaustively testable against
+     * adversarial input — including a message shaped like a transaction code,
+     * which must fall through every branch to [SumUpFailureCause.UNKNOWN].
+     */
+    fun classifySumUpFailure(message: String?): SumUpFailureCause {
+        val text = message.orEmpty()
+        return when {
+            text.contains("timeout", ignoreCase = true) -> SumUpFailureCause.TIMEOUT
+            text.contains("not found", ignoreCase = true) -> SumUpFailureCause.READER_NOT_FOUND
+            text.contains("connectivity", ignoreCase = true) ||
+                text.contains("no connection", ignoreCase = true) -> SumUpFailureCause.NO_CONNECTIVITY
+            text.contains("cancel", ignoreCase = true) -> SumUpFailureCause.CANCELLED
+            text.contains("declin", ignoreCase = true) -> SumUpFailureCause.DECLINED
+            else -> SumUpFailureCause.UNKNOWN
+        }
+    }
+
     /** Both numbers, because an operator who later changes the threshold would
      *  otherwise make every stored row uninterpretable. */
     fun networkOutageDetail(downtimeMs: Long, thresholdMs: Long): String =
@@ -177,11 +227,20 @@ object DiagnosticEvents {
     /** Shared by `sumup_reinit_failed` and `card_reader_connect_failed`. `closedBy`
      *  is present only for a close the app itself performed — a screensaver or a
      *  watchdog dismissing a stuck page — never for an operator-hit failure. Its
-     *  absence, not a null or false value, is what a dashboard reads as genuine. */
-    fun sumUpFailureDetail(code: Int, message: String?, closedBy: String?): String =
+     *  absence, not a null or false value, is what a dashboard reads as genuine.
+     *
+     *  [cause] must already be one of [SumUpFailureCause]'s wire values — see
+     *  [classifySumUpFailure]. There is deliberately no parameter here that
+     *  accepts the vendor's own message text: `checkout_no_reader` fires on a
+     *  failed *payment*, exactly the moment SumUp's SDK is most likely to name
+     *  the transaction, and the donor-facing disclosure states in every
+     *  language it ships that no transaction identifier is ever sent. A field
+     *  that only ever holds membership in a closed, fixed set cannot violate
+     *  that, no matter what the vendor's text looks like. */
+    fun sumUpFailureDetail(code: Int, cause: SumUpFailureCause, closedBy: String?): String =
         JsonObject().apply {
             addProperty("code", code)
-            if (!message.isNullOrBlank()) addProperty("message", message)
+            addProperty("cause", cause.wire)
             if (!closedBy.isNullOrBlank()) addProperty("closed_by", closedBy)
         }.toString()
 
@@ -191,62 +250,13 @@ object DiagnosticEvents {
     fun pageTimeoutDetail(): String =
         JsonObject().apply { addProperty("closed_by", "pairing_timeout") }.toString()
 
-    fun checkoutNoReaderDetail(code: Int, message: String?): String =
+    /** See [sumUpFailureDetail] for why this takes a classified [cause] and
+     *  not the vendor's message. */
+    fun checkoutNoReaderDetail(code: Int, cause: SumUpFailureCause): String =
         JsonObject().apply {
             addProperty("code", code)
-            if (!message.isNullOrBlank()) addProperty("message", message)
+            addProperty("cause", cause.wire)
         }.toString()
-
-    /** Reserved below [TelemetryRedactor.MAX_TEXT_BYTES] for the JSON wrapper
-     *  [sumUpFailureDetail] and [checkoutNoReaderDetail] add around a message —
-     *  braces, field names and quoting for the other fields (the longest
-     *  wrapper is under 63 bytes) — so a message whose *escaped* form is
-     *  truncated to this budget can never push the assembled detail over the
-     *  cap and lose the whole row to [TelemetryEvent.Diagnostic]'s oversize
-     *  drop. It does not need to budget for the message's own escaping —
-     *  [truncateWrappedMessage] measures that directly instead of guessing at
-     *  it, since a message that is mostly quotes, backslashes or control
-     *  characters (a vendor error embedding a JSON blob, say) can nearly
-     *  double in size once escaped, and a flat reserve sized for the common
-     *  case silently stopped bounding the uncommon one. */
-    private const val WRAPPED_MESSAGE_RESERVE_BYTES = 512
-
-    /** Truncates a message that is about to be wrapped in [sumUpFailureDetail]
-     *  or [checkoutNoReaderDetail], not the assembled JSON — truncating after
-     *  wrapping can cut mid-document and lose the whole detail the same way
-     *  an oversized one already does.
-     *
-     *  Bounds the message's *JSON-escaped* byte length, not its raw one:
-     *  [TelemetryRedactor.truncate] cuts raw bytes, so a message built almost
-     *  entirely of characters JSON escapes (quotes, backslashes, control
-     *  characters) can pass that cut and still expand past the reserve once
-     *  wrapped — the exact case `"x".repeat(n)` (no escapable character) can't
-     *  exercise. JSON string escaping has no cross-character interaction, so
-     *  the escaped length of a prefix is monotonic in the prefix's length —
-     *  binary search finds the longest prefix whose escaped form still fits. */
-    fun truncateWrappedMessage(message: String?): String? {
-        if (message == null) return null
-        val budget = TelemetryRedactor.MAX_TEXT_BYTES - WRAPPED_MESSAGE_RESERVE_BYTES
-        if (jsonEscapedByteLength(message) <= budget) return message
-        val contentBudget = (budget - jsonEscapedByteLength(TelemetryRedactor.TRUNCATION_SUFFIX)).coerceAtLeast(0)
-        var lo = 0
-        var hi = message.length
-        while (lo < hi) {
-            val mid = (lo + hi + 1) / 2
-            if (jsonEscapedByteLength(message.substring(0, mid)) <= contentBudget) lo = mid else hi = mid - 1
-        }
-        return message.substring(0, lo) + TelemetryRedactor.TRUNCATION_SUFFIX
-    }
-
-    /** The byte length a string contributes as a JSON string *value* — i.e.
-     *  excluding the two quote characters [com.google.gson.JsonPrimitive]
-     *  wraps every string in — computed the same way [sumUpFailureDetail] and
-     *  [checkoutNoReaderDetail] actually encode it (via `JsonObject.
-     *  addProperty`), so this measurement can't drift from what gets wrapped. */
-    private fun jsonEscapedByteLength(s: String): Int {
-        val quoted = com.google.gson.JsonPrimitive(s).toString()
-        return quoted.toByteArray(Charsets.UTF_8).size - 2
-    }
 
     private fun identityOf(settings: Settings?, appVersion: String): EventIdentity? {
         if (settings == null || !settings.analyticsEnabled) return null

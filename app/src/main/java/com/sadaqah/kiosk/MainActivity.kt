@@ -918,7 +918,7 @@ class MainActivity : FragmentActivity() {
                         {
                             DiagnosticEvents.sumUpFailureDetail(
                                 errorCode,
-                                DiagnosticEvents.truncateWrappedMessage(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey)),
+                                DiagnosticEvents.classifySumUpFailure(errorMessage),
                                 closedBy = closedBy
                             )
                         },
@@ -962,7 +962,7 @@ class MainActivity : FragmentActivity() {
                         {
                             DiagnosticEvents.sumUpFailureDetail(
                                 errorCode,
-                                DiagnosticEvents.truncateWrappedMessage(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey)),
+                                DiagnosticEvents.classifySumUpFailure(errorMessage),
                                 closedBy = closedBy
                             )
                         },
@@ -1018,7 +1018,7 @@ class MainActivity : FragmentActivity() {
                         reportDiagnostic(DiagnosticKind.CHECKOUT_NO_READER, detail = {
                             DiagnosticEvents.checkoutNoReaderDetail(
                                 errorCode,
-                                DiagnosticEvents.truncateWrappedMessage(TelemetryRedactor.scrub(errorMessage, CrashContext.affiliateKey))
+                                DiagnosticEvents.classifySumUpFailure(errorMessage)
                             )
                         })
                     }

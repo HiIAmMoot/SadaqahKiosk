@@ -412,19 +412,28 @@ class DiagnosticEventsTest {
     }
 
     @Test
-    fun aSumUpFailureDetailCarriesTheCodeAndMessage() {
+    fun aSumUpFailureDetailCarriesTheCodeAndClassifiedCause() {
         val d = JsonParser.parseString(
-            DiagnosticEvents.sumUpFailureDetail(code = 7, message = "reader not found", closedBy = null)
+            DiagnosticEvents.sumUpFailureDetail(
+                code = 7,
+                cause = DiagnosticEvents.classifySumUpFailure("Card reader not found"),
+                closedBy = null
+            )
         ).asJsonObject
         assertEquals(7, d["code"].asInt)
-        assertEquals("reader not found", d["message"].asString)
+        assertEquals("reader_not_found", d["cause"].asString)
+        assertFalse("the vendor's own wording must never reach the payload", d.has("message"))
         assertFalse("absent closed_by is what marks a genuine failure", d.has("closed_by"))
     }
 
     @Test
     fun aSyntheticCloseIsNamedOnTheRow() {
         val d = JsonParser.parseString(
-            DiagnosticEvents.sumUpFailureDetail(code = -1, message = null, closedBy = "pairing_timeout")
+            DiagnosticEvents.sumUpFailureDetail(
+                code = -1,
+                cause = DiagnosticEvents.classifySumUpFailure(null),
+                closedBy = "pairing_timeout"
+            )
         ).asJsonObject
         // Asserted explicitly rather than left to the deref below: a missing
         // key must fail this test on its own terms, not via a stray NPE.
@@ -437,13 +446,14 @@ class DiagnosticEventsTest {
      *  not its nullness, is the discriminator a dashboard reads. */
     @Test
     fun aBlankOrWhitespaceClosedByIsAbsentJustLikeNull() {
+        val cause = DiagnosticEvents.classifySumUpFailure(null)
         val blank = JsonParser.parseString(
-            DiagnosticEvents.sumUpFailureDetail(code = 1, message = null, closedBy = "")
+            DiagnosticEvents.sumUpFailureDetail(code = 1, cause = cause, closedBy = "")
         ).asJsonObject
         assertFalse(blank.has("closed_by"))
 
         val whitespace = JsonParser.parseString(
-            DiagnosticEvents.sumUpFailureDetail(code = 1, message = null, closedBy = "   ")
+            DiagnosticEvents.sumUpFailureDetail(code = 1, cause = cause, closedBy = "   ")
         ).asJsonObject
         assertFalse(whitespace.has("closed_by"))
     }
@@ -456,115 +466,95 @@ class DiagnosticEventsTest {
     }
 
     @Test
-    fun aCheckoutWithNoReaderCarriesTheFailureItObserved() {
+    fun aCheckoutWithNoReaderCarriesTheClassifiedCause() {
         val d = JsonParser.parseString(
-            DiagnosticEvents.checkoutNoReaderDetail(code = 3, message = "declined")
+            DiagnosticEvents.checkoutNoReaderDetail(
+                code = 3,
+                cause = DiagnosticEvents.classifySumUpFailure("Payment declined by issuer")
+            )
         ).asJsonObject
         assertEquals(3, d["code"].asInt)
-        assertEquals("declined", d["message"].asString)
-    }
-
-    /** A message truncated only against TelemetryRedactor's own raw-byte cap,
-     *  then wrapped, would push the assembled detail over the cap and lose the
-     *  whole row to TelemetryEvent.Diagnostic's oversize drop — the wrapper
-     *  overflow this reserve exists to prevent. Built from `"` rather than
-     *  `"x"`: every character here doubles under JSON escaping, so a fix that
-     *  merely widened the reserve constant (without measuring the escaped
-     *  length) would still fail this, where it passed on an all-`x` string
-     *  that has nothing to escape. */
-    @Test
-    fun truncateWrappedMessageLeavesRoomForTheJsonWrapper() {
-        val atCap = "\"".repeat(TelemetryRedactor.MAX_TEXT_BYTES)
-        val wrapped = DiagnosticEvents.sumUpFailureDetail(
-            code = -1,
-            message = DiagnosticEvents.truncateWrappedMessage(atCap),
-            closedBy = "pairing_timeout"
-        )
-        assertTrue(wrapped.toByteArray(Charsets.UTF_8).size <= TelemetryRedactor.MAX_TEXT_BYTES)
-        // Reaches the same event the phase's other rows do: an oversized
-        // detail is dropped entirely, so surviving that check is the proof
-        // the wrapper actually fit.
-        val identity = EventIdentity.from(enabled, appVersion)
-        val event = TelemetryEvent.Diagnostic(
-            identity = identity,
-            kind = DiagnosticKind.SUMUP_REINIT_FAILED,
-            occurredAtIso = "2023-11-14T22:13:20Z",
-            detailJson = wrapped,
-            affiliateKey = null
-        )
-        assertTrue(payload(event).has("detail"))
-    }
-
-    /** The budget subtracts the suffix it is about to append, reading it from
-     *  [TelemetryRedactor.TRUNCATION_SUFFIX]. Nothing but this forces the value
-     *  actually appended to be that same one: a second literal reintroduced at
-     *  the append site would be absorbed by the 512-byte wrapper reserve and no
-     *  test would notice. Asserting the result ends with the measured constant
-     *  pins the two together without hardcoding either. */
-    @Test
-    fun aTruncatedMessageEndsWithTheSuffixItsBudgetWasComputedFrom() {
-        val huge = "\"".repeat(TelemetryRedactor.MAX_TEXT_BYTES)
-        val truncated = DiagnosticEvents.truncateWrappedMessage(huge)!!
-        assertTrue(
-            "a truncated message must end with the suffix the budget measured",
-            truncated.endsWith(TelemetryRedactor.TRUNCATION_SUFFIX)
-        )
-    }
-
-    /** The cap has to hold for every shape a vendor error can take, not just the
-     *  one the reserve was sized against. Each of these expands differently
-     *  under JSON escaping and UTF-8, and an oversized detail is dropped whole —
-     *  so the row that mattered is the one that disappears. */
-    @Test
-    fun theAssembledDetailFitsTheCapForEveryAdversarialShape() {
-        val shapes = mapOf(
-            "quotes" to "\"",
-            "backslashes" to "\\",
-            "control characters" to "",
-            "newlines" to "\n",
-            "two-byte UTF-8" to "é",
-            "three-byte UTF-8" to "€",
-            "surrogate pairs" to "😀",
-            "plain ascii" to "x"
-        )
-        for ((name, unit) in shapes) {
-            val message = unit.repeat(TelemetryRedactor.MAX_TEXT_BYTES)
-            val wrapped = DiagnosticEvents.sumUpFailureDetail(
-                code = -1,
-                message = DiagnosticEvents.truncateWrappedMessage(message),
-                closedBy = "pairing_timeout"
-            )
-            val size = wrapped.toByteArray(Charsets.UTF_8).size
-            assertTrue(
-                "$name: assembled detail is $size bytes, over the " +
-                    "${TelemetryRedactor.MAX_TEXT_BYTES}-byte cap",
-                size <= TelemetryRedactor.MAX_TEXT_BYTES
-            )
-            val event = TelemetryEvent.Diagnostic(
-                identity = EventIdentity.from(enabled, appVersion),
-                kind = DiagnosticKind.SUMUP_REINIT_FAILED,
-                occurredAtIso = "2023-11-14T22:13:20Z",
-                detailJson = wrapped,
-                affiliateKey = null
-            )
-            assertTrue("$name: the detail was dropped as oversized", payload(event).has("detail"))
-        }
-    }
-
-    /** A message already inside the escaped budget must pass through
-     *  untouched — the escape-aware truncation must not cut what didn't need
-     *  cutting. */
-    @Test
-    fun truncateWrappedMessageLeavesAShortMessageUntouched() {
-        assertEquals("declined", DiagnosticEvents.truncateWrappedMessage("declined"))
-    }
-
-    @Test
-    fun checkoutNoReaderDetailOmitsTheMessageWhenThereIsNone() {
-        val d = JsonParser.parseString(
-            DiagnosticEvents.checkoutNoReaderDetail(code = 3, message = null)
-        ).asJsonObject
-        assertEquals(3, d["code"].asInt)
+        assertEquals("declined", d["cause"].asString)
         assertFalse(d.has("message"))
+    }
+
+    @Test
+    fun checkoutNoReaderDetailAlwaysCarriesACause() {
+        val d = JsonParser.parseString(
+            DiagnosticEvents.checkoutNoReaderDetail(code = 3, cause = DiagnosticEvents.classifySumUpFailure(null))
+        ).asJsonObject
+        assertEquals(3, d["code"].asInt)
+        assertEquals("unknown", d["cause"].asString)
+    }
+
+    // ── IM-12: the vendor message itself must never reach an event ─────────────
+
+    /**
+     * `checkout_no_reader` fires on a FAILED PAYMENT — precisely the moment a
+     * vendor SDK is most likely to name the transaction — and the old filter
+     * (an exact affiliate-key match plus a 32+ character token regex) let a
+     * ~10 character SumUp transaction code straight through. A classifier
+     * that only ever emits membership in a closed, fixed set cannot leak one,
+     * no matter what shape the vendor text takes: this asserts the exact
+     * failure shape the finding named, end to end through the wire JSON.
+     */
+    @Test
+    fun aVendorMessageShapedLikeATransactionCodeNeverReachesTheDetail() {
+        val vendorMessage = "Transaction TX4F92K1QZ could not be completed"
+        val cause = DiagnosticEvents.classifySumUpFailure(vendorMessage)
+        val wire = DiagnosticEvents.checkoutNoReaderDetail(code = 3, cause = cause)
+
+        assertFalse(
+            "the classified cause must be one of the fixed constants, never the vendor text",
+            wire.contains("TX4F92K1QZ")
+        )
+        assertFalse(wire.contains("Transaction"))
+        assertEquals(SumUpFailureCause.UNKNOWN, cause)
+        assertEquals("unknown", JsonParser.parseString(wire).asJsonObject["cause"].asString)
+    }
+
+    @Test
+    fun classifySumUpFailureRecognisesTimeout() {
+        assertEquals(
+            SumUpFailureCause.TIMEOUT,
+            DiagnosticEvents.classifySumUpFailure("Connection timeout while pairing")
+        )
+    }
+
+    @Test
+    fun classifySumUpFailureRecognisesReaderNotFound() {
+        assertEquals(
+            SumUpFailureCause.READER_NOT_FOUND,
+            DiagnosticEvents.classifySumUpFailure("Card reader not found")
+        )
+    }
+
+    @Test
+    fun classifySumUpFailureRecognisesNoConnectivity() {
+        assertEquals(
+            SumUpFailureCause.NO_CONNECTIVITY,
+            DiagnosticEvents.classifySumUpFailure("No connectivity to SumUp servers")
+        )
+    }
+
+    @Test
+    fun classifySumUpFailureRecognisesCancelled() {
+        assertEquals(
+            SumUpFailureCause.CANCELLED,
+            DiagnosticEvents.classifySumUpFailure("User cancelled the transaction")
+        )
+    }
+
+    @Test
+    fun classifySumUpFailureRecognisesDeclined() {
+        assertEquals(
+            SumUpFailureCause.DECLINED,
+            DiagnosticEvents.classifySumUpFailure("Payment declined by issuer")
+        )
+    }
+
+    @Test
+    fun classifySumUpFailureFallsBackToUnknownForANullMessage() {
+        assertEquals(SumUpFailureCause.UNKNOWN, DiagnosticEvents.classifySumUpFailure(null))
     }
 }
