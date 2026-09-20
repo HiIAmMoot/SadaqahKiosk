@@ -83,6 +83,20 @@ class RestartManager(
         store.putInt(KEY_GAVE_UP_REPORTED, 0)
     }
 
+    /** Resets the reinit failure counter and the give-up latch (e.g. after a
+     *  successful login). Mirrors [clearCardReaderFailures]: restart_count is
+     *  deliberately left untouched. A successful login only proves the SumUp
+     *  session came back up, not that the underlying fault is gone — the
+     *  dominant real-world case is a flaky card reader that lets login
+     *  through and then fails again minutes later. Clearing restart_count
+     *  here (as [clearCounters] does) would make MAX_RESTARTS unreachable for
+     *  that entire class of fault, since every restart cycle would zero the
+     *  budget it is supposed to exhaust. */
+    fun clearReinitFailures() {
+        store.putInt(KEY_REINIT_FAILURES, 0)
+        store.putInt(KEY_GAVE_UP_REPORTED, 0)
+    }
+
     val restartCount: Int get() = store.getInt(KEY_RESTART_COUNT)
     // Read by tests only, and deliberately kept: nine reads in RestartManagerTest,
     // two of them asserting counter isolation — that a card-reader failure does not

@@ -877,7 +877,13 @@ class MainActivity : FragmentActivity() {
                     Toast.makeText(this, strings.logInSuccessful, Toast.LENGTH_SHORT).show()
                     prefs.edit() { putString("affiliate_key", affiliateKey) }
                     isLoggedIn = true
-                    restartManager.clearCounters()
+                    // Not clearCounters(): a successful login only proves the
+                    // SumUp session came back, not that the fault is gone — a
+                    // flaky reader routinely lets login through and then fails
+                    // again. Zeroing restart_count here would make
+                    // MAX_RESTARTS unreachable for that entire fault class.
+                    // See RestartManager.clearReinitFailures's KDoc.
+                    restartManager.clearReinitFailures()
                     scheduleRestartCounterReset()
                     if (firstLogIn) {
                         connectCardReader()
@@ -956,6 +962,11 @@ class MainActivity : FragmentActivity() {
             3 -> {
                 if (resultCode == 1 && data != null) {
                     Toast.makeText(this, strings.paymentSuccessful, Toast.LENGTH_SHORT).show()
+                    // Broad clear is deliberate here, unlike the login-success
+                    // branch above: a completed payment exercises the reader,
+                    // the reinit path and the network round-trip together, so
+                    // it is real evidence the kiosk is healthy end to end, not
+                    // just that login succeeded.
                     restartManager.clearCounters()
                     scheduleRestartCounterReset()
                     // Append to donation history if tracking is on.

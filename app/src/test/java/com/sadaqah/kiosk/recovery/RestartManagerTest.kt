@@ -305,4 +305,33 @@ class RestartManagerTest {
         assertEquals(RestartResult.COOLDOWN_ACTIVE, result)
         assertTrue(m.gaveUpReported)
     }
+
+    // ── CR-2: the login-success clear must not reset restart_count ──────────
+
+    /**
+     * MainActivity's login-success handler (`onActivityResult` request code 1)
+     * calls `clearReinitFailures()` — not `clearCounters()` — on every
+     * successful login, including the login that follows a restart triggered
+     * by a reinit-failure streak. Clearing the full counters there would zero
+     * restart_count, the very budget the streak is supposed to exhaust, and
+     * MAX_RESTARTS would be unreachable for any fault that leaves login
+     * working (every card-reader fault, the dominant driver). This drives
+     * three full restart cycles, each followed by a successful login, and
+     * pins that the fourth fault streak — not the first — is what finally
+     * trips MAX_RESTARTS.
+     */
+    @Test
+    fun loginSuccessBetweenCycles_doesNotResetRestartBudget_reachesMaxRestarts() {
+        val m = createManager()
+        repeat(3) {
+            repeat(3) { m.recordReinitFailure() } // one full restart cycle
+            now += 301_000L // past cooldown before the next fault streak
+            m.clearReinitFailures() // the login-success handler, MainActivity:880
+        }
+        assertEquals(3, m.restartCount)
+
+        now += 301_000L
+        val result = (1..3).map { m.recordReinitFailure() }.last()
+        assertEquals(RestartResult.MAX_RESTARTS, result)
+    }
 }
