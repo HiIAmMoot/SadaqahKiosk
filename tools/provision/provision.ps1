@@ -77,7 +77,15 @@ $script:Warnings = @()
 function Sh {
     param(
         [Parameter(Mandatory)][string]$Command,
-        [string]$What = $Command,
+        # No default. A default of $Command would echo the raw command text
+        # verbatim into the console and $script:Warnings on any failure, and
+        # the only thing keeping today's password and wifi-passphrase calls
+        # off that path is each one remembering to override it -- nothing
+        # enforces that for a future call built by string interpolation.
+        # Making the parameter mandatory turns a forgotten override from a
+        # silent leak hazard into a script that refuses to bind until the
+        # caller has consciously named what gets logged.
+        [Parameter(Mandatory)][string]$What,
         # Fatal when the step is load-bearing; a warning when the kiosk still
         # works without it.
         [switch]$Fatal
@@ -128,7 +136,15 @@ Write-Host "`nProvisioning $(if ($Serial) { $Serial } else { 'the attached devic
 # --- device present -------------------------------------------------------
 Step "waiting for device"
 Adb wait-for-device | Out-Null
-if ((Adb shell getprop sys.boot_completed).Trim() -ne "1") { Die "device has not finished booting" }
+# -join before .Trim(): Adb merges stderr, so one extra line turns the result
+# into an array, and .Trim() called straight on an array member-enumerates
+# instead of trimming a string. -join first collapses that back into one
+# string, which also protects the null case below: -join on $null (a device
+# in recovery or sideload -- exactly what wait-for-device above will return
+# for -- yields "", not $null, so .Trim() never runs on $null and throws
+# InvokeMethodOnNull under this script's $ErrorActionPreference = "Stop".
+$boot = (Adb shell getprop sys.boot_completed) -join "`n"
+if ($boot.Trim() -ne "1") { Die "device has not finished booting" }
 Ok "device ready"
 
 # --- install --------------------------------------------------------------
@@ -211,6 +227,21 @@ if ($r -match "Success") {
 Step "enabling radios"
 Sh "svc wifi enable" -What "wifi radio" | Out-Null
 Sh "svc bluetooth enable" -What "bluetooth radio" | Out-Null
+# svc bluetooth enable returns immediately and prints nothing whether or not
+# the adapter actually comes up, so Sh's exit-code-plus-error-word check
+# cannot see a radio that failed to enable -- unlike wifi, which gets a real
+# association assertion below. A warning, not a Die: BluetoothRecoveryManager
+# self-heals this after a delay, so the cost of a radio that never reports on
+# here is a spurious recovery event and a diagnostic row on an otherwise fine
+# kiosk, not a broken one -- but the founder's rule is that a step able to
+# fail must at least warn, and until now this one couldn't.
+$btOn = $false
+foreach ($i in 1..5) {
+    Start-Sleep -Seconds 1
+    $btState = (Adb shell "settings get global bluetooth_on") -join "`n"
+    if ($btState.Trim() -eq "1") { $btOn = $true; break }
+}
+if (-not $btOn) { Warn "bluetooth radio did not report on within 5s -- it will self-heal via BluetoothRecoveryManager, but verify it by hand" }
 Sh "cmd location set-location-enabled true" -What "location services" -Fatal | Out-Null
 Sh "settings put secure location_mode 3" -What "location mode" | Out-Null
 Ok "wifi, bluetooth, location on"
@@ -452,7 +483,12 @@ if ($Payload) {
             $pidNow = PidOf
             if ($pidNow -and $pidNow -ne $pidBefore) { $sawRestart = $true }
         }
-        $raw = Adb shell "cat $REMOTE_DIR/provision-result.json 2>/dev/null"
+        # -join before the null/truthy check below: without it, an extra
+        # line from Adb's merged stderr makes $raw a multi-line array, which
+        # ConvertFrom-Json then parses per-element (each half invalid JSON on
+        # its own), the catch below swallows the error, and this loop times
+        # out at 120s for a device that reported fine.
+        $raw = (Adb shell "cat $REMOTE_DIR/provision-result.json 2>/dev/null") -join "`n"
         if ($raw) {
             try { $parsed = $raw | ConvertFrom-Json } catch { continue }
             # A stale result from an earlier attempt or another device is
