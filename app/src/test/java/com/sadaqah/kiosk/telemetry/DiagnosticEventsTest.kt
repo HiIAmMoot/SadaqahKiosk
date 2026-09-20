@@ -611,4 +611,45 @@ class DiagnosticEventsTest {
     fun classifySumUpFailureFallsBackToUnknownForANullMessage() {
         assertEquals(SumUpFailureCause.UNKNOWN, DiagnosticEvents.classifySumUpFailure(null))
     }
+
+    /** The wordings that matter are the SDK's, not this codebase's. Every one of
+     *  these landed in UNKNOWN until the rules were widened, and between them
+     *  they are the commonest decline, the commonest reinit failure and the
+     *  commonest pairing failure a kiosk actually sees. */
+    @Test
+    fun classifySumUpFailureRecognisesTheSdkOwnWordings() {
+        assertEquals(SumUpFailureCause.DECLINED, DiagnosticEvents.classifySumUpFailure("Transaction failed"))
+        assertEquals(SumUpFailureCause.NOT_LOGGED_IN, DiagnosticEvents.classifySumUpFailure("Not logged in"))
+        assertEquals(SumUpFailureCause.NOT_LOGGED_IN, DiagnosticEvents.classifySumUpFailure("Invalid affiliate key"))
+        assertEquals(SumUpFailureCause.READER_NOT_FOUND, DiagnosticEvents.classifySumUpFailure("Card reader not connected"))
+        assertEquals(SumUpFailureCause.BLUETOOTH_OFF, DiagnosticEvents.classifySumUpFailure("Bluetooth is turned off"))
+        assertEquals(SumUpFailureCause.NO_CONNECTIVITY, DiagnosticEvents.classifySumUpFailure("No internet connection"))
+    }
+
+    /** "not connected" and "no connection" both contain "connect", so the order
+     *  of the branches decides which one wins. Getting it backwards sends an
+     *  operator to the router for a reader fault. */
+    @Test
+    fun aDisconnectedReaderIsNotReportedAsANetworkFailure() {
+        assertEquals(
+            SumUpFailureCause.READER_NOT_FOUND,
+            DiagnosticEvents.classifySumUpFailure("Card reader not connected")
+        )
+        assertEquals(
+            SumUpFailureCause.NO_CONNECTIVITY,
+            DiagnosticEvents.classifySumUpFailure("No connection to the server")
+        )
+    }
+
+    /** The widened rules must not have widened the one thing that matters: a
+     *  message shaped like a transaction identifier still has to fall through
+     *  every branch, because the cause is all that leaves the device. */
+    @Test
+    fun aTransactionCodeStillClassifiesAsUnknownAndCarriesNoText() {
+        val cause = DiagnosticEvents.classifySumUpFailure("TX-8837120K")
+        assertEquals(SumUpFailureCause.UNKNOWN, cause)
+        assertEquals("unknown", cause.wire)
+        val detail = DiagnosticEvents.checkoutNoReaderDetail(code = 3, cause = cause)
+        assertFalse(detail.contains("8837120K"))
+    }
 }

@@ -594,7 +594,19 @@ class MainActivity : FragmentActivity() {
             isNetworkAvailable = { isNetworkAvailable },
             onStartInstall = { showUpdatingOverlay = true },
             onFinishInstall = { restoreAfterFailedUpdate() },
-            persistSettings = { newSettings -> onSettingsChange(newSettings) },
+            // Applied against the LIVE `settings`, not against the snapshot
+            // UpdateManager was holding when it decided to write. See
+            // persistSettings' KDoc there.
+            //
+            // Applied synchronously on the caller's thread rather than posted
+            // to the main looper, which would be the tidier answer for the
+            // Compose write but would break a guarantee that matters more:
+            // consumeSkipSignatureCheckOnce is called immediately before
+            // installer.install(), and posting would let the install proceed
+            // while the clear was still queued. Compose's snapshot state
+            // tolerates a write from another thread; a lost signature-bypass
+            // clear does not.
+            persistSettings = { mutate -> onSettingsChange(mutate(settings)) },
             onNotification = { n -> showUpdateNotification(n) },
             prepareForInstall = { prepareForSelfUpdate() }
         )

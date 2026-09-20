@@ -19,6 +19,13 @@ enum class SumUpFailureCause(val wire: String) {
     NO_CONNECTIVITY("no_connectivity"),
     CANCELLED("cancelled"),
     DECLINED("declined"),
+    /** The dominant cause of `sumup_reinit_failed`, and previously indistinguishable
+     *  from every other unknown. An operator seeing this needs to log the kiosk in,
+     *  which is a different action from anything the other causes call for. */
+    NOT_LOGGED_IN("not_logged_in"),
+    /** Distinct from READER_NOT_FOUND: the reader may be perfectly fine and simply
+     *  unreachable because the radio is off, which the kiosk can fix by itself. */
+    BLUETOOTH_OFF("bluetooth_off"),
     /** Every message that does not match one of the phrases above, including
      *  one that happens to look like a transaction code — there is no
      *  narrower bucket to fall back to, and that is deliberate. */
@@ -194,13 +201,39 @@ object DiagnosticEvents {
      */
     fun classifySumUpFailure(message: String?): SumUpFailureCause {
         val text = message.orEmpty()
+        // Ordering is load-bearing, not cosmetic. "card reader not connected"
+        // and "no connection" both contain "connect", so the reader branch has
+        // to be consulted before the connectivity one or a dead reader reports
+        // as a dead network and sends an operator to the router.
+        //
+        // The phrases are the SDK's, not this app's. An earlier version matched
+        // "declin", which is the word this codebase uses -- SumUp says
+        // "Transaction failed" -- so the commonest decline, the commonest
+        // reinit failure and the commonest pairing failure all fell through to
+        // UNKNOWN. A cause nobody can act on is barely better than no cause,
+        // which is why these were worth widening even though none of it was a
+        // leak.
         return when {
-            text.contains("timeout", ignoreCase = true) -> SumUpFailureCause.TIMEOUT
-            text.contains("not found", ignoreCase = true) -> SumUpFailureCause.READER_NOT_FOUND
-            text.contains("connectivity", ignoreCase = true) ||
-                text.contains("no connection", ignoreCase = true) -> SumUpFailureCause.NO_CONNECTIVITY
             text.contains("cancel", ignoreCase = true) -> SumUpFailureCause.CANCELLED
-            text.contains("declin", ignoreCase = true) -> SumUpFailureCause.DECLINED
+            text.contains("timeout", ignoreCase = true) ||
+                text.contains("timed out", ignoreCase = true) -> SumUpFailureCause.TIMEOUT
+            text.contains("not logged in", ignoreCase = true) ||
+                text.contains("invalid affiliate", ignoreCase = true) ||
+                text.contains("log in", ignoreCase = true) ||
+                text.contains("login", ignoreCase = true) -> SumUpFailureCause.NOT_LOGGED_IN
+            text.contains("bluetooth", ignoreCase = true) -> SumUpFailureCause.BLUETOOTH_OFF
+            text.contains("not found", ignoreCase = true) ||
+                text.contains("not connected", ignoreCase = true) ||
+                text.contains("no reader", ignoreCase = true) ||
+                text.contains("no card reader", ignoreCase = true) -> SumUpFailureCause.READER_NOT_FOUND
+            text.contains("connectivity", ignoreCase = true) ||
+                text.contains("no connection", ignoreCase = true) ||
+                text.contains("no internet", ignoreCase = true) ||
+                text.contains("no network", ignoreCase = true) ||
+                text.contains("offline", ignoreCase = true) -> SumUpFailureCause.NO_CONNECTIVITY
+            text.contains("declin", ignoreCase = true) ||
+                text.contains("transaction failed", ignoreCase = true) ||
+                text.contains("rejected", ignoreCase = true) -> SumUpFailureCause.DECLINED
             else -> SumUpFailureCause.UNKNOWN
         }
     }

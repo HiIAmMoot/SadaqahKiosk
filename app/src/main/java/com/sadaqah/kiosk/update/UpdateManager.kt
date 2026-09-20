@@ -93,7 +93,20 @@ class UpdateManager(
     private val isNetworkAvailable: () -> Boolean,
     private val onStartInstall: (ReleaseInfo) -> Unit,
     private val onFinishInstall: () -> Unit,
-    private val persistSettings: (Settings) -> Unit,
+    /** Takes a MUTATION, not a finished object, and that is the whole point.
+     *  This class keeps its own `settings` snapshot, refreshed only when
+     *  MainActivity calls [refreshSettings] from the main thread, while these
+     *  writes are issued from a Dispatchers.Default coroutine. Handing over a
+     *  whole object built from that snapshot persisted everything it held,
+     *  reverting any operator change made since the last refresh -- in
+     *  app_prefs and in live Compose state, so the UI moved under the
+     *  operator's hands. The realistic case is enabling analytics while the
+     *  30-second post-boot check is in flight: analyticsEnabled goes back to
+     *  false and the kiosk stops reporting, silently.
+     *
+     *  A mutation is applied against whatever MainActivity holds at the moment
+     *  it runs, so only the field this class means to change is changed. */
+    private val persistSettings: ((Settings) -> Settings) -> Unit,
     private val onNotification: (UpdateNotification) -> Unit,
     private val prepareForInstall: () -> Unit = {}
 ) {
@@ -236,8 +249,8 @@ class UpdateManager(
                 val resolution = resolveUpdateTarget(eligible, pinnedTarget())
                 if (resolution.pinExpired) {
                     Log.d("UpdateManager", "Preview pin '${settings.autoUpdateTargetVersion}' superseded — reverting to latest")
-                    settings = settings.copy(autoUpdateTargetVersion = "latest")
-                    try { persistSettings(settings) } catch (e: Exception) {
+                    try { persistSettings { it.copy(autoUpdateTargetVersion = "latest") } }
+                    catch (e: Exception) {
                         Log.e("UpdateManager", "persistSettings (expire preview pin) failed: ${e.message}")
                     }
                 }
@@ -360,10 +373,20 @@ class UpdateManager(
      * can already edit.
      */
     private fun consumeSkipSignatureCheckOnce() {
-        if (!settings.skipApkSignatureCheckOnce) return
-        settings = settings.copy(skipApkSignatureCheckOnce = false)
+        // No early-out on the local snapshot. It would read a value that can
+        // be staler than the one the mutation writes against, and the two
+        // disagree in the direction that matters: a snapshot still saying
+        // false while the live value is true would skip the clear and leave
+        // the bypass armed. The mutation is idempotent, so running it when
+        // the flag is already false costs one redundant write on a path that
+        // runs at most once per install attempt.
+        //
+        // Non-suspending on purpose: this is called from a `finally` that must
+        // still run when the scope has been cancelled, and again immediately
+        // before installer.install() where it has to complete before the
+        // process can be replaced. Both rule out hopping threads to get here.
         try {
-            persistSettings(settings)
+            persistSettings { it.copy(skipApkSignatureCheckOnce = false) }
         } catch (e: Exception) {
             Log.e("UpdateManager", "persistSettings (clear skip-sig) failed: ${e.message}")
         }
