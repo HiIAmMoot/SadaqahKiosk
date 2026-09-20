@@ -95,24 +95,22 @@ class DiagnosticEventsTest {
     }
 
     /**
-     * The primary protection: an exact match on the affiliate key. Deliberately
-     * short — under 32 characters — so the token-shape backstop cannot catch
-     * it. A realistic UUID-shaped key is also token-shaped, so it would let
-     * the backstop cover for a broken exact match; this key isolates the rule.
+     * The affiliate key can only reach the stack trace text via a frame's own
+     * class/method name, now that the message is never forwarded (IM-18) — an
+     * attacker-influenced class name is far-fetched, but the scrub is
+     * belt-and-braces and this pins that it still runs over whatever text
+     * classAndFrameTrace does produce.
      */
     @Test
-    fun crashScrubsTheAffiliateKeyOutOfTheStackTrace() {
+    fun crashScrubsTheAffiliateKeyOutOfAFrame() {
         val key = "sumup-af-7c2e"
+        val thrown = boom("irrelevant since the message is dropped").apply {
+            stackTrace = arrayOf(StackTraceElement("Reader", key, "Reader.java", 10))
+        }
         val event = reported(
-            DiagnosticEvents.crash(
-                enabled, appVersion, Thread.currentThread(), boom("auth failed for $key"), key, atMs
-            )
+            DiagnosticEvents.crash(enabled, appVersion, Thread.currentThread(), thrown, key, atMs)
         )
         assertFalse(payload(event)["stack_trace"].asString.contains(key))
-        assertTrue(
-            "a key this short is not token-shaped, so only the exact-match rule can have scrubbed it",
-            payload(event)["stack_trace"].asString.contains("auth failed for [redacted]")
-        )
     }
 
     /**
@@ -130,6 +128,62 @@ class DiagnosticEventsTest {
             )
         )
         assertFalse(payload(event)["stack_trace"].asString.contains(key))
+    }
+
+    /**
+     * IM-18: neither scrubbing rule catches a short vendor message that names a
+     * transaction without looking like a secret — "TXN-48213" is 9 characters,
+     * far under the 32-char token threshold, and matches no affiliate key. The
+     * only remedy that closes this is never forwarding `getMessage()` at all.
+     */
+    @Test
+    fun crashStackTraceNeverIncludesTheExceptionMessage() {
+        val event = reported(
+            DiagnosticEvents.crash(
+                enabled, appVersion, Thread.currentThread(),
+                boom("card declined for order TXN-48213"), null, atMs
+            )
+        )
+        val stackTrace = payload(event)["stack_trace"].asString
+        assertFalse(stackTrace.contains("TXN-48213"))
+        assertFalse(stackTrace.contains("card declined"))
+    }
+
+    /**
+     * The class name and frame list are what an operator actually triages a
+     * crash with — which line, in which file, reached from where. This pins
+     * that dropping the message does not also drop the part that matters.
+     */
+    @Test
+    fun crashStackTraceStillIdentifiesTheThrowSiteWithoutAMessage() {
+        val thrown = try {
+            throw IllegalStateException("card declined for order TXN-48213")
+        } catch (t: Throwable) {
+            t
+        }
+        val event = reported(
+            DiagnosticEvents.crash(enabled, appVersion, Thread.currentThread(), thrown, null, atMs)
+        )
+        val stackTrace = payload(event)["stack_trace"].asString
+        assertTrue(stackTrace.contains("IllegalStateException"))
+        assertTrue(stackTrace.contains("DiagnosticEventsTest"))
+    }
+
+    /** SumUp SDK exceptions are frequently wrapped by a runtime exception whose
+     *  own message is where an SDK's text tends to end up; the cause chain must
+     *  get the same message-free treatment as the top-level throwable. */
+    @Test
+    fun crashStackTraceOmitsTheCauseMessageButKeepsItsClassName() {
+        val cause = IllegalStateException("order TXN-48213 failed")
+        val wrapper = RuntimeException("wrapped", cause)
+        val event = reported(
+            DiagnosticEvents.crash(enabled, appVersion, Thread.currentThread(), wrapper, null, atMs)
+        )
+        val stackTrace = payload(event)["stack_trace"].asString
+        assertFalse(stackTrace.contains("TXN-48213"))
+        assertFalse(stackTrace.contains("wrapped"))
+        assertTrue(stackTrace.contains("IllegalStateException"))
+        assertTrue(stackTrace.contains("RuntimeException"))
     }
 
     // ── update_rollback ──────────────────────────────────────────────────────

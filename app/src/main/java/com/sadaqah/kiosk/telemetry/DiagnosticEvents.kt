@@ -76,7 +76,7 @@ object DiagnosticEvents {
                 detailJson = detail.toString(),
                 // Rendered here rather than at the call site so the rendering is
                 // covered; Diagnostic's constructor scrubs and truncates it.
-                stackTrace = throwable.stackTraceToString(),
+                stackTrace = classAndFrameTrace(throwable),
                 affiliateKey = affiliateKey
             )
         )
@@ -257,6 +257,39 @@ object DiagnosticEvents {
             addProperty("code", code)
             addProperty("cause", cause.wire)
         }.toString()
+
+    /**
+     * Renders a throwable's class name and frame list, walking the cause
+     * chain, but never `getMessage()`. A SumUp SDK exception has named a live
+     * transaction in its message text — the same disclosure violation IM-12
+     * covers on the checkout-failure path — and `stackTraceToString()` forwards
+     * that message under the same 32-character scrub IM-12 was raised about,
+     * which does not catch a short message ("TXN-48213" is 9 characters). The
+     * class name and frame list are what an operator actually triages a crash
+     * with — which type, in which file, reached from where — so this loses
+     * only the one field that can carry donor-identifying vendor text. The
+     * cause chain gets the same treatment because SumUp's own exceptions are
+     * commonly wrapped by a plain RuntimeException/IOException whose message is
+     * exactly where an SDK's text tends to end up. `seen` guards against a
+     * throwable that is (directly or indirectly) its own cause, which the JVM
+     * does not itself forbid.
+     */
+    private fun classAndFrameTrace(throwable: Throwable): String {
+        val out = StringBuilder()
+        var current: Throwable? = throwable
+        val seen = mutableSetOf<Throwable>()
+        var first = true
+        while (current != null && seen.add(current)) {
+            if (!first) out.append("Caused by: ")
+            out.append(current::class.java.name).append('\n')
+            for (frame in current.stackTrace) {
+                out.append("\tat ").append(frame).append('\n')
+            }
+            current = current.cause
+            first = false
+        }
+        return out.toString().trimEnd('\n')
+    }
 
     private fun identityOf(settings: Settings?, appVersion: String): EventIdentity? {
         if (settings == null || !settings.analyticsEnabled) return null
