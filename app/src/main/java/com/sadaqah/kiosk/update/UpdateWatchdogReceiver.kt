@@ -32,20 +32,32 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
             return
         }
         val lastStart = prefs(context).getLong(KEY_LAST_STARTUP_MS, 0L)
+        val installSeq = UpdateWatchdogDecision.seqFor(
+            prefs(context).getString(KEY_INSTALL_SEQ, null), installAttemptedAt
+        )
+        val heartbeatSeq = UpdateWatchdogDecision.seqFor(
+            prefs(context).getString(KEY_LAST_STARTUP_SEQ, null), lastStart
+        )
         // Deferred, not computed here: BackupStore's lazy backupDir calls
         // mkdirs(), so evaluating this on a healthy start would create an empty
         // backup directory on a path that has no business touching one.
         val decision = UpdateWatchdogDecision.decide(
             installAttemptedAt = installAttemptedAt,
             lastStartupMs = lastStart,
+            installSeq = installSeq,
+            heartbeatSeq = heartbeatSeq,
             backupApkUsable = { BackupStore(context).isBackupUsable() }
         )
-        Log.d("UpdateWatchdog", "installedAt=$installAttemptedAt lastStart=$lastStart decision=$decision")
+        Log.d(
+            "UpdateWatchdog",
+            "installedAt=$installAttemptedAt lastStart=$lastStart installSeq=$installSeq " +
+                "heartbeatSeq=$heartbeatSeq decision=$decision"
+        )
 
         // Clear marker so we don't loop on the next boot. commit(): a rollback
         // replaces this process next, and a marker that survives it would be
         // re-armed by BootReceiver on some later, unrelated boot.
-        prefs(context).edit().remove(KEY_INSTALL_ATTEMPTED_AT).commit()
+        prefs(context).edit().remove(KEY_INSTALL_ATTEMPTED_AT).remove(KEY_INSTALL_SEQ).commit()
 
         when (decision) {
             is UpdateWatchdogDecision.Decision.NoPendingInstall -> {
@@ -113,11 +125,32 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
          *  when analytics is off — see DiagnosticEvents.updateInstalled. */
         const val KEY_REPORTED_VERSION = "update_reported_version"
 
+        /** The last value drawn from the counter both stamps share. */
+        private const val KEY_SEQ = "update_seq"
+        const val KEY_INSTALL_SEQ = "update_install_seq"
+        const val KEY_LAST_STARTUP_SEQ = "update_last_startup_seq"
+
+        /**
+         * Draws are read-increment-write on the in-memory prefs, which apply()
+         * and commit() both update before returning, so a lock makes them
+         * atomic. The heartbeat (main thread) and arm (IO) can run together.
+         */
+        private val SEQ_LOCK = Any()
+
         fun prefs(ctx: Context) = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
 
         /** Called by MainActivity.onCreate on every startup. */
         fun recordHeartbeat(ctx: Context) {
-            prefs(ctx).edit { putLong(KEY_LAST_STARTUP_MS, System.currentTimeMillis()) }
+            synchronized(SEQ_LOCK) {
+                val p = prefs(ctx)
+                val now = System.currentTimeMillis()
+                val seq = p.getLong(KEY_SEQ, 0L) + 1
+                p.edit {
+                    putLong(KEY_SEQ, seq)
+                    putLong(KEY_LAST_STARTUP_MS, now)
+                    putString(KEY_LAST_STARTUP_SEQ, UpdateWatchdogDecision.seqTag(now, seq))
+                }
+            }
         }
 
         /** Schedules the watchdog to fire [delayMs] from now. */
@@ -128,7 +161,16 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
             // process, which an asynchronous write has no guarantee of beating.
             // A lost write here means "no pending install marker — nothing to
             // do", which is a bricked build never rolled back.
-            prefs(ctx).edit().putLong(KEY_INSTALL_ATTEMPTED_AT, System.currentTimeMillis()).commit()
+            synchronized(SEQ_LOCK) {
+                val p = prefs(ctx)
+                val now = System.currentTimeMillis()
+                val seq = p.getLong(KEY_SEQ, 0L) + 1
+                p.edit()
+                    .putLong(KEY_SEQ, seq)
+                    .putLong(KEY_INSTALL_ATTEMPTED_AT, now)
+                    .putString(KEY_INSTALL_SEQ, UpdateWatchdogDecision.seqTag(now, seq))
+                    .commit()
+            }
             schedule(ctx, delayMs)
         }
 
@@ -143,13 +185,25 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
                 is UpdateWatchdogDecision.BootRearm.None -> return
                 is UpdateWatchdogDecision.BootRearm.KeepMarker -> Unit
                 is UpdateWatchdogDecision.BootRearm.RestartCheckAt -> {
-                    // The pre-install heartbeat was stamped on the correct clock
-                    // and would read as newer than the reset marker, passing a
-                    // build that never started.
-                    prefs(ctx).edit()
+                    // Kept when both sides are sequenced: the pre-install heartbeat
+                    // already sorts before the marker, and dropping it would also
+                    // drop a heartbeat this boot wrote before BootReceiver ran.
+                    val p = prefs(ctx)
+                    val installSeqTag = p.getString(KEY_INSTALL_SEQ, null)
+                    val retagged = UpdateWatchdogDecision.retag(
+                        installSeqTag, oldWallMs = marker, newWallMs = rearm.markerMs
+                    )
+                    val heartbeatSeq = UpdateWatchdogDecision.seqFor(
+                        p.getString(KEY_LAST_STARTUP_SEQ, null), p.getLong(KEY_LAST_STARTUP_MS, 0L)
+                    )
+                    val edit = p.edit()
                         .putLong(KEY_INSTALL_ATTEMPTED_AT, rearm.markerMs)
-                        .remove(KEY_LAST_STARTUP_MS)
-                        .commit()
+                        .putString(KEY_INSTALL_SEQ, retagged)
+                    val installSeq = UpdateWatchdogDecision.seqFor(installSeqTag, marker)
+                    if (!UpdateWatchdogDecision.keepsHeartbeatOnRestart(installSeq, heartbeatSeq)) {
+                        edit.remove(KEY_LAST_STARTUP_MS)
+                    }
+                    edit.commit()
                 }
             }
             schedule(ctx, BOOT_REARM_DELAY_MS)
@@ -175,7 +229,7 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
         }
 
         fun disarm(ctx: Context) {
-            prefs(ctx).edit { remove(KEY_INSTALL_ATTEMPTED_AT) }
+            prefs(ctx).edit { remove(KEY_INSTALL_ATTEMPTED_AT).remove(KEY_INSTALL_SEQ) }
             val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val intent = Intent(ctx, UpdateWatchdogReceiver::class.java).setAction(ACTION)
             val flags = PendingIntent.FLAG_NO_CREATE or
