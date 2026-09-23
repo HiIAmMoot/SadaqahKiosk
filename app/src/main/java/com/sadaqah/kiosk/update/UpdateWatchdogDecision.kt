@@ -116,6 +116,16 @@ object UpdateWatchdogDecision {
         seqFor(tag, oldWallMs)?.let { seqTag(newWallMs, it) }
 
     /**
+     * @return whether [BootRearm.RestartCheckAt] may keep the pre-reboot heartbeat.
+     *
+     * Only when [decide] will order it by sequence. If either side lacks one,
+     * the clock decides, and a heartbeat stamped before the reset reads as newer
+     * than the moved marker, passing a build that never started.
+     */
+    fun keepsHeartbeatOnRestart(installSeq: Long?, heartbeatSeq: Long?): Boolean =
+        installSeq != null && heartbeatSeq != null
+
+    /**
      * A missing backup reads as length 0. With no recorded size (backups taken
      * before it was recorded), any non-empty file counts: an unreadable APK is
      * only rejected by the installer, while refusing a good one strands the kiosk.

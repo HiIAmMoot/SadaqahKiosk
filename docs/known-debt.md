@@ -304,7 +304,10 @@ does not match is ignored, and the decision falls back to the wall-clock
 comparison. This happens for a marker armed by a build that predates the
 counter (so the first update *into* this build is still decided by the
 clock), and for tags left behind after a rollback to such a build.
-`RestartCheckAt` re-binds the marker's tag to its moved wall-clock value.
+`RestartCheckAt` re-binds the marker's tag to its moved wall-clock value. It
+keeps the old heartbeat only when both it and the marker have a valid tag,
+because then the old heartbeat already sorts before the marker
+(`UpdateWatchdogDecision.keepsHeartbeatOnRestart`).
 The pure decision is tested; the prefs wiring is not unit-testable.
 
 What remains: a heartbeat from the *old* process written after `arm()` (for

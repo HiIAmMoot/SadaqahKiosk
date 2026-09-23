@@ -185,18 +185,25 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
                 is UpdateWatchdogDecision.BootRearm.None -> return
                 is UpdateWatchdogDecision.BootRearm.KeepMarker -> Unit
                 is UpdateWatchdogDecision.BootRearm.RestartCheckAt -> {
-                    // The pre-install heartbeat was stamped on the correct clock
-                    // and would read as newer than the reset marker, passing a
-                    // build that never started.
+                    // Kept when both sides are sequenced: the pre-install heartbeat
+                    // already sorts before the marker, and dropping it would also
+                    // drop a heartbeat this boot wrote before BootReceiver ran.
                     val p = prefs(ctx)
+                    val installSeqTag = p.getString(KEY_INSTALL_SEQ, null)
                     val retagged = UpdateWatchdogDecision.retag(
-                        p.getString(KEY_INSTALL_SEQ, null), oldWallMs = marker, newWallMs = rearm.markerMs
+                        installSeqTag, oldWallMs = marker, newWallMs = rearm.markerMs
                     )
-                    p.edit()
+                    val heartbeatSeq = UpdateWatchdogDecision.seqFor(
+                        p.getString(KEY_LAST_STARTUP_SEQ, null), p.getLong(KEY_LAST_STARTUP_MS, 0L)
+                    )
+                    val edit = p.edit()
                         .putLong(KEY_INSTALL_ATTEMPTED_AT, rearm.markerMs)
                         .putString(KEY_INSTALL_SEQ, retagged)
-                        .remove(KEY_LAST_STARTUP_MS)
-                        .commit()
+                    val installSeq = UpdateWatchdogDecision.seqFor(installSeqTag, marker)
+                    if (!UpdateWatchdogDecision.keepsHeartbeatOnRestart(installSeq, heartbeatSeq)) {
+                        edit.remove(KEY_LAST_STARTUP_MS)
+                    }
+                    edit.commit()
                 }
             }
             schedule(ctx, BOOT_REARM_DELAY_MS)

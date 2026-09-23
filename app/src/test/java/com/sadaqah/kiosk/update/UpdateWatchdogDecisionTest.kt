@@ -218,6 +218,46 @@ class UpdateWatchdogDecisionTest {
         assertEquals(7L, UpdateWatchdogDecision.seqFor(moved, wallMs = 400L))
     }
 
+    /** Power cut in the window, clock reset at boot: the marker moves back, the
+     *  pre-install heartbeat is kept, and only a heartbeat from after the boot passes. */
+    @Test
+    fun afterARestartedCheckOnlyAHeartbeatWrittenAfterTheMarkerIsHealthy() {
+        val markerTag = UpdateWatchdogDecision.seqTag(1_000L, 5L)
+        val rearm = UpdateWatchdogDecision.bootRearm(installAttemptedAt = 1_000L, nowMs = 400L)
+        val movedTo = (rearm as UpdateWatchdogDecision.BootRearm.RestartCheckAt).markerMs
+        val installSeq = UpdateWatchdogDecision.seqFor(
+            UpdateWatchdogDecision.retag(markerTag, oldWallMs = 1_000L, newWallMs = movedTo), movedTo
+        )
+
+        val preInstall = UpdateWatchdogDecision.seqFor(UpdateWatchdogDecision.seqTag(900L, 4L), 900L)
+        assertEquals(
+            UpdateWatchdogDecision.Decision.RollBack,
+            UpdateWatchdogDecision.decide(
+                installAttemptedAt = movedTo, lastStartupMs = 900L,
+                installSeq = installSeq, heartbeatSeq = preInstall, backupApkUsable = { true }
+            )
+        )
+
+        val afterBoot = UpdateWatchdogDecision.seqFor(UpdateWatchdogDecision.seqTag(300L, 6L), 300L)
+        assertEquals(
+            UpdateWatchdogDecision.Decision.HealthyStart,
+            UpdateWatchdogDecision.decide(
+                installAttemptedAt = movedTo, lastStartupMs = 300L,
+                installSeq = installSeq, heartbeatSeq = afterBoot, backupApkUsable = { true }
+            )
+        )
+    }
+
+    /** A heartbeat without its own sequence is decided by the clock, and after
+     *  a reset it would read as newer than the moved marker: it must be dropped. */
+    @Test
+    fun aRestartedCheckKeepsTheOldHeartbeatOnlyWhenBothSequencesResolve() {
+        assertTrue(UpdateWatchdogDecision.keepsHeartbeatOnRestart(installSeq = 5L, heartbeatSeq = 4L))
+        assertFalse(UpdateWatchdogDecision.keepsHeartbeatOnRestart(installSeq = null, heartbeatSeq = 4L))
+        assertFalse(UpdateWatchdogDecision.keepsHeartbeatOnRestart(installSeq = 5L, heartbeatSeq = null))
+        assertFalse(UpdateWatchdogDecision.keepsHeartbeatOnRestart(installSeq = null, heartbeatSeq = null))
+    }
+
     @Test
     fun aStaleTagIsNotRetagged() {
         assertNull(
