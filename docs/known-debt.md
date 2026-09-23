@@ -219,7 +219,20 @@ work.
 
 ---
 
-## The update watchdog alarm does not survive a reboot
+## ~~The update watchdog alarm does not survive a reboot~~ — RESOLVED 2026-09-23
+
+**Closed.** `BootReceiver` now calls `UpdateWatchdogReceiver.rearmAfterBoot`,
+which re-schedules the watchdog when the install marker is still on disk. It
+re-arms rather than checking at once, because the new build has not drawn its
+first frame yet at boot. The delay is 120s, longer than the post-install 60s,
+since a cold boot is slower and a false rollback downgrades a healthy kiosk.
+If the clock at boot is behind the marker (reset by the power loss), the check
+restarts from the reset clock's "now" and the stale heartbeat is dropped. The
+alarm runs on elapsed time, so network time correcting the clock cannot fire
+it early. The decision is `UpdateWatchdogDecision.bootRearm`, tested for the
+no-marker, sane-clock and reset-clock cases; the receiver wiring itself is
+not unit-testable. See "The watchdog's health check still compares wall-clock
+times" for what remains. Original entry below.
 
 **What.** `UpdateWatchdogReceiver.arm()` schedules a one-shot `AlarmManager`
 alarm ~60s after an install attempt. `BootReceiver` only starts `MainActivity`
@@ -255,9 +268,10 @@ only logs. Nothing upstream checks that `backupApkFile()` actually exists (or
 matches the size just recorded) before the update flow commits to installing
 a new APK. If the copy silently fails — full disk, permission error, anything
 `copyTo` can throw — the kiosk proceeds as if a rollback target exists.
-`UpdateWatchdogReceiver.onReceive` does check `backupApk.exists()`, but only
-at the moment a rollback is actually needed, which is the worst possible time
-to discover there is nothing to roll back to.
+`UpdateWatchdogReceiver.onReceive` does check `BackupStore.isBackupUsable()`,
+but only at the moment a rollback is actually needed, which is the worst
+possible time to discover there is nothing to roll back to. Since the copy
+became atomic, a failed copy leaves the previous (older) backup in place.
 
 **Why deferred.** Out of scope for fix-wave-1, which was limited to the
 rollback heartbeat's own accuracy (CR-3). Surfacing this failure earlier is an
@@ -274,6 +288,23 @@ whether the backup file exists and its size matches the source afterward, and
 refuse or warn on the install path when it does not.
 
 **Established in.** Fix-wave-1 (preview whole-branch review), CR-3, 2026-09-20.
+
+---
+
+## The watchdog's health check still compares wall-clock times
+
+**What.** `UpdateWatchdogDecision.decide` calls a build healthy when the
+heartbeat's `currentTimeMillis` is at or after the install marker's. A clock
+that jumps backwards between the two (a reset corrected mid-window, or a
+manual change) can fail a healthy build, and one that jumps forwards can pass
+a stale heartbeat. The boot re-arm handles the likeliest case, a clock reset
+by the same power loss, but not a jump inside a single boot.
+
+**What fixing it needs.** Health that does not depend on the wall clock: e.g.
+record `Settings.Global.BOOT_COUNT` with the marker and the heartbeat, and
+compare elapsed time within one boot.
+
+**Established in.** Independent review of the boot re-arm, 2026-09-23.
 
 ---
 
@@ -322,7 +353,14 @@ more thing that can fail before the chain runs) or moving the counter off Shared
 Neither is worth doing for a counter; both are worth doing if anything load-bearing ever
 moves onto that path.
 
-## `BackupStore.backup_apk_size` is written and never read
+## ~~`BackupStore.backup_apk_size` is written and never read~~ — RESOLVED 2026-09-23
+
+**Closed.** The watchdog now asks `BackupStore.isBackupUsable()`: the backup must
+be non-empty and, when a size was recorded, match it. The backup is copied
+through a temp file and renamed into place, so a power cut mid-copy leaves the
+old backup, not a truncated one. The recorded size is cleared before the move
+and written after it, so a crash in between reads as "no size" (non-empty is
+enough) rather than a stale size that rejects a good backup. Original entry below.
 
 `BackupStore` persists `backup_apk_size` on every APK backup. Nothing in the repository
 reads it. Either it should inform the "is the backup usable" check that

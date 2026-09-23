@@ -6,6 +6,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.content.edit
 import com.sadaqah.kiosk.BuildConfig
@@ -37,12 +38,14 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
         val decision = UpdateWatchdogDecision.decide(
             installAttemptedAt = installAttemptedAt,
             lastStartupMs = lastStart,
-            backupApkExists = { BackupStore(context).backupApkFile().exists() }
+            backupApkUsable = { BackupStore(context).isBackupUsable() }
         )
         Log.d("UpdateWatchdog", "installedAt=$installAttemptedAt lastStart=$lastStart decision=$decision")
 
-        // Clear marker so we don't loop on the next boot.
-        prefs(context).edit { remove(KEY_INSTALL_ATTEMPTED_AT) }
+        // Clear marker so we don't loop on the next boot. commit(): a rollback
+        // replaces this process next, and a marker that survives it would be
+        // re-armed by BootReceiver on some later, unrelated boot.
+        prefs(context).edit().remove(KEY_INSTALL_ATTEMPTED_AT).commit()
 
         when (decision) {
             is UpdateWatchdogDecision.Decision.NoPendingInstall -> {
@@ -126,16 +129,47 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
             // A lost write here means "no pending install marker — nothing to
             // do", which is a bricked build never rolled back.
             prefs(ctx).edit().putLong(KEY_INSTALL_ATTEMPTED_AT, System.currentTimeMillis()).commit()
+            schedule(ctx, delayMs)
+        }
+
+        /**
+         * Re-schedules a watchdog the reboot swallowed. Longer than [arm]'s delay
+         * because a cold boot is slower to reach the first frame than a restart
+         * after an install, and a false rollback downgrades a healthy kiosk.
+         */
+        fun rearmAfterBoot(ctx: Context) {
+            val marker = prefs(ctx).getLong(KEY_INSTALL_ATTEMPTED_AT, 0L)
+            when (val rearm = UpdateWatchdogDecision.bootRearm(marker, System.currentTimeMillis())) {
+                is UpdateWatchdogDecision.BootRearm.None -> return
+                is UpdateWatchdogDecision.BootRearm.KeepMarker -> Unit
+                is UpdateWatchdogDecision.BootRearm.RestartCheckAt -> {
+                    // The pre-install heartbeat was stamped on the correct clock
+                    // and would read as newer than the reset marker, passing a
+                    // build that never started.
+                    prefs(ctx).edit()
+                        .putLong(KEY_INSTALL_ATTEMPTED_AT, rearm.markerMs)
+                        .remove(KEY_LAST_STARTUP_MS)
+                        .commit()
+                }
+            }
+            schedule(ctx, BOOT_REARM_DELAY_MS)
+        }
+
+        private const val BOOT_REARM_DELAY_MS = 120_000L
+
+        private fun schedule(ctx: Context, delayMs: Long) {
             val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val intent = Intent(ctx, UpdateWatchdogReceiver::class.java).setAction(ACTION)
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or
                 (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) PendingIntent.FLAG_IMMUTABLE else 0)
             val pi = PendingIntent.getBroadcast(ctx, 0xAD, intent, flags)
-            val triggerAt = System.currentTimeMillis() + delayMs
+            // Elapsed time, not wall clock: network time correcting a clock that
+            // reset at boot would otherwise fire this early, before the first frame.
+            val triggerAt = SystemClock.elapsedRealtime() + delayMs
             try {
-                am.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+                am.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
             } catch (e: SecurityException) {
-                am.set(AlarmManager.RTC_WAKEUP, triggerAt, pi)
+                am.set(AlarmManager.ELAPSED_REALTIME_WAKEUP, triggerAt, pi)
             }
             Log.d("UpdateWatchdog", "Armed for +${delayMs}ms")
         }
