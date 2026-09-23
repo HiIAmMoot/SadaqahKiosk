@@ -35,22 +35,23 @@ keystore.properties
 # Captures (Android Studio profiler recordings)
 /captures/
 
-# Agent/CI scratch — build and test logs redirected to a file for reading.
+# Local/CI scratch — build and test logs redirected to a file for reading.
 # Leaked into a commit twice; ignored so it cannot happen a third time.
 test-output.txt
 *-test-output.txt
 build-output.txt
 
-# Handoff notes from other agents — working reference, not shipped source.
+# Handoff notes — working reference, not shipped source.
 # May carry live endpoints or keys, which must never enter git history.
 Handoffs/
 handoffs/
 
-# Session guidance for coding agents — working reference, not shipped source.
+# Local session guidance — working reference, not shipped source.
 CLAUDE.md
 
-# Subagent-driven-development scratch: ledgers, briefs, review packages.
+# Local working scratch and design notes: not shipped source.
 .superpowers/
+docs/superpowers/
 
 # Python bytecode from tools/
 __pycache__/

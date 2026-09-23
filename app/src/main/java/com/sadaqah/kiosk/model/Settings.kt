@@ -35,7 +35,7 @@ data class Settings(
     val donationTrackingEnabled: Boolean = true,
     /** Wall-clock instant the averages are computed from. 0 = uninitialised; MainActivity bootstraps it to "now" on first start. */
     val donationStatsStartedAtMs: Long = 0L,
-    // Telemetry (see docs/superpowers/specs/2026-09-02-kiosk-telemetry-design.md).
+    // Telemetry
     // Credentials are deliberately NOT here — they live in TelemetryCredentials so
     // they never reach the settings JSON except through the encrypted export path.
     val analyticsEnabled: Boolean = false,
