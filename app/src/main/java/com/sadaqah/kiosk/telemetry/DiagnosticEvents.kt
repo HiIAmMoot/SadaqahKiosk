@@ -214,18 +214,43 @@ object DiagnosticEvents {
         // which is why these were worth widening even though none of it was a
         // leak.
         return when {
+            // Cancellation first: it is the one outcome that is never a fault,
+            // so "Transaction cancelled - timed out" is deliberately CANCELLED
+            // rather than TIMEOUT. Nobody needs to be sent to look at a kiosk
+            // a donor walked away from.
             text.contains("cancel", ignoreCase = true) -> SumUpFailureCause.CANCELLED
             text.contains("timeout", ignoreCase = true) ||
                 text.contains("timed out", ignoreCase = true) -> SumUpFailureCause.TIMEOUT
             text.contains("not logged in", ignoreCase = true) ||
                 text.contains("invalid affiliate", ignoreCase = true) ||
-                text.contains("log in", ignoreCase = true) ||
-                text.contains("login", ignoreCase = true) -> SumUpFailureCause.NOT_LOGGED_IN
-            text.contains("bluetooth", ignoreCase = true) -> SumUpFailureCause.BLUETOOTH_OFF
+                text.contains("please log in", ignoreCase = true) ||
+                text.contains("log in again", ignoreCase = true) -> SumUpFailureCause.NOT_LOGGED_IN
+            // Reader before radio. SumUp's readers ARE Bluetooth devices, so
+            // "Bluetooth reader not found" and "No Bluetooth device connected"
+            // are pairing failures wearing the word "bluetooth" -- and a bare
+            // contains("bluetooth") above this branch would send the operator,
+            // and BluetoothRecoveryManager, to the radio for a reader fault.
+            // BLUETOOTH_OFF is reserved for messages that are about the radio
+            // itself being off, which is the one case the kiosk can fix alone.
             text.contains("not found", ignoreCase = true) ||
                 text.contains("not connected", ignoreCase = true) ||
                 text.contains("no reader", ignoreCase = true) ||
-                text.contains("no card reader", ignoreCase = true) -> SumUpFailureCause.READER_NOT_FOUND
+                text.contains("no card reader", ignoreCase = true) ||
+                // "No Bluetooth device connected" reads as connected-ness but is
+                // an absent reader; it matches none of the phrases above because
+                // it says "connected", not "not connected".
+                text.contains("no bluetooth device", ignoreCase = true) ||
+                text.contains("no device", ignoreCase = true) -> SumUpFailureCause.READER_NOT_FOUND
+            // Only the radio itself. Every phrasing here has to be listed rather
+            // than reduced to contains("bluetooth"), which is what swallowed the
+            // reader faults above.
+            text.contains("bluetooth is off", ignoreCase = true) ||
+                text.contains("bluetooth is turned off", ignoreCase = true) ||
+                text.contains("bluetooth is disabled", ignoreCase = true) ||
+                text.contains("bluetooth disabled", ignoreCase = true) ||
+                text.contains("bluetooth turned off", ignoreCase = true) ||
+                text.contains("turn on bluetooth", ignoreCase = true) ||
+                text.contains("enable bluetooth", ignoreCase = true) -> SumUpFailureCause.BLUETOOTH_OFF
             text.contains("connectivity", ignoreCase = true) ||
                 text.contains("no connection", ignoreCase = true) ||
                 text.contains("no internet", ignoreCase = true) ||

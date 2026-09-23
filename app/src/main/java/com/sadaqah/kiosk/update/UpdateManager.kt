@@ -110,6 +110,11 @@ class UpdateManager(
     private val onNotification: (UpdateNotification) -> Unit,
     private val prepareForInstall: () -> Unit = {}
 ) {
+    // @Volatile because persistSettings now writes this from Dispatchers.Default
+    // as well as from the main thread. Each scope.launch already supplies a
+    // happens-before edge in practice, but that is an accident of how the
+    // callers happen to be written rather than a property of this field.
+    @Volatile
     private var settings: Settings = initialSettings
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val prefs: SharedPreferences =
@@ -480,9 +485,13 @@ class UpdateManager(
             if (!installSucceeded) {
                 UpdateWatchdogReceiver.disarm(context)
             }
-            if (hadSkipSignatureCheck) {
-                consumeSkipSignatureCheckOnce()
-            }
+            // Unconditional. Guarding this on `hadSkipSignatureCheck` reinstates,
+            // one frame up, exactly the stale-snapshot early-out that was deleted
+            // from inside consumeSkipSignatureCheckOnce: that local was captured
+            // at :390 from this class's own copy of settings, so an operator who
+            // arms the bypass after the capture has it survive a failed attempt
+            // into the next unattended 02:00 run. The mutation is idempotent.
+            consumeSkipSignatureCheckOnce()
         }
     }
 

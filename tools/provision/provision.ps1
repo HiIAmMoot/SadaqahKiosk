@@ -235,11 +235,14 @@ Sh "svc bluetooth enable" -What "bluetooth radio" | Out-Null
 # here is a spurious recovery event and a diagnostic row on an otherwise fine
 # kiosk, not a broken one -- but the founder's rule is that a step able to
 # fail must at least warn, and until now this one couldn't.
+# Check before sleeping, not after: `svc bluetooth enable` is usually already
+# done by the time the next line runs, and sleeping first added a second to
+# every successful provisioning run to observe something that was already true.
 $btOn = $false
 foreach ($i in 1..5) {
-    Start-Sleep -Seconds 1
     $btState = (Adb shell "settings get global bluetooth_on") -join "`n"
     if ($btState.Trim() -eq "1") { $btOn = $true; break }
+    Start-Sleep -Seconds 1
 }
 if (-not $btOn) { Warn "bluetooth radio did not report on within 5s -- it will self-heal via BluetoothRecoveryManager, but verify it by hand" }
 Sh "cmd location set-location-enabled true" -What "location services" -Fatal | Out-Null

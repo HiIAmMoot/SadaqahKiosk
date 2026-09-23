@@ -606,7 +606,19 @@ class MainActivity : FragmentActivity() {
             // while the clear was still queued. Compose's snapshot state
             // tolerates a write from another thread; a lost signature-bypass
             // clear does not.
-            persistSettings = { mutate -> onSettingsChange(mutate(settings)) },
+            persistSettings = { mutate ->
+                onSettingsChange(mutate(settings))
+                // Drained, not merely issued early. saveSettings uses apply(), and
+                // one of this lambda's two callers clears the APK signature-check
+                // bypass immediately before installer.install() replaces the
+                // process — which does not drain QueuedWork. Placing that call
+                // early buys time for the async write, but time is a hope, not a
+                // guarantee, and a lost clear leaves the bypass armed for the next
+                // unattended 02:00 install. Both callers are rare and already off
+                // the main thread, so a synchronous drain costs nothing that
+                // matters.
+                prefs.edit(commit = true) {}
+            },
             onNotification = { n -> showUpdateNotification(n) },
             prepareForInstall = { prepareForSelfUpdate() }
         )

@@ -301,3 +301,30 @@ Settings` and tested directly, including that a deliberate `autoUpdateGraceDays 
 provisioned `longDowntimeThresholdSec` below the old floor both survive a second boot.
 
 Not done in the review fix wave because the fix itself was small and the extraction is not.
+
+## A dropped-rows counter is lost on the crash that drops the rows
+
+`KioskCrashHandler` appends the crash event to the telemetry outbox while the process is
+dying. If that append trips the outbox cap, the `onDropped` callback increments a dropped
+counter through `PrefsStatusStore`, which writes with `apply()`. The handler's `finally`
+then hands off to the previous handler, whose RuntimeInit implementation kills the process
+with `Process.killProcess` — a SIGKILL, with no `QueuedWork` drain.
+
+So `droppedCount` is lost on precisely the crash that caused the drop. Found by an
+independent review of the process-death sweep, which correctly disagreed with this session's
+conclusion that no further instances of the class existed.
+
+Left unfixed deliberately: it is a diagnostic counter, not a donation or a security flag,
+and the two writes that mattered — the restart counter and the APK signature-check bypass —
+are now durable. Fixing it means either a synchronous commit on the dying path (which is
+what the crash handler's own comment argues against, since every extra call there is one
+more thing that can fail before the chain runs) or moving the counter off SharedPreferences.
+Neither is worth doing for a counter; both are worth doing if anything load-bearing ever
+moves onto that path.
+
+## `BackupStore.backup_apk_size` is written and never read
+
+`BackupStore` persists `backup_apk_size` on every APK backup. Nothing in the repository
+reads it. Either it should inform the "is the backup usable" check that
+`UpdateWatchdogDecision` currently answers with `File.exists()` alone — a zero-length or
+truncated backup passes that check today — or it should be deleted.

@@ -652,4 +652,39 @@ class DiagnosticEventsTest {
         val detail = DiagnosticEvents.checkoutNoReaderDetail(code = 3, cause = cause)
         assertFalse(detail.contains("8837120K"))
     }
+
+    /** SumUp's readers ARE Bluetooth devices, so the word appears in messages
+     *  that are really pairing failures. A bare "bluetooth" rule placed above
+     *  the reader rule swallowed them and pointed the operator — and
+     *  BluetoothRecoveryManager — at the radio for a reader fault. */
+    @Test
+    fun aBluetoothReaderFaultIsAReaderFaultNotARadioFault() {
+        assertEquals(
+            SumUpFailureCause.READER_NOT_FOUND,
+            DiagnosticEvents.classifySumUpFailure("Bluetooth reader not found")
+        )
+        assertEquals(
+            SumUpFailureCause.READER_NOT_FOUND,
+            DiagnosticEvents.classifySumUpFailure("No Bluetooth device connected")
+        )
+        assertEquals(
+            SumUpFailureCause.BLUETOOTH_OFF,
+            DiagnosticEvents.classifySumUpFailure("Bluetooth is off")
+        )
+    }
+
+    /** "log in" as a bare substring matches inside ordinary words — "Dialog
+     *  initialization", "catalog info" — and that branch runs before the reader,
+     *  connectivity and declined ones, so a false positive wins outright. */
+    @Test
+    fun anIncidentalLogSubstringIsNotALoginFailure() {
+        assertEquals(
+            SumUpFailureCause.UNKNOWN,
+            DiagnosticEvents.classifySumUpFailure("Dialog initialization failed")
+        )
+        assertEquals(
+            SumUpFailureCause.NOT_LOGGED_IN,
+            DiagnosticEvents.classifySumUpFailure("Not logged in")
+        )
+    }
 }
