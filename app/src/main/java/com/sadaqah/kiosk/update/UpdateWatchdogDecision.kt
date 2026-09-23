@@ -47,17 +47,12 @@ object UpdateWatchdogDecision {
         val healthyStart = lastStartupMs >= installAttemptedAt
         return when {
             healthyStart -> Decision.HealthyStart
-            !backupApkUsable() ->Decision.NoBackupToRollBackTo
+            !backupApkUsable() -> Decision.NoBackupToRollBackTo
             else -> Decision.RollBack
         }
     }
 
-    /**
-     * A marker still on disk at boot means the reboot swallowed the watchdog
-     * alarm before it fired. The caller re-arms rather than checking now: the
-     * new build has not had a chance to draw its first frame yet, so an
-     * immediate check would roll back a healthy build.
-     */
+    /** What BootReceiver does with a pending install marker. */
     sealed class BootRearm {
         /** No install was pending: an ordinary boot. */
         object None : BootRearm()
