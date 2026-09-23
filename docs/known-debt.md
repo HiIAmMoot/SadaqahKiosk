@@ -291,7 +291,26 @@ refuse or warn on the install path when it does not.
 
 ---
 
-## The watchdog's health check still compares wall-clock times
+## ~~The watchdog's health check still compares wall-clock times~~ — RESOLVED 2026-09-23
+
+**Closed.** The install marker and the heartbeat each draw the next value
+from one counter in `update_state` prefs, and a build is healthy when the
+heartbeat's value is higher than the marker's. Write order replaces the
+clock. `Settings.Global.BOOT_COUNT` was not used: when it is incremented
+relative to `BOOT_COMPLETED` is unverified, and a late increment would fail a
+healthy build after a power cut. Each value is stored bound to the wall-clock
+value written with it (`UpdateWatchdogDecision.seqTag`/`seqFor`). A tag that
+does not match is ignored, and the decision falls back to the wall-clock
+comparison. This happens for a marker armed by a build that predates the
+counter (so the first update *into* this build is still decided by the
+clock), and for tags left behind after a rollback to such a build.
+`RestartCheckAt` re-binds the marker's tag to its moved wall-clock value.
+The pure decision is tested; the prefs wiring is not unit-testable.
+
+What remains: a heartbeat from the *old* process written after `arm()` (for
+example, the activity is recreated during `prepareForInstall`) counts as
+healthy. That was true with the wall clock too. Closing it needs the
+heartbeat to name the build that wrote it. Original entry below.
 
 **What.** `UpdateWatchdogDecision.decide` calls a build healthy when the
 heartbeat's `currentTimeMillis` is at or after the install marker's. A clock
