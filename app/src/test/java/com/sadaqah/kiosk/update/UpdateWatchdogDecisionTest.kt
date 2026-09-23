@@ -2,6 +2,7 @@ package com.sadaqah.kiosk.update
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UpdateWatchdogDecisionTest {
@@ -10,7 +11,7 @@ class UpdateWatchdogDecisionTest {
     fun noMarkerMeansNoPendingInstall() {
         assertEquals(
             UpdateWatchdogDecision.Decision.NoPendingInstall,
-            UpdateWatchdogDecision.decide(installAttemptedAt = 0L, lastStartupMs = 999L, backupApkExists = { true })
+            UpdateWatchdogDecision.decide(installAttemptedAt = 0L, lastStartupMs = 999L, backupApkUsable ={ true })
         )
     }
 
@@ -24,7 +25,7 @@ class UpdateWatchdogDecisionTest {
     fun aHeartbeatExactlyAtTheInstallMomentIsHealthy() {
         assertEquals(
             UpdateWatchdogDecision.Decision.HealthyStart,
-            UpdateWatchdogDecision.decide(installAttemptedAt = 1_000L, lastStartupMs = 1_000L, backupApkExists = { true })
+            UpdateWatchdogDecision.decide(installAttemptedAt = 1_000L, lastStartupMs = 1_000L, backupApkUsable ={ true })
         )
     }
 
@@ -32,7 +33,7 @@ class UpdateWatchdogDecisionTest {
     fun aHeartbeatAfterTheInstallIsHealthy() {
         assertEquals(
             UpdateWatchdogDecision.Decision.HealthyStart,
-            UpdateWatchdogDecision.decide(installAttemptedAt = 1_000L, lastStartupMs = 1_001L, backupApkExists = { true })
+            UpdateWatchdogDecision.decide(installAttemptedAt = 1_000L, lastStartupMs = 1_001L, backupApkUsable ={ true })
         )
     }
 
@@ -40,7 +41,7 @@ class UpdateWatchdogDecisionTest {
     fun aHeartbeatBeforeTheInstallWithNoBackupGivesUp() {
         assertEquals(
             UpdateWatchdogDecision.Decision.NoBackupToRollBackTo,
-            UpdateWatchdogDecision.decide(installAttemptedAt = 1_000L, lastStartupMs = 999L, backupApkExists = { false })
+            UpdateWatchdogDecision.decide(installAttemptedAt = 1_000L, lastStartupMs = 999L, backupApkUsable ={ false })
         )
     }
 
@@ -48,7 +49,7 @@ class UpdateWatchdogDecisionTest {
     fun aHeartbeatBeforeTheInstallWithABackupRollsBack() {
         assertEquals(
             UpdateWatchdogDecision.Decision.RollBack,
-            UpdateWatchdogDecision.decide(installAttemptedAt = 1_000L, lastStartupMs = 999L, backupApkExists = { true })
+            UpdateWatchdogDecision.decide(installAttemptedAt = 1_000L, lastStartupMs = 999L, backupApkUsable ={ true })
         )
     }
 
@@ -60,7 +61,7 @@ class UpdateWatchdogDecisionTest {
     fun noHeartbeatAtAllWithABackupRollsBack() {
         assertEquals(
             UpdateWatchdogDecision.Decision.RollBack,
-            UpdateWatchdogDecision.decide(installAttemptedAt = 1_000L, lastStartupMs = 0L, backupApkExists = { true })
+            UpdateWatchdogDecision.decide(installAttemptedAt = 1_000L, lastStartupMs = 0L, backupApkUsable ={ true })
         )
     }
 
@@ -75,9 +76,48 @@ class UpdateWatchdogDecisionTest {
         val decision = UpdateWatchdogDecision.decide(
             installAttemptedAt = 1_000L,
             lastStartupMs = 1_001L,
-            backupApkExists = { asked = true; true }
+            backupApkUsable ={ asked = true; true }
         )
         assertEquals(UpdateWatchdogDecision.Decision.HealthyStart, decision)
         assertFalse("the healthy branch must not touch BackupStore", asked)
+    }
+
+    @Test
+    fun anOrdinaryBootWithNoMarkerDoesNotRearm() {
+        assertFalse(UpdateWatchdogDecision.shouldRearmOnBoot(installAttemptedAt = 0L))
+    }
+
+    /** A power cut inside the watchdog window loses the alarm but not the marker. */
+    @Test
+    fun aBootWithAPendingInstallMarkerRearms() {
+        assertTrue(UpdateWatchdogDecision.shouldRearmOnBoot(installAttemptedAt = 1_000L))
+    }
+
+    @Test
+    fun aMissingBackupIsNotUsable() {
+        assertFalse(UpdateWatchdogDecision.isBackupUsable(lengthBytes = 0L, recordedSizeBytes = null))
+    }
+
+    @Test
+    fun aZeroLengthBackupIsNotUsableEvenIfZeroWasRecorded() {
+        assertFalse(UpdateWatchdogDecision.isBackupUsable(lengthBytes = 0L, recordedSizeBytes = 0L))
+    }
+
+    @Test
+    fun aTruncatedBackupIsNotUsable() {
+        assertFalse(UpdateWatchdogDecision.isBackupUsable(lengthBytes = 4_096L, recordedSizeBytes = 8_192L))
+    }
+
+    @Test
+    fun aBackupMatchingItsRecordedSizeIsUsable() {
+        assertTrue(UpdateWatchdogDecision.isBackupUsable(lengthBytes = 8_192L, recordedSizeBytes = 8_192L))
+    }
+
+    /** Backups taken before the size was recorded still have to roll back:
+     *  an unreadable APK is rejected by the installer anyway, a refused
+     *  rollback of a good one strands the kiosk. */
+    @Test
+    fun aNonEmptyBackupWithNoRecordedSizeIsUsable() {
+        assertTrue(UpdateWatchdogDecision.isBackupUsable(lengthBytes = 8_192L, recordedSizeBytes = null))
     }
 }

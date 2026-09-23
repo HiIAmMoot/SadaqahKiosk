@@ -19,7 +19,7 @@ object UpdateWatchdogDecision {
         object HealthyStart : Decision()
         /** The build never proved healthy, and there is nothing to roll back to. */
         object NoBackupToRollBackTo : Decision()
-        /** The build never proved healthy and a backup APK exists — roll back. */
+        /** The build never proved healthy and a usable backup APK exists — roll back. */
         object RollBack : Decision()
     }
 
@@ -30,7 +30,7 @@ object UpdateWatchdogDecision {
      * install was marked is still a build that started. Treating equality as
      * unhealthy would fail a genuinely fast, correct boot.
      *
-     * [backupApkExists] is a lambda rather than a Boolean so the caller does not
+     * [backupApkUsable] is a lambda rather than a Boolean so the caller does not
      * have to answer a question this may never ask. Answering it means touching
      * `BackupStore`, whose `backupDir` is a lazy that calls `mkdirs()`, so an
      * eagerly-evaluated argument created an empty backup directory on every
@@ -41,14 +41,30 @@ object UpdateWatchdogDecision {
     fun decide(
         installAttemptedAt: Long,
         lastStartupMs: Long,
-        backupApkExists: () -> Boolean
+        backupApkUsable: () -> Boolean
     ): Decision {
         if (installAttemptedAt == 0L) return Decision.NoPendingInstall
         val healthyStart = lastStartupMs >= installAttemptedAt
         return when {
             healthyStart -> Decision.HealthyStart
-            !backupApkExists() -> Decision.NoBackupToRollBackTo
+            !backupApkUsable() ->Decision.NoBackupToRollBackTo
             else -> Decision.RollBack
         }
     }
+
+    /**
+     * A marker still on disk at boot means the reboot swallowed the watchdog
+     * alarm before it fired. The caller re-arms rather than checking now: the
+     * new build has not had a chance to draw its first frame yet, so an
+     * immediate check would roll back a healthy build.
+     */
+    fun shouldRearmOnBoot(installAttemptedAt: Long): Boolean = installAttemptedAt != 0L
+
+    /**
+     * A missing backup reads as length 0. With no recorded size (backups taken
+     * before it was recorded), any non-empty file counts: an unreadable APK is
+     * only rejected by the installer, while refusing a good one strands the kiosk.
+     */
+    fun isBackupUsable(lengthBytes: Long, recordedSizeBytes: Long?): Boolean =
+        lengthBytes > 0L && (recordedSizeBytes == null || lengthBytes == recordedSizeBytes)
 }

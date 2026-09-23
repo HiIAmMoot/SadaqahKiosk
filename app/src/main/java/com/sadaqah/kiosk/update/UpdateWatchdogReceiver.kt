@@ -37,7 +37,7 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
         val decision = UpdateWatchdogDecision.decide(
             installAttemptedAt = installAttemptedAt,
             lastStartupMs = lastStart,
-            backupApkExists = { BackupStore(context).backupApkFile().exists() }
+            backupApkUsable = { BackupStore(context).isBackupUsable() }
         )
         Log.d("UpdateWatchdog", "installedAt=$installAttemptedAt lastStart=$lastStart decision=$decision")
 
@@ -126,6 +126,23 @@ class UpdateWatchdogReceiver : BroadcastReceiver() {
             // A lost write here means "no pending install marker — nothing to
             // do", which is a bricked build never rolled back.
             prefs(ctx).edit().putLong(KEY_INSTALL_ATTEMPTED_AT, System.currentTimeMillis()).commit()
+            schedule(ctx, delayMs)
+        }
+
+        /**
+         * Re-schedules a watchdog the reboot swallowed, keeping the original
+         * install marker. Longer than [arm]'s delay because a cold boot is slower
+         * to reach the first frame than a restart after an install, and a false
+         * rollback downgrades a healthy kiosk.
+         */
+        fun rearmAfterBoot(ctx: Context) {
+            if (!UpdateWatchdogDecision.shouldRearmOnBoot(prefs(ctx).getLong(KEY_INSTALL_ATTEMPTED_AT, 0L))) return
+            schedule(ctx, BOOT_REARM_DELAY_MS)
+        }
+
+        private const val BOOT_REARM_DELAY_MS = 120_000L
+
+        private fun schedule(ctx: Context, delayMs: Long) {
             val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
             val intent = Intent(ctx, UpdateWatchdogReceiver::class.java).setAction(ACTION)
             val flags = PendingIntent.FLAG_UPDATE_CURRENT or

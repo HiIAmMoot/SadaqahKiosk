@@ -3,8 +3,9 @@ package com.sadaqah.kiosk.update
 import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
-import androidx.core.content.edit
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * Backs up the currently-installed APK so the watchdog can re-install it if a
@@ -29,11 +30,40 @@ class BackupStore(private val context: Context) {
             val srcPath = context.applicationInfo.sourceDir ?: return
             val src = File(srcPath)
             if (!src.exists()) return
-            src.copyTo(backupApkFile(), overwrite = true)
-            prefs.edit { putLong("backup_apk_size", src.length()) }
-            Log.d("BackupStore", "Backed up current APK (${src.length()} bytes)")
+            // Size cleared before the move and recorded after it: a crash in
+            // either gap leaves no size, which isBackupUsable treats leniently,
+            // rather than a stale size that would reject a good backup.
+            prefs.edit().remove(KEY_BACKUP_APK_SIZE).commit()
+            val size = copyAtomically(src, backupApkFile())
+            prefs.edit().putLong(KEY_BACKUP_APK_SIZE, size).commit()
+            Log.d("BackupStore", "Backed up current APK ($size bytes)")
         } catch (e: Exception) {
             Log.e("BackupStore", "saveCurrentApk failed: ${e.message}")
+        }
+    }
+
+    fun isBackupUsable(): Boolean {
+        val recorded = prefs.getLong(KEY_BACKUP_APK_SIZE, -1L).takeIf { it >= 0L }
+        return UpdateWatchdogDecision.isBackupUsable(backupApkFile().length(), recorded)
+    }
+
+    companion object {
+        private const val KEY_BACKUP_APK_SIZE = "backup_apk_size"
+
+        /**
+         * Copies through a sibling temp file and renames it over [dest], so a
+         * power cut mid-copy leaves the old backup in place, not a truncated one.
+         * @return the number of bytes now at [dest].
+         */
+        fun copyAtomically(src: File, dest: File): Long {
+            val tmp = File(dest.parentFile, dest.name + ".tmp")
+            try {
+                src.copyTo(tmp, overwrite = true)
+                Files.move(tmp.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            } finally {
+                tmp.delete()
+            }
+            return dest.length()
         }
     }
 }

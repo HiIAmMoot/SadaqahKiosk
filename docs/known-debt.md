@@ -219,7 +219,15 @@ work.
 
 ---
 
-## The update watchdog alarm does not survive a reboot
+## ~~The update watchdog alarm does not survive a reboot~~ — RESOLVED 2026-09-23
+
+**Closed.** `BootReceiver` now calls `UpdateWatchdogReceiver.rearmAfterBoot`,
+which re-schedules the watchdog when the install marker is still on disk,
+keeping the original marker. It re-arms rather than checking at once, because
+the new build has not drawn its first frame yet at boot. The delay is 120s,
+longer than the post-install 60s, since a cold boot is slower and a false
+rollback downgrades a healthy kiosk. `UpdateWatchdogDecisionTest` pins that an
+ordinary boot (no marker) does not re-arm. Original entry below.
 
 **What.** `UpdateWatchdogReceiver.arm()` schedules a one-shot `AlarmManager`
 alarm ~60s after an install attempt. `BootReceiver` only starts `MainActivity`
@@ -322,7 +330,14 @@ more thing that can fail before the chain runs) or moving the counter off Shared
 Neither is worth doing for a counter; both are worth doing if anything load-bearing ever
 moves onto that path.
 
-## `BackupStore.backup_apk_size` is written and never read
+## ~~`BackupStore.backup_apk_size` is written and never read~~ — RESOLVED 2026-09-23
+
+**Closed.** The watchdog now asks `BackupStore.isBackupUsable()`: the backup must
+be non-empty and, when a size was recorded, match it. The backup is copied
+through a temp file and renamed into place, so a power cut mid-copy leaves the
+old backup, not a truncated one. The recorded size is cleared before the move
+and written after it, so a crash in between reads as "no size" (non-empty is
+enough) rather than a stale size that rejects a good backup. Original entry below.
 
 `BackupStore` persists `backup_apk_size` on every APK backup. Nothing in the repository
 reads it. Either it should inform the "is the backup usable" check that
