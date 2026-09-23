@@ -4,6 +4,8 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.util.Log
 import java.io.File
+import java.io.FileOutputStream
+import java.io.InputStream
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
 
@@ -42,8 +44,9 @@ class BackupStore(private val context: Context) {
         }
     }
 
+    /** Never throws: it runs on the rollback path, where an exception loses the rollback. */
     fun isBackupUsable(): Boolean {
-        val recorded = prefs.getLong(KEY_BACKUP_APK_SIZE, -1L).takeIf { it >= 0L }
+        val recorded = runCatching { prefs.getLong(KEY_BACKUP_APK_SIZE, -1L) }.getOrDefault(-1L).takeIf { it >= 0L }
         return UpdateWatchdogDecision.isBackupUsable(backupApkFile().length(), recorded)
     }
 
@@ -55,10 +58,19 @@ class BackupStore(private val context: Context) {
          * power cut mid-copy leaves the old backup in place, not a truncated one.
          * @return the number of bytes now at [dest].
          */
-        fun copyAtomically(src: File, dest: File): Long {
+        fun copyAtomically(src: File, dest: File): Long = copyAtomically({ src.inputStream() }, dest)
+
+        /** The sync before the move matters on f2fs, which does not flush a
+         *  file's data before a rename over an existing one. */
+        fun copyAtomically(open: () -> InputStream, dest: File): Long {
             val tmp = File(dest.parentFile, dest.name + ".tmp")
             try {
-                src.copyTo(tmp, overwrite = true)
+                open().use { input ->
+                    FileOutputStream(tmp).use { out ->
+                        input.copyTo(out)
+                        out.fd.sync()
+                    }
+                }
                 Files.move(tmp.toPath(), dest.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
             } finally {
                 tmp.delete()

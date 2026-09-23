@@ -84,13 +84,30 @@ class UpdateWatchdogDecisionTest {
 
     @Test
     fun anOrdinaryBootWithNoMarkerDoesNotRearm() {
-        assertFalse(UpdateWatchdogDecision.shouldRearmOnBoot(installAttemptedAt = 0L))
+        assertEquals(
+            UpdateWatchdogDecision.BootRearm.None,
+            UpdateWatchdogDecision.bootRearm(installAttemptedAt = 0L, nowMs = 5_000L)
+        )
     }
 
     /** A power cut inside the watchdog window loses the alarm but not the marker. */
     @Test
-    fun aBootWithAPendingInstallMarkerRearms() {
-        assertTrue(UpdateWatchdogDecision.shouldRearmOnBoot(installAttemptedAt = 1_000L))
+    fun aBootWithAPendingMarkerAndASaneClockKeepsTheMarker() {
+        assertEquals(
+            UpdateWatchdogDecision.BootRearm.KeepMarker,
+            UpdateWatchdogDecision.bootRearm(installAttemptedAt = 1_000L, nowMs = 5_000L)
+        )
+    }
+
+    /** A clock behind the marker means it was reset at boot: a heartbeat
+     *  stamped on it would read as older than the install and roll back a
+     *  healthy build, so the check restarts from the reset clock's "now". */
+    @Test
+    fun aBootWithTheClockBehindTheMarkerRestartsTheCheckFromNow() {
+        assertEquals(
+            UpdateWatchdogDecision.BootRearm.RestartCheckAt(400L),
+            UpdateWatchdogDecision.bootRearm(installAttemptedAt = 1_000L, nowMs = 400L)
+        )
     }
 
     @Test

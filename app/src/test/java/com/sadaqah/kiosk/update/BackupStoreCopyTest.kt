@@ -9,6 +9,7 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 import java.io.IOException
+import java.io.InputStream
 
 class BackupStoreCopyTest {
 
@@ -43,5 +44,29 @@ class BackupStoreCopyTest {
 
         assertArrayEquals(byteArrayOf(9, 9), dest.readBytes())
         assertFalse(File(tmp.root, "previous.apk.tmp").exists())
+    }
+
+    /** The case the temp file exists for: a copy dying part-way must never
+     *  leave a half-written file where the watchdog looks for the backup. */
+    @Test
+    fun aCopyThatFailsHalfwayLeavesThePreviousBackupAndNoTempFile() {
+        val dest = tmp.newFile("previous.apk").apply { writeBytes(byteArrayOf(9, 9)) }
+        val failsAfterTwoBytes = object : InputStream() {
+            private var served = 0
+            override fun read(): Int {
+                if (served == 2) throw IOException("storage went away")
+                served++
+                return 7
+            }
+        }
+
+        try {
+            BackupStore.copyAtomically({ failsAfterTwoBytes }, dest)
+            fail("expected the failing stream to abort the copy")
+        } catch (expected: IOException) {
+        }
+
+        assertArrayEquals(byteArrayOf(9, 9), dest.readBytes())
+        assertEquals(listOf("previous.apk"), tmp.root.list()!!.toList())
     }
 }

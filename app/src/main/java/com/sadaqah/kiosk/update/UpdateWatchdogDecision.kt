@@ -58,7 +58,27 @@ object UpdateWatchdogDecision {
      * new build has not had a chance to draw its first frame yet, so an
      * immediate check would roll back a healthy build.
      */
-    fun shouldRearmOnBoot(installAttemptedAt: Long): Boolean = installAttemptedAt != 0L
+    sealed class BootRearm {
+        /** No install was pending: an ordinary boot. */
+        object None : BootRearm()
+        /** Re-arm against the original marker. */
+        object KeepMarker : BootRearm()
+        /** The clock is behind the marker, so it was reset at boot: move the
+         *  marker to [markerMs] and drop the heartbeat stamped on the old clock. */
+        data class RestartCheckAt(val markerMs: Long) : BootRearm()
+    }
+
+    /**
+     * A marker still on disk at boot means the reboot swallowed the watchdog
+     * alarm before it fired. The caller re-arms rather than checking now: the
+     * new build has not had a chance to draw its first frame yet, so an
+     * immediate check would roll back a healthy build.
+     */
+    fun bootRearm(installAttemptedAt: Long, nowMs: Long): BootRearm = when {
+        installAttemptedAt == 0L -> BootRearm.None
+        nowMs < installAttemptedAt -> BootRearm.RestartCheckAt(nowMs)
+        else -> BootRearm.KeepMarker
+    }
 
     /**
      * A missing backup reads as length 0. With no recorded size (backups taken
