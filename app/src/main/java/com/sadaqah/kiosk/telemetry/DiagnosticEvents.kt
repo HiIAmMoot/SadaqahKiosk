@@ -26,9 +26,9 @@ enum class SumUpFailureCause(val wire: String) {
     /** Distinct from READER_NOT_FOUND: the reader may be perfectly fine and simply
      *  unreachable because the radio is off, which the kiosk can fix by itself. */
     BLUETOOTH_OFF("bluetooth_off"),
-    /** SumUp returned no result at all (no data, or no result code in it): the
-     *  app's own -1 fallback. Kept apart from UNKNOWN, which means SumUp did
-     *  answer but in words this classifier does not recognise. */
+    /** No usable result code: the app's own -1 fallback for no data, no
+     *  RESULT_CODE extra, or one of the wrong type. Kept apart from UNKNOWN,
+     *  which means SumUp sent a code but words this classifier does not know. */
     NO_RESULT("no_result"),
     CARD_READER_SETTINGS_OFF("card_reader_settings_off"),
     /** SumUp could not tell whether the payment went through, so money may have

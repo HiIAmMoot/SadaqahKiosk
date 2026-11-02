@@ -6,7 +6,7 @@
 
     Ordering is not arbitrary. `pm install` must precede `dpm set-device-owner`
     because the admin component has to exist to be named, and device owner
-    fails outright once any account exists or setup wizard has completed.
+    fails outright once any account exists on the device.
     Everything else is ordered so the app's own onCreate finds the world
     already correct: device owner before the trigger (or the app misses
     lock-task whitelisting and its silent permission grants until the next
@@ -180,9 +180,9 @@ if ($r -notmatch "Success") { Die "install failed: $r" }
 Ok "installed"
 
 # --- device owner ---------------------------------------------------------
-# Must follow install. Two distinct refusals share one opaque error, so both
-# are named: an account exists, or setup wizard was completed rather than
-# skipped.
+# Must follow install. The usual cause of the opaque refusal is an account on
+# the device. Finishing the setup wizard (with a PIN, no account) is fine:
+# checked on a TB305FU, Android 15.
 # FATAL, not a warning. Without device owner, Android 10+ aborts the
 # startActivity that BootReceiver makes after a reboot:
 #
@@ -228,7 +228,7 @@ if ($r -match "Success") {
         Write-Host "  This is a stale or mismatched owner, not a missing one -- a" -ForegroundColor Red
         Write-Host "  different fix than 'no owner yet'. Device owner cannot be" -ForegroundColor Red
         Write-Host "  swapped in place; only a factory reset clears it. Wipe the" -ForegroundColor Red
-        Write-Host "  device, skip the wizard, add no account, and run this again." -ForegroundColor Red
+        Write-Host "  device, add no account during setup, and run this again." -ForegroundColor Red
         exit 1
     } else {
         Write-Host "  FAIL device owner could not be set: $($r.Trim())" -ForegroundColor Red
@@ -238,9 +238,9 @@ if ($r -match "Success") {
         Write-Host "    - lock task degrades to consumer pinning, with the blue bar" -ForegroundColor Red
         Write-Host "    - the silent location and wifi-scan permission grants never run" -ForegroundColor Red
         Write-Host "" -ForegroundColor Red
-        Write-Host "  Two causes share this one error: an account exists on the device," -ForegroundColor Red
-        Write-Host "  or setup wizard was COMPLETED rather than skipped. Factory reset," -ForegroundColor Red
-        Write-Host "  skip the wizard entirely, add no account, and run this again." -ForegroundColor Red
+        Write-Host "  The usual cause: an account exists on the device (Google or other)." -ForegroundColor Red
+        Write-Host "  Factory reset, add no account during setup (a PIN is fine)," -ForegroundColor Red
+        Write-Host "  and run this again." -ForegroundColor Red
         exit 1
     }
 }
@@ -385,7 +385,7 @@ if ($maker -match '^lenovo$') {
     Sh "settings put system longtime_charging_protect_enable 1" -What "Lenovo charge safety" | Out-Null
     $charge = ((Adb shell "settings get system longtime_charging_protect_enable") -join "").Trim()
     if ($charge -eq "1") {
-        Ok "Lenovo charge safety on (holds 40-60%)"
+        Ok "Lenovo charge safety set (holds 40-60%); on a new model, check the toggle in battery settings"
     } else {
         Warn "Lenovo charge safety did not stick (reads '$charge'): turn it on by hand in battery settings"
     }
