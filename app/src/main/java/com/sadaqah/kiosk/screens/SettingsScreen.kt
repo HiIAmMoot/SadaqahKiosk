@@ -499,7 +499,10 @@ fun SettingsScreen(
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight(),
+                        .fillMaxHeight()
+                        // fillMaxHeight before the scroll keeps the column's minimum height, so
+                        // the weighted spacer still pins the buttons to the bottom when they fit.
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(responsiveDp(16.dp)),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
