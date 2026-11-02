@@ -246,6 +246,9 @@ The PIN is set last, after the app has provisioned and restarted. If you
 re-provision a device that already has a PIN, pass the existing PIN with
 `-OldPin`, because every `lock_settings` command refuses without it.
 
+Leave `-Pin` out to keep the PIN the tablet already has, for example one
+set by hand during setup. The script then skips the PIN step entirely.
+
 Once the PIN is set, the app starts on its own; you do not need to launch it.
 
 ### Parameters
@@ -264,7 +267,7 @@ omitted depending on what you are configuring.
 | `-KioskCode` | Kiosk identifier (required when using `-Payload`) |
 | `-KioskName` | Display name; appears on every SumUp transaction (required with `-Payload`) |
 | `-Logo` | Path to a logo PNG/JPEG |
-| `-Pin` | Device PIN to set at the end |
+| `-Pin` | Device PIN to set at the end; omit it to keep the tablet's current PIN |
 | `-OldPin` | Existing PIN when re-provisioning a device |
 
 ---
