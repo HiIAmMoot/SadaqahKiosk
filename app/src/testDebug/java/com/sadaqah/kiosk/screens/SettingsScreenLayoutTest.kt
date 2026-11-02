@@ -16,6 +16,8 @@ import org.robolectric.annotation.Config
 /**
  * Pins the Lenovo TB305FU in landscape (1340x800 px at 180 dpi). responsiveDp scales
  * by width only, so this short, wide screen is where the right column overflows first.
+ * Debug-only: createComposeRule needs the ComponentActivity that ui-test-manifest
+ * registers, and that manifest is merged into the debug variant alone.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], qualifiers = "w1191dp-h711dp-land-180dpi")
@@ -56,6 +58,7 @@ class SettingsScreenLayoutTest {
             .assertIsDisplayed()
             .performClick()
 
+        compose.onNodeWithText(strings.logOut).performScrollTo().assertIsDisplayed()
         compose.onNodeWithText(strings.resetApp).performScrollTo().assertIsDisplayed()
     }
 }
