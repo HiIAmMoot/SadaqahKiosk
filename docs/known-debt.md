@@ -339,6 +339,26 @@ compare elapsed time within one boot.
 
 ---
 
+## A kiosk launched with the screen off records no heartbeat
+
+**What.** Since 1.4.0 the watchdog heartbeat and the startup SumUp login both
+wait for `MainActivity`'s first drawn frame (1.3.6 wrote the heartbeat in
+`onCreate`). If `BootReceiver` or `PackageReplacedReceiver` launches the app
+while the screen is off (`FLAG_KEEP_SCREEN_ON` only holds while the window is
+visible), no frame is drawn: a healthy update is rolled back, and the login
+waits until the screen comes on.
+
+**Why deferred.** The failure is safe: the kiosk stays on the build it had and
+keeps taking donations, and the update is tried again the next night. Writing
+the heartbeat before a frame would wave through a build that crashes on its
+first frame, which needs a visit. `provision.ps1` sets the screen to never time
+out; kiosks set up by hand before that script are assumed, not known, to do
+the same.
+
+**Established in.** 1.4.0 release review, 2026-11-02.
+
+---
+
 ## A payment whose status SumUp can't confirm reads as a plain failure
 
 **What.** When SumUp returns result code 15 (`transaction_status_unknown`) with
