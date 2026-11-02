@@ -360,7 +360,9 @@ Android's `PackageInstaller` refuses silent downgrades for non-platform-signed c
 
 **All releases sharing the same `major.minor` share the same `versionCode`. Only bump `versionCode` when you cut a new minor or major — and for a new minor, only once it is stable.**
 
-A `-preview` on a new minor track keeps the **previous** track's `versionCode`. So `1.4.0-preview` ships on 15, alongside `1.3.x`, and 16 arrives with stable `1.4.0`.
+A `-preview` on a new minor track keeps the **previous** track's `versionCode`. So `1.4.0-preview` ships on 15, alongside `1.3.x`.
+
+**Exception: the 1.4 track stays on 15.** The field fleet moves from 1.3.6 to 1.4.0 unattended at 02:00, and that first hop is the one most likely to fail. On 15 a failing `1.4.0` is a reinstall of 1.3.6, so the watchdog can still roll it back. The bump to 16 waits for `1.5.0`.
 
 This looks like a violation of the rule above and is the point. A preview is the build most likely to crash on startup, which is the one case the watchdog exists for. Give it the new track's higher `versionCode` and rollback to the last known-good `1.3.x` becomes a silent downgrade, which Android refuses — so the watchdog cannot recover the kiosk and it needs a USB flash instead.
 
@@ -368,19 +370,19 @@ This looks like a violation of the rule above and is the point. A preview is the
 |----------------------------|-------------|------------------------------------------------------------------------------------------------------|
 | `1.3.0`, `1.3.1`, … `1.3.N`| 15          | Any of these can be installed over any other (Android treats them as reinstalls, not downgrades).    |
 | `1.4.0-preview`            | 15          | Stays on the old track so the watchdog can still roll a broken preview back to `1.3.x`.              |
-| `1.4.0`, `1.4.1`, …        | 16          | Same idea for the next minor track, from the stable cut onward.                                      |
-| `2.0.0`, `2.0.1`, …        | 17          | And so on.                                                                                            |
+| `1.4.0`, `1.4.1`, …        | 15          | The exception above: a failing `1.4.0` can still roll back to the `1.3.x` it replaced.              |
+| `1.5.0`, `1.5.1`, …        | 16          | Back to the rule, from the stable cut onward.                                                        |
 
 Why it matters:
 - **Watchdog rollback works** when a crashing update has the same versionCode as the backup APK. If a patch in the same minor track is broken, the watchdog can recover the kiosk autonomously.
-- **Cross-track upgrades still work** (`1.3.5 → 1.4.0`) because `1.4.0` has a higher versionCode — that's a real upgrade and Android accepts it.
-- **Cross-track downgrades don't work** by design. Once you ship a `1.4.0` to a device, you can't auto-roll-back to `1.3.X`. Plan minor cuts accordingly.
+- **Cross-track upgrades still work** (`1.4.x → 1.5.0`) because `1.5.0` has a higher versionCode — that's a real upgrade and Android accepts it. `1.3.x → 1.4.0` works too: same versionCode, so Android treats it as a reinstall.
+- **Cross-track downgrades don't work** by design. Once you ship a `1.5.0` to a device, you can't auto-roll-back to `1.4.X`. Plan minor cuts accordingly.
 
 When this rule is followed, the target-version dropdown in Settings shows all installable patches: every release in the same `major.minor` track as the current install, plus any higher-track releases as forward upgrades. Releases on lower tracks are hidden. Previews appear in this dropdown too, so they can be pinned by hand.
 
 ### Caveats
 
-- **No silent cross-track downgrades.** As above — `1.4.X` can't auto-revert to `1.3.X`. Recovery requires a USB flash. Pick minor versions deliberately.
+- **No silent cross-track downgrades.** As above — `1.5.X` won't be able to auto-revert to `1.4.X`. Recovery requires a USB flash. Pick minor versions deliberately.
 - **The 02:00 maintenance window** is the only time auto-update installs unattended. If the device is off or offline at 02:00, the install is deferred to the following day.
 - **Signature pinning is the security boundary.** The skip-signature toggle exists only for forking the project to a new keystore. Anything more subtle (e.g. a malicious mirror keeping the same package name but a different signing cert) is rejected by default.
 - **Battery/network preflight is strict.** A device below 30% battery will keep deferring nightly until charged.

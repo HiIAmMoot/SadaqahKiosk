@@ -20,7 +20,6 @@ import android.content.pm.PackageManager
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.os.Build
-import android.view.ViewTreeObserver
 import android.os.Bundle
 import android.provider.Settings as AndroidSettings
 import android.util.Log
@@ -60,6 +59,7 @@ import com.sadaqah.kiosk.screens.*
 import com.sadaqah.kiosk.settingsio.ImportResult
 import com.sadaqah.kiosk.settingsio.SettingsExportFile
 import com.sadaqah.kiosk.telemetry.*
+import com.sadaqah.kiosk.update.FirstFrameStartup
 import com.sadaqah.kiosk.update.ReleaseInfo
 import com.sadaqah.kiosk.update.SemVer
 import com.sadaqah.kiosk.update.UpdateManager
@@ -342,8 +342,8 @@ class MainActivity : FragmentActivity() {
         // SecretsCrypto runs 600_000 PBKDF2 iterations, which is seconds on kiosk
         // hardware and a guaranteed ANR on the main thread — and onCreate reads
         // `settings` into seven consumers with contradictory ordering needs
-        // (SettingsBootstrap must follow provisioning, authenticate() and
-        // LogoColorExtractor must precede it, and RestartManager /
+        // (SettingsBootstrap must follow provisioning, LogoColorExtractor
+        // must precede it, and RestartManager /
         // NetworkRecoveryManager / UpdateManager each snapshot settings by value
         // at construction). There is no slot that satisfies all of them.
         //
@@ -425,6 +425,7 @@ class MainActivity : FragmentActivity() {
         //
         // authenticate() carries the same guard internally and was reading the
         // same unloaded value, so neither layer caught it.
+        var loginAfterFirstFrame = false
         if (settings.testMode) {
             isLoggedIn = true
             isCardReaderConnected = true
@@ -433,7 +434,7 @@ class MainActivity : FragmentActivity() {
             if (!storedKey.isNullOrEmpty()) {
                 affiliateKey = storedKey
                 CrashContext.affiliateKey = affiliateKey
-                authenticate(affiliateKey)
+                loginAfterFirstFrame = true
             }
         }
 
@@ -442,8 +443,8 @@ class MainActivity : FragmentActivity() {
         // restarted during an outage would come back with nothing scheduled and
         // stay that way until an operator logged in by hand. That is the same
         // silent death this loop exists to prevent, reached from a different
-        // door. Safe to call unconditionally: arming is idempotent, so the call
-        // above has already won if it got there first.
+        // door. Safe to call unconditionally: arming is idempotent, so the
+        // startup login's own call after the first frame changes nothing.
         scheduleDailyLoginReset(affiliateKey)
 
         // Kick off logo colour extraction so the picker has swatches ready
@@ -899,13 +900,11 @@ class MainActivity : FragmentActivity() {
         // still have written this and been waved through as healthy. Waiting
         // for the decorView's first predraw ties it to an actual frame having
         // been laid out, which "reached this line" never did.
-        window.decorView.viewTreeObserver.addOnPreDrawListener(object : ViewTreeObserver.OnPreDrawListener {
-            override fun onPreDraw(): Boolean {
-                window.decorView.viewTreeObserver.removeOnPreDrawListener(this)
-                UpdateWatchdogReceiver.recordHeartbeat(this@MainActivity)
-                return true
-            }
-        })
+        FirstFrameStartup.onFirstFrame(
+            window.decorView,
+            heartbeat = { UpdateWatchdogReceiver.recordHeartbeat(this) },
+            afterFirstFrame = { if (loginAfterFirstFrame) authenticate(affiliateKey) }
+        )
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
