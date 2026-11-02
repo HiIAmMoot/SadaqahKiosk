@@ -11,6 +11,7 @@ import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import java.io.File
 
 /**
@@ -22,6 +23,10 @@ class ApkInstaller(private val context: Context) {
     sealed class Result {
         data object Success : Result()
         data class Failed(val status: Int, val message: String) : Result()
+    }
+
+    companion object {
+        private const val INSTALL_STATUS_TIMEOUT_MS = 45_000L
     }
 
     suspend fun install(apkFile: File): Result = withContext(Dispatchers.IO) {
@@ -77,7 +82,28 @@ class ApkInstaller(private val context: Context) {
                     piFlags
                 )
                 session.commit(pi.intentSender)
-                deferred.await()
+                // A missing status broadcast (observed on some OEM ROMs when
+                // the installer service is killed mid-verification) must not
+                // suspend forever: that leaves showUpdatingOverlay up with no
+                // recovery route besides the watchdog.
+                //
+                // This bounds only the wait for the broadcast AFTER commit, not
+                // the install. It is deliberately NOT claimed to beat the
+                // watchdog's 60s: UpdateManager arms that before the whole-APK
+                // copyTo into the session above, which on slow eMMC can take
+                // fifteen seconds or more, so `commit + 45s` can land after
+                // `arm + 60s` and the watchdog can still win. Neither ordering
+                // is guaranteed, and tuning this number cannot make one; the
+                // real fix is arming after the session write, which is recorded
+                // as debt rather than done here.
+                //
+                // 45s is generous for verifying and committing this app's APK
+                // even on slow kiosk storage. The residual risk is symmetric
+                // and worth stating: a genuinely slow install reported as
+                // Failed is one the finally then disarms, so a bricked build
+                // that eventually succeeds would not be rolled back.
+                withTimeoutOrNull(INSTALL_STATUS_TIMEOUT_MS) { deferred.await() }
+                    ?: Result.Failed(-998, "timeout waiting for install status")
             }
         } catch (e: Exception) {
             Log.e("ApkInstaller", "session commit failed: ${e.message}")

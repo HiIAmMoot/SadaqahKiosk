@@ -24,6 +24,15 @@ sealed class ImportResult {
 object SettingsExportFile {
     const val KEY_AFFILIATE = "affiliateKey"
 
+    /** The reporting destination. Kept in the encrypted envelope alongside the
+     *  affiliate key rather than in the plaintext settings block: the publishable
+     *  key is insert-only and assumed leaked by design, so it is not the same
+     *  class of secret as a payment credential — but the endpoint names the
+     *  operator's own backend, and an export is a file that travels. Both ride
+     *  the same password the affiliate key already requires. */
+    const val KEY_TELEMETRY_URL = "telemetryUrl"
+    const val KEY_TELEMETRY_KEY = "telemetryKey"
+
     private val gson = Gson()
 
     /**

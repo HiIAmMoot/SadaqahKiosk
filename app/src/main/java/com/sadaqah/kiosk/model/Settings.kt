@@ -34,5 +34,49 @@ data class Settings(
     // Donation history
     val donationTrackingEnabled: Boolean = true,
     /** Wall-clock instant the averages are computed from. 0 = uninitialised; MainActivity bootstraps it to "now" on first start. */
-    val donationStatsStartedAtMs: Long = 0L
+    val donationStatsStartedAtMs: Long = 0L,
+    // Telemetry
+    // Credentials are deliberately NOT here — they live in TelemetryCredentials so
+    // they never reach the settings JSON except through the encrypted export path.
+    val analyticsEnabled: Boolean = false,
+    /** Wall-clock instant this kiosk first successfully reported: stamped once,
+     *  the first time "Test connection" succeeds. 0 = never. Never overwritten
+     *  after that, so it answers "when did this kiosk start reporting", not
+     *  "is it currently reporting". */
+    val analyticsActivatedAtMs: Long = 0L,
+    val analyticsPrivacyPolicyUrl: String = "",
+    val analyticsTermsUrl: String = "",
+    /** Optional printed panel code. Advisory validation only — see KioskCode. */
+    val kioskCode: String = "",
+    /** True when [kioskCode] arrived from an imported settings file rather than
+     *  being typed on this device.
+     *
+     *  The code travels on import so a replacement tablet keeps the kiosk's
+     *  printed code. The cost is that provisioning a fleet from one export
+     *  stamps every unit with the source kiosk's code, and `code` + `install_id`
+     *  then permanently emits the signal it reserves for a re-provisioned unit —
+     *  silently, because nothing on screen would otherwise say the value is
+     *  shared. This flag is what the analytics screen warns from.
+     *
+     *  Set by [SettingsImport.merge], cleared the moment an operator edits the
+     *  field on this device. That is what keeps the warning honest: it cannot
+     *  outlive the condition it describes. */
+    val kioskCodeFromImport: Boolean = false,
+    /** True when [kioskName] arrived from an imported settings file rather than
+     *  being typed on this device.
+     *
+     *  The name travels on import for the same reason the code does — a
+     *  replacement tablet keeps the kiosk's existing name — but `makePayment`
+     *  sends it to SumUp as the checkout title and attaches it to every
+     *  transaction as `KioskNaam`. A fleet provisioned from one export would
+     *  otherwise book every donation in the merchant's own records against
+     *  the golden kiosk's name, with nothing on screen saying so.
+     *
+     *  Set by [SettingsImport.merge], cleared the moment an operator edits the
+     *  field on this device — the same self-healing rule as
+     *  [kioskCodeFromImport]. */
+    val kioskNameFromImport: Boolean = false,
+    /** Random UUID minted on first run. Never a hardware identifier: ANDROID_ID
+     *  and friends carry restrictions and privacy baggage for no benefit here. */
+    val installId: String = ""
 )

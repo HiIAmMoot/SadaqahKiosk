@@ -15,9 +15,12 @@ coil = "3.0.4"
 biometric = "1.1.0"
 gson = "2.11.0"
 palette = "1.0.0"
+zxing-core = "3.5.3"
+robolectric = "4.14.1"
 #desugarJdkLibs = "2.1.5"
 
 [libraries]
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
@@ -53,6 +56,10 @@ gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
 
 # Palette — extracts dominant colours from logo bitmaps for the color picker
 androidx-palette = { group = "androidx.palette", name = "palette-ktx", version.ref = "palette" }
+
+# QR encoding for the disclosure screen's policy links. core only, deliberately:
+# the javase artifact pulls in java.awt image classes this app has no use for.
+zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing-core" }
 
 # Desugaring
 #desugar-jdk-libs = { group = "com.android.tools", name = "desugar_jdk_libs", version.ref = "desugarJdkLibs" }

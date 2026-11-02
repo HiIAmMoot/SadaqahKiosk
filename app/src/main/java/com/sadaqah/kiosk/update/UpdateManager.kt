@@ -31,7 +31,10 @@ sealed class UpdateNotification {
     data object BatteryTooLow : UpdateNotification()
     data object NoNetwork : UpdateNotification()
     data object NotDeviceOwner : UpdateNotification()
-    data object InstallFailed : UpdateNotification()
+    /** [reason] is a short fixed constant chosen at the fire site, never the
+     *  installer's own status text — that is vendor-supplied and makes a poor
+     *  grouping key. Defaulted so existing `is InstallFailed` arms still compile. */
+    data class InstallFailed(val reason: String? = null) : UpdateNotification()
 }
 
 data class RepoCoords(val owner: String, val name: String) {
@@ -90,10 +93,28 @@ class UpdateManager(
     private val isNetworkAvailable: () -> Boolean,
     private val onStartInstall: (ReleaseInfo) -> Unit,
     private val onFinishInstall: () -> Unit,
-    private val persistSettings: (Settings) -> Unit,
+    /** Takes a MUTATION, not a finished object, and that is the whole point.
+     *  This class keeps its own `settings` snapshot, refreshed only when
+     *  MainActivity calls [refreshSettings] from the main thread, while these
+     *  writes are issued from a Dispatchers.Default coroutine. Handing over a
+     *  whole object built from that snapshot persisted everything it held,
+     *  reverting any operator change made since the last refresh -- in
+     *  app_prefs and in live Compose state, so the UI moved under the
+     *  operator's hands. The realistic case is enabling analytics while the
+     *  30-second post-boot check is in flight: analyticsEnabled goes back to
+     *  false and the kiosk stops reporting, silently.
+     *
+     *  A mutation is applied against whatever MainActivity holds at the moment
+     *  it runs, so only the field this class means to change is changed. */
+    private val persistSettings: ((Settings) -> Settings) -> Unit,
     private val onNotification: (UpdateNotification) -> Unit,
     private val prepareForInstall: () -> Unit = {}
 ) {
+    // @Volatile because persistSettings now writes this from Dispatchers.Default
+    // as well as from the main thread. Each scope.launch already supplies a
+    // happens-before edge in practice, but that is an accident of how the
+    // callers happen to be written rather than a property of this field.
+    @Volatile
     private var settings: Settings = initialSettings
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val prefs: SharedPreferences =
@@ -233,8 +254,8 @@ class UpdateManager(
                 val resolution = resolveUpdateTarget(eligible, pinnedTarget())
                 if (resolution.pinExpired) {
                     Log.d("UpdateManager", "Preview pin '${settings.autoUpdateTargetVersion}' superseded — reverting to latest")
-                    settings = settings.copy(autoUpdateTargetVersion = "latest")
-                    try { persistSettings(settings) } catch (e: Exception) {
+                    try { persistSettings { it.copy(autoUpdateTargetVersion = "latest") } }
+                    catch (e: Exception) {
                         Log.e("UpdateManager", "persistSettings (expire preview pin) failed: ${e.message}")
                     }
                 }
@@ -305,6 +326,10 @@ class UpdateManager(
         val apk = downloader.download(target) { /* nightly silent */ }
         if (apk == null) {
             Log.w("UpdateManager", "Daily download failed for v${target.version}")
+            // Only consumed when this download was actually for installing
+            // tonight (shouldInstall) — a pre-caching download outside the
+            // grace window was never an install attempt.
+            if (shouldInstall) consumeSkipSignatureCheckOnce()
             return
         }
         if (shouldInstall) installResolved(target, apk)
@@ -332,79 +357,141 @@ class UpdateManager(
         }
         if (apk == null) {
             Log.e("UpdateManager", "Download failed for v${target.version}")
-            onNotification(UpdateNotification.InstallFailed)
+            onNotification(UpdateNotification.InstallFailed("download_failed"))
             state = UpdateState.Idle
+            // An operator-initiated call is always an install attempt, unlike
+            // the nightly path's pre-caching download — see consumeSkipSignatureCheckOnce.
+            consumeSkipSignatureCheckOnce()
             withContext(Dispatchers.Main) { onFinishInstall() }
             return@launch
         }
         installResolved(target, apk)
     }
 
-    private suspend fun installResolved(target: ReleaseInfo, apkFile: java.io.File) {
-        // Safety net for stale pins to a different major.minor track that
-        // would slip past the dropdown filter.
-        if (!isInstallable(target.version)) {
-            Log.w("UpdateManager", "Cross-track downgrade refused — target=${target.version} current=$currentVersion")
-            onNotification(UpdateNotification.InstallFailed)
-            state = UpdateState.Idle
-            withContext(Dispatchers.Main) { onFinishInstall() }
-            return
-        }
-
-        // Within the same major.minor track the new APK shares versionCode
-        // with the installed one, so the validator's `newCode < installedCode`
-        // check passes without needing allowDowngrade. If a build accidentally
-        // bumped versionCode within a track, this keeps validation strict.
-        val validation = validator.validate(
-            apkFile = apkFile,
-            allowDowngrade = false,
-            skipSignatureCheck = settings.skipApkSignatureCheckOnce
-        )
-        if (validation is ApkValidator.Result.Reject) {
-            Log.e("UpdateManager", "Validation rejected: ${validation.reason}")
-            onNotification(UpdateNotification.InstallFailed)
-            state = UpdateState.Idle
-            withContext(Dispatchers.Main) { onFinishInstall() }
-            return
-        }
-
-        state = UpdateState.ReadyToInstall(target, apkFile.absolutePath)
-        withContext(Dispatchers.Main) { onStartInstall(target) }
-        state = UpdateState.Installing(target)
-
-        backup.saveCurrentApk()
-        UpdateWatchdogReceiver.arm(context, delayMs = 60_000L)
-
-        // UI callback — switch to main thread because the body touches the
-        // Window/Activity (system bars, lock task). Synchronous so the install
-        // commit doesn't race the teardown.
+    /**
+     * Clears `skipApkSignatureCheckOnce` and persists the change, if it was
+     * set. Called on every exit from an install attempt that read it,
+     * including a failed download that never reached [installResolved] at
+     * all — "once" means one attempt, not one success. Leaving it set across
+     * a failed attempt would let the next unattended 02:00 run silently
+     * accept an APK signed by any key, against a `updateRepoUrl` an operator
+     * can already edit.
+     */
+    private fun consumeSkipSignatureCheckOnce() {
+        // No early-out on the local snapshot. It would read a value that can
+        // be staler than the one the mutation writes against, and the two
+        // disagree in the direction that matters: a snapshot still saying
+        // false while the live value is true would skip the clear and leave
+        // the bypass armed. The mutation is idempotent, so running it when
+        // the flag is already false costs one redundant write on a path that
+        // runs at most once per install attempt.
+        //
+        // Non-suspending on purpose: this is called from a `finally` that must
+        // still run when the scope has been cancelled, and again immediately
+        // before installer.install() where it has to complete before the
+        // process can be replaced. Both rule out hopping threads to get here.
         try {
-            withContext(Dispatchers.Main) { prepareForInstall() }
+            persistSettings { it.copy(skipApkSignatureCheckOnce = false) }
         } catch (e: Exception) {
-            Log.w("UpdateManager", "prepareForInstall threw: ${e.message}")
+            Log.e("UpdateManager", "persistSettings (clear skip-sig) failed: ${e.message}")
         }
+    }
 
-        if (settings.skipApkSignatureCheckOnce) {
-            settings = settings.copy(skipApkSignatureCheckOnce = false)
-            try { persistSettings(settings) } catch (e: Exception) {
-                Log.e("UpdateManager", "persistSettings (clear skip-sig) failed: ${e.message}")
-            }
-        }
-
-        val result = withContext(Dispatchers.IO) { installer.install(apkFile) }
-        when (result) {
-            is ApkInstaller.Result.Success -> {
-                Log.d("UpdateManager", "Install commit returned SUCCESS")
-                downloader.cleanupAll()
-                // Process dies here; PackageReplacedReceiver relaunches us.
-            }
-            is ApkInstaller.Result.Failed -> {
-                Log.e("UpdateManager", "Install failed status=${result.status} msg=${result.message}")
-                UpdateWatchdogReceiver.disarm(context)
-                onNotification(UpdateNotification.InstallFailed)
+    private suspend fun installResolved(target: ReleaseInfo, apkFile: java.io.File) {
+        // Captured before any early return so the finally below always
+        // consumes what was true when this attempt started, not whatever
+        // settings happens to hold by the time it runs.
+        val hadSkipSignatureCheck = settings.skipApkSignatureCheckOnce
+        // The process is replaced out from under a real success, so the
+        // watchdog must survive to check the new build's heartbeat; every
+        // other exit — including a cancelled scope — must disarm it, or a
+        // torn-down attempt leaves the marker armed and the watchdog "rolls
+        // back" the version that is still running 60s later.
+        var installSucceeded = false
+        try {
+            // Safety net for stale pins to a different major.minor track that
+            // would slip past the dropdown filter.
+            if (!isInstallable(target.version)) {
+                Log.w("UpdateManager", "Cross-track downgrade refused — target=${target.version} current=$currentVersion")
+                onNotification(UpdateNotification.InstallFailed("downgrade_blocked"))
                 state = UpdateState.Idle
                 withContext(Dispatchers.Main) { onFinishInstall() }
+                return
             }
+
+            // Within the same major.minor track the new APK shares versionCode
+            // with the installed one, so the validator's `newCode < installedCode`
+            // check passes without needing allowDowngrade. If a build accidentally
+            // bumped versionCode within a track, this keeps validation strict.
+            val validation = validator.validate(
+                apkFile = apkFile,
+                allowDowngrade = false,
+                skipSignatureCheck = hadSkipSignatureCheck
+            )
+            if (validation is ApkValidator.Result.Reject) {
+                Log.e("UpdateManager", "Validation rejected: ${validation.reason}")
+                onNotification(UpdateNotification.InstallFailed("validation_rejected"))
+                state = UpdateState.Idle
+                withContext(Dispatchers.Main) { onFinishInstall() }
+                return
+            }
+
+            state = UpdateState.ReadyToInstall(target, apkFile.absolutePath)
+            withContext(Dispatchers.Main) { onStartInstall(target) }
+            state = UpdateState.Installing(target)
+
+            backup.saveCurrentApk()
+            UpdateWatchdogReceiver.arm(context, delayMs = 60_000L)
+
+            // UI callback — switch to main thread because the body touches the
+            // Window/Activity (system bars, lock task). Synchronous so the install
+            // commit doesn't race the teardown.
+            try {
+                withContext(Dispatchers.Main) { prepareForInstall() }
+            } catch (e: Exception) {
+                Log.w("UpdateManager", "prepareForInstall threw: ${e.message}")
+            }
+
+            // Cleared HERE, not only in the finally below, and the difference is
+            // the whole point. persistSettings lands in saveSettings, which uses
+            // apply() -- an async write handed to QueuedWork. On the success path
+            // the finally runs microseconds before PackageInstaller replaces this
+            // process, and exit does not drain that queue, so the clear can be
+            // lost and the bypass survives into the next unattended 02:00 run.
+            // That is the exact hole this flag's "once" exists to close.
+            //
+            // Safe to clear before the install: validation at :401 already read
+            // the captured local, not this field, so nothing downstream consults
+            // it again. The finally still covers every failure path, and is a
+            // no-op once this has run.
+            consumeSkipSignatureCheckOnce()
+
+            val result = withContext(Dispatchers.IO) { installer.install(apkFile) }
+            when (result) {
+                is ApkInstaller.Result.Success -> {
+                    installSucceeded = true
+                    Log.d("UpdateManager", "Install commit returned SUCCESS")
+                    downloader.cleanupAll()
+                    // Process dies here; PackageReplacedReceiver relaunches us.
+                }
+                is ApkInstaller.Result.Failed -> {
+                    Log.e("UpdateManager", "Install failed status=${result.status} msg=${result.message}")
+                    onNotification(UpdateNotification.InstallFailed("commit_failed"))
+                    state = UpdateState.Idle
+                    withContext(Dispatchers.Main) { onFinishInstall() }
+                }
+            }
+        } finally {
+            if (!installSucceeded) {
+                UpdateWatchdogReceiver.disarm(context)
+            }
+            // Unconditional. Guarding this on `hadSkipSignatureCheck` reinstates,
+            // one frame up, exactly the stale-snapshot early-out that was deleted
+            // from inside consumeSkipSignatureCheckOnce: that local was captured
+            // at :390 from this class's own copy of settings, so an operator who
+            // arms the bypass after the capture has it survive a failed attempt
+            // into the next unattended 02:00 run. The mutation is idempotent.
+            consumeSkipSignatureCheckOnce()
         }
     }
 

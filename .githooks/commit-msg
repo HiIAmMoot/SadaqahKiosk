@@ -1,0 +1,33 @@
+#!/bin/sh
+# Blocks AI attribution from entering a commit message.
+#
+# The companion to pre-commit, which guards file content. This one guards the
+# message itself, which is where an attribution trailer is actually generated:
+# the harness supplies one by default, and the default is wrong for this
+# repository. See .githooks/pre-commit for why.
+
+msg="$1"
+fail=0
+
+check() {
+	hit=$(grep -nE "$2" "$msg" | grep -v "^[0-9]*:#")
+	if [ -n "$hit" ]; then
+		fail=1
+		echo "BLOCKED: $1"
+		echo "$hit" | sed 's/^/    /'
+		echo
+	fi
+}
+
+check "Co-Authored-By: Claude trailer" '^Co-Authored-By: *Claude'
+check "Claude-Session trailer" '^Claude-Session:'
+check "session link (points at private conversation history)" 'claude\.ai/code/session_'
+check "'Generated with Claude Code' footer" 'Generated with \[?Claude Code'
+
+if [ "$fail" -ne 0 ]; then
+	echo "This repository is public and carries a standing no-attribution rule."
+	echo "Strip the lines above and commit again."
+	exit 1
+fi
+
+exit 0

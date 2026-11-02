@@ -34,3 +34,29 @@ keystore.properties
 
 # Captures (Android Studio profiler recordings)
 /captures/
+
+# Local/CI scratch — build and test logs redirected to a file for reading.
+# Leaked into a commit twice; ignored so it cannot happen a third time.
+test-output.txt
+*-test-output.txt
+build-output.txt
+
+# Handoff notes — working reference, not shipped source.
+# May carry live endpoints or keys, which must never enter git history.
+Handoffs/
+handoffs/
+
+# Local session guidance — working reference, not shipped source.
+CLAUDE.md
+
+# Local working scratch and design notes: not shipped source.
+.superpowers/
+docs/superpowers/
+
+# Python bytecode from tools/
+__pycache__/
+*.pyc
+
+# Local repo bundles taken before history rewrites. Never pushed: they carry
+# every branch including ones not meant to be published yet.
+/backups/

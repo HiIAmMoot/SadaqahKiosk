@@ -67,6 +67,7 @@ fun SettingsScreen(
     onPinApp: () -> Unit,
     onShowSetupStatus: () -> Unit,
     onShowDonationHistory: () -> Unit = {},
+    onShowAnalyticsSettings: () -> Unit = {},
     onActivateScreensaver: () -> Unit,
     onTestModeChange: (Boolean) -> Unit,
     onLogout: () -> Unit,
@@ -211,7 +212,18 @@ fun SettingsScreen(
                     SettingsSection(title = strings.kioskName, settings = settings) {
                         OutlinedTextField(
                             value = settings.kioskName ?: "",
-                            onValueChange = { onSettingsChange(settings.copy(kioskName = it)) },
+                            onValueChange = {
+                                onSettingsChange(
+                                    settings.copy(
+                                        kioskName = it,
+                                        // Typing here is the operator claiming this
+                                        // name for this kiosk, the same condition
+                                        // MainActivity's onAnalyticsKioskCodeChange
+                                        // clears kioskCodeFromImport on.
+                                        kioskNameFromImport = false
+                                    )
+                                )
+                            },
                             placeholder = { Text(strings.kioskNamePlaceholder, fontSize = responsiveSp(14.0)) },
                             singleLine = true,
                             colors = OutlinedTextFieldDefaults.colors(
@@ -487,7 +499,10 @@ fun SettingsScreen(
                 Column(
                     modifier = Modifier
                         .weight(1f)
-                        .fillMaxHeight(),
+                        .fillMaxHeight()
+                        // fillMaxHeight before the scroll keeps the column's minimum height, so
+                        // the weighted spacer still pins the buttons to the bottom when they fit.
+                        .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(responsiveDp(16.dp)),
                     horizontalAlignment = Alignment.CenterHorizontally
                 ) {
@@ -568,6 +583,14 @@ fun SettingsScreen(
                             color = Color(settings.buttonColor),
                             borderColor = Color(settings.buttonBorderColor),
                             onClick = onShowDonationHistory,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        ActionButton(
+                            text = strings.analyticsSettings,
+                            color = Color(settings.buttonColor),
+                            borderColor = Color(settings.buttonBorderColor),
+                            onClick = onShowAnalyticsSettings,
                             modifier = Modifier.fillMaxWidth()
                         )
 
@@ -1269,6 +1292,7 @@ fun UpdateSettingsSection(
 
     var advancedExpanded by remember { mutableStateOf(false) }
     var repoUrlError by remember { mutableStateOf(false) }
+    var showSkipSignatureConfirm by remember { mutableStateOf(false) }
 
     Column(verticalArrangement = Arrangement.spacedBy(responsiveDp(10.dp))) {
 
@@ -1462,7 +1486,16 @@ fun UpdateSettingsSection(
                     label = strings.skipSignatureCheckOnce,
                     description = strings.skipSignatureCheckOnceDesc,
                     checked = settings.skipApkSignatureCheckOnce,
-                    onChange = { onSettingsChange(settings.copy(skipApkSignatureCheckOnce = it)) },
+                    // Turning it off never needs confirmation — only enabling
+                    // the bypass does, matching the "clear credentials" dialog
+                    // for a strictly less dangerous action.
+                    onChange = { turningOn ->
+                        if (turningOn) {
+                            showSkipSignatureConfirm = true
+                        } else {
+                            onSettingsChange(settings.copy(skipApkSignatureCheckOnce = false))
+                        }
+                    },
                     border = border,
                     buttonColor = button
                 )
@@ -1502,6 +1535,34 @@ fun UpdateSettingsSection(
                 }
             }
         }
+    }
+
+    if (showSkipSignatureConfirm) {
+        AlertDialog(
+            onDismissRequest = { showSkipSignatureConfirm = false },
+            containerColor = Color(settings.backgroundColor),
+            title = { Text(strings.skipSignatureCheckConfirmTitle, color = Color.Red, fontWeight = FontWeight.Bold) },
+            text = { Text(strings.skipSignatureCheckConfirmMessage, color = border) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        onSettingsChange(settings.copy(skipApkSignatureCheckOnce = true))
+                        showSkipSignatureConfirm = false
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Red)
+                ) {
+                    Text(strings.skipSignatureCheckOnce, color = Color.White, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { showSkipSignatureConfirm = false },
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Gray)
+                ) {
+                    Text(strings.cancel, color = Color.White)
+                }
+            }
+        )
     }
 }
 

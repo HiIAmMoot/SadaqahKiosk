@@ -1,0 +1,62 @@
+#!/bin/sh
+# Blocks AI attribution from entering the repository.
+#
+# This repository is public. A `Claude-Session:` URL points at private
+# conversation history, and one reached twelve pushed branches before anyone
+# noticed -- it was sitting inside a sample `git commit` heredoc in a plan
+# document, so every implementer who followed that plan was being told to add
+# it. Removing it cost a history rewrite across every stacked branch.
+#
+# The patterns are anchored deliberately. Trailers are matched at line start so
+# that prose stating this very rule ("no `Co-Authored-By`, no session link")
+# does not trip the hook -- the rule has to be writable in the docs that carry
+# it. A session URL is matched anywhere on the line, because there is no
+# context in which one belongs in a tracked file.
+
+fail=0
+
+# .githooks/ is excluded because these hooks necessarily contain the patterns
+# they search for. Without the exclusion the hook blocks its own commit, which
+# is how this exclusion was found.
+#
+# Two details here are load-bearing and were both wrong in the first version.
+#
+# No `grep -n`. It prefixes every line with "N:", so a pattern anchored with
+# ^\+ can no longer match anything -- the line now starts with a digit. That
+# silently killed both trailer patterns while the two unanchored ones kept
+# working, so the hook looked functional and blocked nothing of the exact
+# form that caused the incident. Anchoring is what lets docs state the rule,
+# so the anchors stay and the numbering goes.
+#
+# The pathspec is `:/` (repo root), not `.` (the current directory). A commit
+# made from inside a subdirectory would otherwise scan only that subdirectory.
+added() {
+	git diff --cached -U0 --diff-filter=ACM -- ':/' ':(exclude,top).githooks/' \
+		| grep "^+" | grep -v "^+++" | grep -E "$1"
+}
+
+report() {
+	if [ -n "$2" ]; then
+		fail=1
+		echo "BLOCKED: $1"
+		echo "$2" | sed 's/^/    /'
+		echo
+	fi
+}
+
+report "commit-message attribution trailer in file content" \
+	"$(added '^\+Co-Authored-By: *Claude')"
+report "session link (points at private conversation history)" \
+	"$(added 'claude\.ai/code/session_')"
+report "Claude-Session trailer in file content" \
+	"$(added '^\+Claude-Session:')"
+report "'Generated with Claude Code' footer" \
+	"$(added 'Generated with \[?Claude Code')"
+
+if [ "$fail" -ne 0 ]; then
+	echo "This repository is public and carries a standing no-attribution rule."
+	echo "Strip the lines above, or commit with --no-verify if you are certain."
+	exit 1
+fi
+
+exit 0

@@ -1,0 +1,399 @@
+package com.sadaqah.kiosk.telemetry
+
+import com.google.gson.JsonObject
+import com.sadaqah.kiosk.model.Settings
+import java.time.Instant
+
+/**
+ * A closed, fixed set of causes a card-reader or checkout failure can be
+ * classified into. Every one of these three failure kinds is fed a vendor
+ * SDK's own free-text status message, and [DiagnosticEvents.checkoutNoReaderDetail]
+ * fires on a FAILED PAYMENT — exactly where that vendor is most likely to
+ * name the transaction. The donor-facing disclosure states in every language
+ * it ships that no transaction identifier is ever sent, so nothing narrower
+ * than membership in this list may reach an event payload for these kinds.
+ */
+enum class SumUpFailureCause(val wire: String) {
+    TIMEOUT("timeout"),
+    READER_NOT_FOUND("reader_not_found"),
+    NO_CONNECTIVITY("no_connectivity"),
+    CANCELLED("cancelled"),
+    DECLINED("declined"),
+    /** The dominant cause of `sumup_reinit_failed`, and previously indistinguishable
+     *  from every other unknown. An operator seeing this needs to log the kiosk in,
+     *  which is a different action from anything the other causes call for. */
+    NOT_LOGGED_IN("not_logged_in"),
+    /** Distinct from READER_NOT_FOUND: the reader may be perfectly fine and simply
+     *  unreachable because the radio is off, which the kiosk can fix by itself. */
+    BLUETOOTH_OFF("bluetooth_off"),
+    /** No usable result code: the app's own -1 fallback for no data, no
+     *  RESULT_CODE extra, or one of the wrong type. Kept apart from UNKNOWN,
+     *  which means SumUp sent a code but words this classifier does not know. */
+    NO_RESULT("no_result"),
+    CARD_READER_SETTINGS_OFF("card_reader_settings_off"),
+    /** SumUp could not tell whether the payment went through, so money may have
+     *  moved. Must never be folded into CANCELLED or UNKNOWN. */
+    TRANSACTION_STATUS_UNKNOWN("transaction_status_unknown"),
+    /** Every message that does not match one of the phrases above, including
+     *  one that happens to look like a transaction code — there is no
+     *  narrower bucket to fall back to, and that is deliberate. */
+    UNKNOWN("unknown")
+}
+
+sealed class DiagnosticEventResult {
+    /** The operator declined analytics, or no identity is loaded yet. */
+    object NotEnabled : DiagnosticEventResult()
+
+    /** Analytics is on and there is simply nothing worth reporting. Distinct
+     *  from [NotEnabled] because the version tracker must still advance. */
+    object NothingToReport : DiagnosticEventResult()
+
+    data class Report(val event: TelemetryEvent.Diagnostic) : DiagnosticEventResult()
+}
+
+/**
+ * The report decision and the value the caller must persist, together. Returned
+ * as one value so the always-advance rule is pinned by a test rather than by a
+ * comment at a call site no test can reach.
+ */
+data class UpdateInstalledDecision(
+    val result: DiagnosticEventResult,
+    val versionToStore: String
+)
+
+/**
+ * Decides whether a diagnostic is reported and in what shape.
+ *
+ * Pure, and that is the point: the callers are `MainActivity` and a
+ * `BroadcastReceiver`, and no unit test can reach either. Same reasoning as
+ * [DonationEvents], and the same bug it was written to avoid.
+ */
+object DiagnosticEvents {
+
+    fun crash(
+        settings: Settings?,
+        appVersion: String,
+        thread: Thread,
+        throwable: Throwable,
+        affiliateKey: String?,
+        occurredAtMs: Long
+    ): DiagnosticEventResult {
+        val identity = identityOf(settings, appVersion) ?: return DiagnosticEventResult.NotEnabled
+        val detail = JsonObject().apply {
+            addProperty("thread", thread.name)
+            addProperty("main", thread.name == "main")
+        }
+        return DiagnosticEventResult.Report(
+            TelemetryEvent.Diagnostic(
+                identity = identity,
+                kind = DiagnosticKind.CRASH,
+                occurredAtIso = Instant.ofEpochMilli(occurredAtMs).toString(),
+                detailJson = detail.toString(),
+                // Rendered here rather than at the call site so the rendering is
+                // covered; Diagnostic's constructor scrubs and truncates it.
+                stackTrace = classAndFrameTrace(throwable),
+                affiliateKey = affiliateKey
+            )
+        )
+    }
+
+    fun updateRollback(
+        settings: Settings?,
+        appVersion: String,
+        rollbackAtMs: Long,
+        fromVersion: String?
+    ): DiagnosticEventResult {
+        val identity = identityOf(settings, appVersion) ?: return DiagnosticEventResult.NotEnabled
+        // No marker means no rollback happened, which is a fact distinct from
+        // "analytics is off" — the caller must be able to tell them apart.
+        if (rollbackAtMs <= 0L) return DiagnosticEventResult.NothingToReport
+        val detail = JsonObject().apply {
+            // "attempted" is the honest word: the install being waited on
+            // replaces the process waiting for it, so no outcome is knowable
+            // here. from_version is what makes the outcome recoverable —
+            // equal to the row's app_version means the rollback did not take.
+            addProperty("outcome", "attempted")
+            if (!fromVersion.isNullOrBlank()) addProperty("from_version", fromVersion)
+        }
+        return DiagnosticEventResult.Report(
+            TelemetryEvent.Diagnostic(
+                identity = identity,
+                kind = DiagnosticKind.UPDATE_ROLLBACK,
+                occurredAtIso = Instant.ofEpochMilli(rollbackAtMs).toString(),
+                detailJson = detail.toString(),
+                affiliateKey = null
+            )
+        )
+    }
+
+    fun updateInstalled(
+        settings: Settings?,
+        appVersion: String,
+        storedVersion: String,
+        occurredAtMs: Long
+    ): UpdateInstalledDecision {
+        // Computed before any gate: the stored version advances whatever the
+        // outcome, or enabling analytics later manufactures a false update.
+        val decision = { result: DiagnosticEventResult ->
+            UpdateInstalledDecision(result, appVersion)
+        }
+        val identity = identityOf(settings, appVersion)
+            ?: return decision(DiagnosticEventResult.NotEnabled)
+        // An empty stored version is a first run, which is an installation
+        // rather than an update, so it seeds and reports nothing.
+        if (storedVersion.isBlank() || storedVersion == appVersion) {
+            return decision(DiagnosticEventResult.NothingToReport)
+        }
+        val detail = JsonObject().apply {
+            addProperty("from", storedVersion)
+            addProperty("to", appVersion)
+        }
+        return decision(
+            DiagnosticEventResult.Report(
+                TelemetryEvent.Diagnostic(
+                    identity = identity,
+                    kind = DiagnosticKind.UPDATE_INSTALLED,
+                    occurredAtIso = Instant.ofEpochMilli(occurredAtMs).toString(),
+                    detailJson = detail.toString(),
+                    affiliateKey = null
+                )
+            )
+        )
+    }
+
+    /**
+     * The generic entry point, for kinds whose detail is assembled by a builder
+     * rather than derived from a decision. The gate is the same one every other
+     * function here uses — there is no kind that bypasses the master switch.
+     */
+    fun forKind(
+        settings: Settings?,
+        appVersion: String,
+        kind: DiagnosticKind,
+        occurredAtMs: Long,
+        detailJson: String? = null,
+        affiliateKey: String? = null,
+        // Defaults to a fresh id for every other caller; a drained
+        // PendingDiagnostic passes its own id so a re-drain after a failed
+        // removeDrained() reports the same event id instead of a new one.
+        id: String = java.util.UUID.randomUUID().toString()
+    ): DiagnosticEventResult {
+        val identity = identityOf(settings, appVersion) ?: return DiagnosticEventResult.NotEnabled
+        return DiagnosticEventResult.Report(
+            TelemetryEvent.Diagnostic(
+                identity = identity,
+                kind = kind,
+                occurredAtIso = Instant.ofEpochMilli(occurredAtMs).toString(),
+                detailJson = detailJson,
+                affiliateKey = affiliateKey,
+                id = id
+            )
+        )
+    }
+
+    const val SUMUP_CODE_NO_RESULT = -1
+    const val SUMUP_CODE_NOT_LOGGED_IN = 8
+    const val SUMUP_CODE_CARD_READER_SETTINGS_OFF = 14
+    const val SUMUP_CODE_UNKNOWN_TRANSACTION_STATUS = 15
+
+    /**
+     * @notice Classifies a SumUp result by its numeric result code first and
+     *  its status message second.
+     * @dev The codes are mirrored as constants instead of read from the SDK so
+     *  this module stays pure and SDK-free; a test pins them to the SDK's
+     *  values. Only the codes whose meaning is unambiguous are mapped here;
+     *  every other code (TRANSACTION_FAILED in particular, which SumUp uses
+     *  for both declines and cancels) falls back to [classifySumUpFailure].
+     *  The code itself already travels unfiltered in the `code` field, so
+     *  using it here changes nothing about what leaves the device.
+     * @param code SumUp's RESULT_CODE extra, or [SUMUP_CODE_NO_RESULT] when absent.
+     * @param message SumUp's MESSAGE extra; read and discarded, never returned.
+     */
+    fun classifySumUpResult(code: Int, message: String?): SumUpFailureCause =
+        when (code) {
+            SUMUP_CODE_NO_RESULT -> SumUpFailureCause.NO_RESULT
+            SUMUP_CODE_NOT_LOGGED_IN -> SumUpFailureCause.NOT_LOGGED_IN
+            SUMUP_CODE_CARD_READER_SETTINGS_OFF -> SumUpFailureCause.CARD_READER_SETTINGS_OFF
+            SUMUP_CODE_UNKNOWN_TRANSACTION_STATUS -> SumUpFailureCause.TRANSACTION_STATUS_UNKNOWN
+            else -> classifySumUpFailure(message)
+        }
+
+    /**
+     * Classifies a vendor status message into [SumUpFailureCause] by matching
+     * a small set of fixed English phrases SumUp's SDK is documented to use
+     * for these outcomes — never by forwarding any part of the message
+     * itself. The message is discarded the instant this returns; the caller
+     * never has the original text in hand to put on an event.
+     *
+     * Matching is purely text-based, which is what makes it exhaustively
+     * testable against adversarial input — including a message shaped like a
+     * transaction code, which must fall through every branch to
+     * [SumUpFailureCause.UNKNOWN]. Call sites use [classifySumUpResult], which
+     * consults the result code before falling back to this.
+     */
+    fun classifySumUpFailure(message: String?): SumUpFailureCause {
+        val text = message.orEmpty()
+        // Ordering is load-bearing, not cosmetic. "card reader not connected"
+        // and "no connection" both contain "connect", so the reader branch has
+        // to be consulted before the connectivity one or a dead reader reports
+        // as a dead network and sends an operator to the router.
+        //
+        // The phrases are the SDK's, not this app's. An earlier version matched
+        // "declin", which is the word this codebase uses -- SumUp says
+        // "Transaction failed" -- so the commonest decline, the commonest
+        // reinit failure and the commonest pairing failure all fell through to
+        // UNKNOWN. A cause nobody can act on is barely better than no cause,
+        // which is why these were worth widening even though none of it was a
+        // leak.
+        return when {
+            // Ahead of cancellation: an unknown status means money may have
+            // moved, and a message that also says "cancel" must not hide that.
+            text.contains("status of transaction is unknown", ignoreCase = true) ||
+                text.contains("unknown transaction status", ignoreCase = true) ->
+                SumUpFailureCause.TRANSACTION_STATUS_UNKNOWN
+            // Cancellation first among the rest: it is the one outcome that is never a fault,
+            // so "Transaction cancelled - timed out" is deliberately CANCELLED
+            // rather than TIMEOUT. Nobody needs to be sent to look at a kiosk
+            // a donor walked away from.
+            text.contains("cancel", ignoreCase = true) -> SumUpFailureCause.CANCELLED
+            text.contains("timeout", ignoreCase = true) ||
+                text.contains("timed out", ignoreCase = true) -> SumUpFailureCause.TIMEOUT
+            text.contains("not logged in", ignoreCase = true) ||
+                text.contains("invalid affiliate", ignoreCase = true) ||
+                text.contains("please log in", ignoreCase = true) ||
+                text.contains("log in again", ignoreCase = true) ||
+                text.contains("log in first", ignoreCase = true) -> SumUpFailureCause.NOT_LOGGED_IN
+            // Before the reader branch: "card reader" alone must not read as an
+            // absent reader when SumUp says its reader settings are off.
+            text.contains("card reader settings are off", ignoreCase = true) ||
+                text.contains("reader settings off", ignoreCase = true) ->
+                SumUpFailureCause.CARD_READER_SETTINGS_OFF
+            // Reader before radio. SumUp's readers ARE Bluetooth devices, so
+            // "Bluetooth reader not found" and "No Bluetooth device connected"
+            // are pairing failures wearing the word "bluetooth" -- and a bare
+            // contains("bluetooth") above this branch would send the operator,
+            // and BluetoothRecoveryManager, to the radio for a reader fault.
+            // BLUETOOTH_OFF is reserved for messages that are about the radio
+            // itself being off, which is the one case the kiosk can fix alone.
+            text.contains("not found", ignoreCase = true) ||
+                text.contains("not connected", ignoreCase = true) ||
+                text.contains("no reader", ignoreCase = true) ||
+                text.contains("no card reader", ignoreCase = true) ||
+                // "No Bluetooth device connected" reads as connected-ness but is
+                // an absent reader; it matches none of the phrases above because
+                // it says "connected", not "not connected".
+                text.contains("no bluetooth device", ignoreCase = true) ||
+                text.contains("no device", ignoreCase = true) -> SumUpFailureCause.READER_NOT_FOUND
+            // Only the radio itself. Every phrasing here has to be listed rather
+            // than reduced to contains("bluetooth"), which is what swallowed the
+            // reader faults above.
+            text.contains("bluetooth is off", ignoreCase = true) ||
+                text.contains("bluetooth is turned off", ignoreCase = true) ||
+                text.contains("bluetooth is disabled", ignoreCase = true) ||
+                text.contains("bluetooth disabled", ignoreCase = true) ||
+                text.contains("bluetooth turned off", ignoreCase = true) ||
+                text.contains("turn on bluetooth", ignoreCase = true) ||
+                text.contains("enable bluetooth", ignoreCase = true) -> SumUpFailureCause.BLUETOOTH_OFF
+            text.contains("connectivity", ignoreCase = true) ||
+                text.contains("no connection", ignoreCase = true) ||
+                text.contains("no internet", ignoreCase = true) ||
+                text.contains("no network", ignoreCase = true) ||
+                text.contains("offline", ignoreCase = true) -> SumUpFailureCause.NO_CONNECTIVITY
+            text.contains("declin", ignoreCase = true) ||
+                text.contains("transaction failed", ignoreCase = true) ||
+                text.contains("rejected", ignoreCase = true) -> SumUpFailureCause.DECLINED
+            else -> SumUpFailureCause.UNKNOWN
+        }
+    }
+
+    /** Both numbers, because an operator who later changes the threshold would
+     *  otherwise make every stored row uninterpretable. */
+    fun networkOutageDetail(downtimeMs: Long, thresholdMs: Long): String =
+        JsonObject().apply {
+            addProperty("downtime_ms", downtimeMs)
+            addProperty("threshold_ms", thresholdMs)
+        }.toString()
+
+    fun bluetoothWatchdogDetail(offMs: Long): String =
+        JsonObject().apply { addProperty("off_ms", offMs) }.toString()
+
+    /** A short fixed constant chosen at the fire site, never PackageInstaller's
+     *  own status text: that is vendor-supplied and would make a poor grouping
+     *  key on a dashboard. */
+    fun installFailedDetail(reason: String?): String =
+        JsonObject().apply {
+            if (!reason.isNullOrBlank()) addProperty("reason", reason)
+        }.toString()
+
+    /** Shared by `sumup_reinit_failed` and `card_reader_connect_failed`. `closedBy`
+     *  is present only for a close the app itself performed — a screensaver or a
+     *  watchdog dismissing a stuck page — never for an operator-hit failure. Its
+     *  absence, not a null or false value, is what a dashboard reads as genuine.
+     *
+     *  [cause] must already be one of [SumUpFailureCause]'s wire values — see
+     *  [classifySumUpFailure]. There is deliberately no parameter here that
+     *  accepts the vendor's own message text: `checkout_no_reader` fires on a
+     *  failed *payment*, exactly the moment SumUp's SDK is most likely to name
+     *  the transaction, and the donor-facing disclosure states in every
+     *  language it ships that no transaction identifier is ever sent. A field
+     *  that only ever holds membership in a closed, fixed set cannot violate
+     *  that, no matter what the vendor's text looks like. */
+    fun sumUpFailureDetail(code: Int, cause: SumUpFailureCause, closedBy: String?): String =
+        JsonObject().apply {
+            addProperty("code", code)
+            addProperty("cause", cause.wire)
+            if (!closedBy.isNullOrBlank()) addProperty("closed_by", closedBy)
+        }.toString()
+
+    /** "pairing_timeout", not "timeout" — matches the label the finishActivity(2)
+     *  site itself arms with, so the two rows this cause produces (this one and the
+     *  card_reader_connect_failed it triggers) correlate on the same string. */
+    fun pageTimeoutDetail(): String =
+        JsonObject().apply { addProperty("closed_by", "pairing_timeout") }.toString()
+
+    /** See [sumUpFailureDetail] for why this takes a classified [cause] and
+     *  not the vendor's message. */
+    fun checkoutNoReaderDetail(code: Int, cause: SumUpFailureCause): String =
+        JsonObject().apply {
+            addProperty("code", code)
+            addProperty("cause", cause.wire)
+        }.toString()
+
+    /**
+     * Renders a throwable's class name and frame list, walking the cause
+     * chain, but never `getMessage()`. A SumUp SDK exception has named a live
+     * transaction in its message text — the same disclosure violation IM-12
+     * covers on the checkout-failure path — and `stackTraceToString()` forwards
+     * that message under the same 32-character scrub IM-12 was raised about,
+     * which does not catch a short message ("TXN-48213" is 9 characters). The
+     * class name and frame list are what an operator actually triages a crash
+     * with — which type, in which file, reached from where — so this loses
+     * only the one field that can carry donor-identifying vendor text. The
+     * cause chain gets the same treatment because SumUp's own exceptions are
+     * commonly wrapped by a plain RuntimeException/IOException whose message is
+     * exactly where an SDK's text tends to end up. `seen` guards against a
+     * throwable that is (directly or indirectly) its own cause, which the JVM
+     * does not itself forbid.
+     */
+    private fun classAndFrameTrace(throwable: Throwable): String {
+        val out = StringBuilder()
+        var current: Throwable? = throwable
+        val seen = mutableSetOf<Throwable>()
+        var first = true
+        while (current != null && seen.add(current)) {
+            if (!first) out.append("Caused by: ")
+            out.append(current::class.java.name).append('\n')
+            for (frame in current.stackTrace) {
+                out.append("\tat ").append(frame).append('\n')
+            }
+            current = current.cause
+            first = false
+        }
+        return out.toString().trimEnd('\n')
+    }
+
+    private fun identityOf(settings: Settings?, appVersion: String): EventIdentity? {
+        if (settings == null || !settings.analyticsEnabled) return null
+        return EventIdentity.from(settings, appVersion)
+    }
+}

@@ -42,6 +42,51 @@ class SettingsExportFileTest {
         assertEquals("Test Masjid", result.settings.kioskName)
     }
 
+    /** The reporting destination rides the same envelope as the affiliate key.
+     *  Without it, cloning a configured kiosk produced one that looked set up and
+     *  silently never reported, because the destination lives in the Keystore and
+     *  nothing carried it across. */
+    @Test
+    fun buildWithSecrets_carriesTheReportingDestination() {
+        val secrets = mapOf(
+            SettingsExportFile.KEY_AFFILIATE to "aff-key-123",
+            SettingsExportFile.KEY_TELEMETRY_URL to "https://abc.supabase.co",
+            SettingsExportFile.KEY_TELEMETRY_KEY to "sb_publishable_abc123"
+        )
+        val json = SettingsExportFile.build(settings, secrets, "hunter2", fast)
+
+        val result = success(SettingsExportFile.parse(json, "hunter2"))
+        assertEquals("https://abc.supabase.co", result.secrets[SettingsExportFile.KEY_TELEMETRY_URL])
+        assertEquals("sb_publishable_abc123", result.secrets[SettingsExportFile.KEY_TELEMETRY_KEY])
+        assertEquals("aff-key-123", result.secrets[SettingsExportFile.KEY_AFFILIATE])
+    }
+
+    /** The publishable key is insert-only and assumed leaked by design, but it
+     *  still must not sit in the plaintext half of a file that travels. */
+    @Test
+    fun theReportingDestinationIsNeverWrittenInPlaintext() {
+        val secrets = mapOf(
+            SettingsExportFile.KEY_TELEMETRY_URL to "https://abc.supabase.co",
+            SettingsExportFile.KEY_TELEMETRY_KEY to "sb_publishable_abc123"
+        )
+        val json = SettingsExportFile.build(settings, secrets, "hunter2", fast)
+        assertFalse(json.contains("sb_publishable_abc123"))
+        assertFalse(json.contains("abc.supabase.co"))
+    }
+
+    /** An export taken with no password keeps every secret out of the file, and
+     *  the destination is no exception. */
+    @Test
+    fun withNoPasswordTheDestinationIsOmittedEntirely() {
+        val secrets = mapOf(
+            SettingsExportFile.KEY_TELEMETRY_URL to "https://abc.supabase.co",
+            SettingsExportFile.KEY_TELEMETRY_KEY to "sb_publishable_abc123"
+        )
+        val json = SettingsExportFile.build(settings, secrets, password = null, iterations = fast)
+        assertFalse(json.contains("abc.supabase.co"))
+        assertFalse(json.contains("secrets"))
+    }
+
     @Test
     fun buildWithSecrets_neverLeaksSecretInPlaintext() {
         val secrets = mapOf(SettingsExportFile.KEY_AFFILIATE to "aff-key-123")

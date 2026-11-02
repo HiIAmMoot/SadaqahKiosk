@@ -1,0 +1,97 @@
+package com.sadaqah.kiosk.telemetry
+
+/**
+ * What the operator sees on the Analytics screen, and what the gate needs to know
+ * about the last attempt.
+ *
+ * [lastError] is already redacted by the uploader before it arrives here.
+ * [lastErrorAtMs] is the flush clock at the moment [lastError] was written, kept
+ * so a consumer can tell a fresh failure apart from one a later success has
+ * already superseded — the queue emptying is not evidence of that: a flush can
+ * empty the outbox by permanently rejecting rows (deleting the donations) while
+ * also recording a retryable failure for the same flush, so queue depth alone
+ * cannot be trusted to mean "this error is history". It is 0 until the first
+ * error is ever recorded, which reads as "at the epoch" — always older than any
+ * real [lastSuccessMs], so it never accidentally hides an unreported error.
+ */
+data class TelemetryStatus(
+    val queued: Int = 0,
+    val lastSuccessMs: Long = 0L,
+    val lastError: String? = null,
+    val lastErrorAtMs: Long = 0L,
+    /** Per table, because the uploader sends one request per table and a table
+     *  the backend refuses must not delay a table it accepts. A table absent
+     *  from either map has no failures and no deadline — absence is the healthy
+     *  state, so a fresh kiosk and a fully recovered one read identically. */
+    val consecutiveFailuresByTable: Map<String, Int> = emptyMap(),
+    val backoffUntilMsByTable: Map<String, Long> = emptyMap(),
+    /** Rows lost locally and unrecoverable — never sent, never recoverable.
+     *  Two sources, deliberately one number: the outbox's count/age caps
+     *  discarding rows outright, and a donation that could not be appended at
+     *  all (a full disk, a failed mkdirs, an amount beyond Int cents). For
+     *  anyone who eventually reads the screen these are the same fact — N
+     *  events never made it — and splitting them would buy a second field and
+     *  a second string in eight languages to say it twice.
+     *
+     *  Distinct from a retryable failure: this is loss, not a pending retry.
+     *
+     *  Displayed but never acknowledged: a kiosk can run unattended for weeks,
+     *  so nothing here waits on a human. It is reset only by
+     *  [com.sadaqah.kiosk.telemetry.TelemetryTeardown] when credentials are
+     *  cleared, which is the one moment the whole history stops applying. */
+    val droppedCount: Int = 0
+) {
+    /**
+     * The latest deadline any table is still waiting on, or 0 if none is.
+     *
+     * Built on [TelemetryGate.isTableBackedOff] rather than repeating its
+     * comparison, because the fail-open guard matters more here than it does
+     * per table: this is a maximum, so a single deadline beyond the ceiling
+     * would dominate every healthy one and freeze the screen for as long as a
+     * corrected clock left behind.
+     */
+    fun effectiveBackoffUntilMs(nowMs: Long): Long =
+        backoffUntilMsByTable.values
+            .filter { TelemetryGate.isTableBackedOff(it, nowMs) }
+            .maxOrNull() ?: 0L
+}
+
+/**
+ * A seam so the manager's bookkeeping is testable without SharedPreferences.
+ * The persistent implementation arrives with the settings screen that reads it.
+ */
+interface TelemetryStatusStore {
+    /**
+     * [TelemetryStatus.queued] is **not** part of the persisted contract:
+     * [InMemoryStatusStore] round-trips whatever was written to it, while
+     * [PrefsStatusStore] always returns 0 and relies on a caller to overwrite it
+     * with the outbox's real size. [TelemetryManager.status] is the only correct
+     * source of a queue depth — reading a store directly for that field silently
+     * renders 0 against the persistent implementation.
+     */
+    fun read(): TelemetryStatus
+    fun write(status: TelemetryStatus)
+
+    /**
+     * Atomic read-modify-write: [transform] sees the value in the store *at the
+     * moment this call runs*, never a snapshot captured earlier by the caller.
+     * The default is not atomic on its own — a concurrent [write] between this
+     * [read] and this [write] would still be lost — so both real implementations
+     * override it under a lock. Exists because [TelemetryManager.flush] reads
+     * status before a network call that can run for minutes and writes it after;
+     * anything else that wrote to the store during that window (an outbox
+     * eviction's drop count, chiefly) must not be clobbered by that stale write.
+     */
+    fun update(transform: (TelemetryStatus) -> TelemetryStatus) {
+        write(transform(read()))
+    }
+}
+
+class InMemoryStatusStore : TelemetryStatusStore {
+    private var status = TelemetryStatus()
+    override fun read(): TelemetryStatus = synchronized(this) { status }
+    override fun write(status: TelemetryStatus) { synchronized(this) { this.status = status } }
+    override fun update(transform: (TelemetryStatus) -> TelemetryStatus) {
+        synchronized(this) { status = transform(status) }
+    }
+}

@@ -26,6 +26,21 @@ class BluetoothRecoveryManager(
     /** Whether the radio is currently believed to be off. */
     val isTrackingOutage: Boolean get() = offSinceTimestamp > 0L
 
+    /** How long the radio had been off when the most recent [evaluate] decided
+     *  to re-enable it. Measured before that decision restarts the clock, which
+     *  it does deliberately so a radio that refuses to return is retried once
+     *  per threshold rather than every tick. */
+    var lastOffMs: Long = 0L
+        private set
+
+    /** How many re-enables the current outage has produced. The caller reports
+     *  only the first: the threshold is a minute and the poll ten seconds, so a
+     *  radio that stays dead would otherwise emit ~1,400 rows a day into a queue
+     *  shared with donations that have not uploaded yet — and eviction there
+     *  keeps the newest rows, so the donations are what would be lost. */
+    var reEnablesThisOutage: Int = 0
+        private set
+
     /** Called on STATE_OFF, and at startup if the radio is already off. */
     fun onBluetoothOff() {
         // Duplicate broadcasts must not push the deadline out, or a radio that
@@ -36,6 +51,7 @@ class BluetoothRecoveryManager(
     /** Called on STATE_ON. */
     fun onBluetoothOn() {
         offSinceTimestamp = 0L
+        reEnablesThisOutage = 0
     }
 
     /**
@@ -52,6 +68,8 @@ class BluetoothRecoveryManager(
         if (cycleInProgress) return BluetoothRecoveryAction.Ignore
         if (clock() - offSinceTimestamp <= offThresholdMs) return BluetoothRecoveryAction.Ignore
 
+        lastOffMs = clock() - offSinceTimestamp
+        reEnablesThisOutage += 1
         offSinceTimestamp = clock()
         return BluetoothRecoveryAction.ReEnable
     }
