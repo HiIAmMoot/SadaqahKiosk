@@ -186,10 +186,11 @@ fleet rollout.
 
 `tools/provision/provision.ps1` configures a freshly reset tablet end to end
 in one run: it connects wifi, stops the screen timing out, turns on Bluetooth
-and location, enables adaptive brightness, allows screen pinning, installs the
-APK, makes the app device owner, imports settings including every credential,
-applies a logo, stamps the per-unit kiosk code and name, and sets a device PIN
-last of all.
+and location, enables adaptive brightness, allows screen pinning, turns on
+Lenovo battery charge protection, installs the APK, makes the app device owner,
+imports settings including every credential, applies a logo, stamps the
+per-unit kiosk code and name, sets a device PIN and finally checks the keyboard
+is QWERTY.
 
 ### The golden-kiosk workflow
 
@@ -230,15 +231,20 @@ one export would bill under a single name.
 
 ### Two manual steps
 
-1. **Factory reset with the setup wizard skipped — before running the script.**
-   Device owner cannot be set once any account exists on the device or once the
-   setup wizard has completed. This is an Android restriction, not a limitation
-   of the script.
-2. **Battery protection — afterwards.** Limiting charge on a device that stays
-   permanently plugged in has no universal Android API: `BatteryManager` exposes
-   only read-only properties and `DevicePolicyManager` has no battery symbols at
-   all. Every vendor implements it themselves, so it has to be set by hand in the
-   device's own settings.
+1. **Factory reset, and add no account during setup — before running the script.**
+   Device owner cannot be set once any account exists on the device. This is an
+   Android restriction, not a limitation of the script. Setting the tablet's PIN
+   in the setup wizard is fine (then leave out `-Pin`).
+2. **QWERTY keyboard — afterwards, about 30 seconds.** On a tablet set to Belgium
+   (nl-BE) Gboard picks AZERTY, and adb cannot switch it: the QWERTY variant only
+   exists once Gboard registers it from its own screen. Open any text field, then
+   Gboard settings > Languages > the tablet's language > QWERTY. The script checks
+   the selected layout at the end and warns when it is not QWERTY.
+
+Battery charge protection is set by the script on Lenovo tablets
+(`longtime_charging_protect_enable`, holds the battery at 40-60%). Other brands
+have no common Android API for it, so the script warns and you turn it on in the
+tablet's own battery settings.
 
 ### Timing and re-provisioning
 

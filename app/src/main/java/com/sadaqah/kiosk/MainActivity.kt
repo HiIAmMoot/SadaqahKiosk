@@ -953,7 +953,7 @@ class MainActivity : FragmentActivity() {
                     scheduleAutoPinIfReady()
                     val errorMessage = data?.getStringExtra(SumUpAPI.Response.MESSAGE) ?: "Unknown error"
                     val errorCode = data?.getIntExtra(SumUpAPI.Response.RESULT_CODE, -1) ?: -1
-                    Log.e("SumUpLogin", "Login failed - Code: $errorCode")
+                    logSumUpFailure("SumUpLogin", "Login failed", errorCode, data)
                     Toast.makeText(this, "${strings.logInFailed}: $errorMessage", Toast.LENGTH_LONG).show()
                     val result = restartManager.recordReinitFailure()
                     reportRestart(
@@ -962,7 +962,7 @@ class MainActivity : FragmentActivity() {
                         {
                             DiagnosticEvents.sumUpFailureDetail(
                                 errorCode,
-                                DiagnosticEvents.classifySumUpFailure(errorMessage),
+                                DiagnosticEvents.classifySumUpResult(errorCode, errorMessage),
                                 closedBy = closedBy
                             )
                         },
@@ -992,6 +992,7 @@ class MainActivity : FragmentActivity() {
                     isCardReaderConnected = false
                     val errorMessage = data?.getStringExtra(SumUpAPI.Response.MESSAGE) ?: "Unknown error"
                     val errorCode = data?.getIntExtra(SumUpAPI.Response.RESULT_CODE, -1) ?: -1
+                    logSumUpFailure("SumUpReader", "Card reader connect failed", errorCode, data)
                     val userMessage = when {
                         errorMessage.contains("timeout", ignoreCase = true) -> strings.cardReaderTimeout
                         errorMessage.contains("not found", ignoreCase = true) -> strings.cardReaderNotFound
@@ -1006,7 +1007,7 @@ class MainActivity : FragmentActivity() {
                         {
                             DiagnosticEvents.sumUpFailureDetail(
                                 errorCode,
-                                DiagnosticEvents.classifySumUpFailure(errorMessage),
+                                DiagnosticEvents.classifySumUpResult(errorCode, errorMessage),
                                 closedBy = closedBy
                             )
                         },
@@ -1041,7 +1042,7 @@ class MainActivity : FragmentActivity() {
                 } else {
                     val errorMessage = data?.getStringExtra(SumUpAPI.Response.MESSAGE) ?: "Unknown error"
                     val errorCode = data?.getIntExtra(SumUpAPI.Response.RESULT_CODE, -1) ?: -1
-                    Log.e("SumUpPayment", "Payment failed - Code: $errorCode")
+                    logSumUpFailure("SumUpPayment", "Payment failed", errorCode, data)
 
                     val userMessage = when (errorCode) {
                         SumUpAPI.Response.ResultCode.ERROR_TRANSACTION_FAILED -> strings.transactionDeclined
@@ -1062,7 +1063,7 @@ class MainActivity : FragmentActivity() {
                         reportDiagnostic(DiagnosticKind.CHECKOUT_NO_READER, detail = {
                             DiagnosticEvents.checkoutNoReaderDetail(
                                 errorCode,
-                                DiagnosticEvents.classifySumUpFailure(errorMessage)
+                                DiagnosticEvents.classifySumUpResult(errorCode, errorMessage)
                             )
                         })
                     }
@@ -1070,6 +1071,19 @@ class MainActivity : FragmentActivity() {
             }
         }
         super.onActivityResult(requestCode, resultCode, data)
+    }
+
+    /**
+     * @notice Writes SumUp's own result text to logcat so a bench session can see
+     *  what SumUp said behind a diagnostic cause.
+     * @dev Logcat only, by design: this text can name a transaction, and the
+     *  donor disclosure promises no transaction identifier leaves the tablet.
+     *  It must never be passed to a diagnostic row or any telemetry payload;
+     *  those carry only the closed [SumUpFailureCause] set. Logs the raw extra,
+     *  not the "Unknown error" fallback, so a missing message reads as null.
+     */
+    private fun logSumUpFailure(tag: String, what: String, code: Int, data: Intent?) {
+        Log.e(tag, "$what - Code: $code, SumUp message: ${data?.getStringExtra(SumUpAPI.Response.MESSAGE)}")
     }
 
     fun startAppPinning() {

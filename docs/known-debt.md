@@ -6,17 +6,20 @@ This file exists because deferred items were previously recorded only in phase s
 
 ---
 
-## The 02:00 flush floor is not guaranteed while offline
+## The 02:00 telemetry flush never runs
 
-**What.** `scheduleDailyLoginReset` fires once and does not re-arm itself. It is re-armed only by the login path, and both that and `performReinit` return early while offline. A kiosk with wifi down at 02:00 loses the nightly job until an operator next logs in.
+**What.** `scheduleDailyLoginReset` now loops every night (it no longer fires
+once), but `flushTelemetry("nightly")` sits after the `while (isActive)` loop, so
+it runs only when the loop is cancelled. The nightly floor the comment describes
+does not exist: a kiosk that never idles long enough for the screensaver flush
+does not report.
 
-**Why deferred.** That scheduler is the **card-payment recovery path**. A telemetry gap is a poor reason to change code where a mistake costs donations rather than diagnostics. Declined on this reasoning twice — first in phase 3a, which introduced the dependency, and again when scoping 3d.
+**Why deferred.** Telemetry is off on every field kiosk, so nothing is lost
+today. The fix (move the flush inside the loop, after update maintenance, in its
+own try) touches the nightly card-payment recovery loop, so it ships in a patch
+with its own bench check rather than at the last moment before 1.4.0.
 
-**What it costs to leave.** A busy kiosk that never idles during opening hours reports at 02:00 and nowhere else; if it is also offline at 02:00, it may not report for a further day. Nothing is lost — a day's rows sit well inside the queue cap — but the dashboard lags.
-
-**What fixing it needs.** Its own phase, with its own non-negotiables and device checks, treated as card-payment recovery work rather than telemetry work. The re-arm is not the hard part; proving it cannot break reinit is.
-
-**Established in.** Phase 3a spec, "Known limitations"; restated in 3b and 3c specs.
+**Established in.** 1.4.0 release review, 2026-11-02.
 
 ---
 
@@ -104,7 +107,13 @@ warning short of gating it — not a code change alone.
 
 ---
 
-## The disclosure's "transaction identifiers never sent" claim is not provable from this repo
+## ~~The disclosure's "transaction identifiers never sent" claim is not provable from this repo~~ — RESOLVED 2026-11-02
+
+**Closed.** The three call sites send only the result `code` and a cause
+from the closed `SumUpFailureCause` set (`DiagnosticEvents.classifySumUpResult`),
+so a transaction code in SumUp's wording has nowhere to go. SumUp's raw message
+is written to logcat only, and bench check G9 confirms it stays there. The
+original text follows.
 
 **What.** The disclosure screen states SumUp transaction identifiers are never
 sent. The app's own fields never carry one — nothing here reads a transaction
@@ -327,6 +336,25 @@ record `Settings.Global.BOOT_COUNT` with the marker and the heartbeat, and
 compare elapsed time within one boot.
 
 **Established in.** Independent review of the boot re-arm, 2026-09-23.
+
+---
+
+## A payment whose status SumUp can't confirm reads as a plain failure
+
+**What.** When SumUp returns result code 15 (`transaction_status_unknown`) with
+the reader connected, no diagnostic is sent (only `checkout_no_reader` exists on
+the payment path, and it needs the reader gone) and the donor sees the generic
+"Payment failed" toast. Money may have moved, so a donor can tap again and pay
+twice. Same family: an activity result of OK with no data is treated as a
+failure (`no_result`).
+
+**Why it matters.** It is the one SumUp outcome where the kiosk can't say
+whether money was taken. The cause is now classified correctly; it just goes
+nowhere.
+
+**Fix.** A diagnostic for every `transaction_status_unknown`, whatever the
+reader state, and its own donor message ("check your bank app before trying
+again", eight languages). Both change behaviour, so they wait for a decision.
 
 ---
 
