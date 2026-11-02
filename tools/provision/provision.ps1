@@ -131,6 +131,32 @@ function PidOf {
     return ($out -join "`n").Trim()
 }
 
+<#
+    Returns the keyboard layout of the selected Gboard subtype: "qwerty", the
+    explicit layout Gboard registered (e.g. "azerty"), or a string starting
+    with "unknown" when it can't be confirmed.
+
+    Only subtypes Gboard added itself carry mPkLayoutType; its built-in ones
+    leave it empty and use the locale's default layout. Of those defaults only
+    English and nl_NL are known to be QWERTY. nl_BE defaults to AZERTY, which
+    is why a Belgian tablet needs the manual step in the README.
+#>
+function Get-KeyboardLayoutVerdict {
+    param([string]$Dumpsys, [string]$SubtypeId)
+    if ($SubtypeId -notmatch '^-?\d+$') { return "unknown" }
+    $line = ($Dumpsys -split "`n") |
+        Where-Object { $_ -match "mSubtypeHashCode=$([regex]::Escape($SubtypeId))(\s|$)" } |
+        Select-Object -First 1
+    if (-not $line) { return "unknown" }
+    if ($line -match 'mPkLayoutType=(\S+)') { return $Matches[1] }
+    if ($line -match 'mSubtypeLocale=(\S+)') {
+        $locale = $Matches[1]
+        if ($locale -match '^en(_|$)' -or $locale -eq 'nl_NL') { return "qwerty" }
+        return "unknown ($locale default)"
+    }
+    return "unknown"
+}
+
 Write-Host "`nProvisioning $(if ($Serial) { $Serial } else { 'the attached device' })`n"
 
 # --- device present -------------------------------------------------------
@@ -349,8 +375,23 @@ if ($uidLine -match "(?:userId|appId)=(\d+)") {
     Die "could not read the app's uid from dumpsys"
 }
 
-Write-Host "`n  Battery protection is not settable from adb on stock Android." -ForegroundColor Yellow
-Write-Host "  Enable it by hand in the device's own battery settings.`n" -ForegroundColor Yellow
+# --- battery --------------------------------------------------------------
+# A kiosk is plugged in around the clock. Lenovo's "charge safety" holds the
+# battery between 40% and 60%; there is no vendor-neutral API for this, so
+# every other brand still needs it set by hand.
+Step "battery charge protection"
+$maker = ((Adb shell "getprop ro.product.manufacturer") -join "").Trim()
+if ($maker -match '^lenovo$') {
+    Sh "settings put system longtime_charging_protect_enable 1" -What "Lenovo charge safety" | Out-Null
+    $charge = ((Adb shell "settings get system longtime_charging_protect_enable") -join "").Trim()
+    if ($charge -eq "1") {
+        Ok "Lenovo charge safety on (holds 40-60%)"
+    } else {
+        Warn "Lenovo charge safety did not stick (reads '$charge'): turn it on by hand in battery settings"
+    }
+} else {
+    Warn "battery protection not set on this '$maker' tablet: turn it on by hand in its battery settings"
+}
 
 # --- settings import ------------------------------------------------------
 if ($Payload) {
@@ -559,6 +600,20 @@ if ($Pin) {
     Write-Host "  someone attends it and types the PIN. App restarts, the watchdog" -ForegroundColor Yellow
     Write-Host "  and auto-update are unaffected — none of them reboot the device." -ForegroundColor Yellow
     Write-Host "  Undo on a bench with: adb shell cmd lock_settings clear --old $Pin" -ForegroundColor Yellow
+}
+
+# --- keyboard -------------------------------------------------------------
+# Checked, not set: Gboard's QWERTY variant for Belgian Dutch only exists once
+# Gboard registers it from its own UI, and adb can't create it. The operator
+# picks it by hand (README); this catches a tablet where that was skipped.
+Step "checking the keyboard layout"
+$subtype = ((Adb shell "settings get secure selected_input_method_subtype") -join "").Trim()
+$imeDump = (Adb shell "dumpsys input_method") -join "`n"
+$layout = Get-KeyboardLayoutVerdict -Dumpsys $imeDump -SubtypeId $subtype
+if ($layout -eq "qwerty") {
+    Ok "keyboard is QWERTY"
+} else {
+    Warn "keyboard layout is $layout, not QWERTY: in Gboard pick Languages > (tablet language) > QWERTY"
 }
 
 if ($script:Warnings.Count -gt 0) {
