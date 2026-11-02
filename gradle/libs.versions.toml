@@ -16,9 +16,11 @@ biometric = "1.1.0"
 gson = "2.11.0"
 palette = "1.0.0"
 zxing-core = "3.5.3"
+robolectric = "4.14.1"
 #desugarJdkLibs = "2.1.5"
 
 [libraries]
+robolectric = { group = "org.robolectric", name = "robolectric", version.ref = "robolectric" }
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 junit = { group = "junit", name = "junit", version.ref = "junit" }
 androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
