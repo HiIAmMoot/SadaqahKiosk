@@ -171,8 +171,8 @@ On a device with pre-existing stored settings, `onCreate` migrations rewrite `lo
 - [ ] **P3. Omitting `-KioskCode` is refused before anything is pushed.**
 - [ ] **P4. A corrupt payload reports `provisioning failed: malformed`.**
 - [ ] **P5. Running twice in a row with the same arguments succeeds both times.** The trigger is repeatable without `am force-stop` — Android refuses that for a device-owner package. The app relaunches itself with `NEW_TASK|CLEAR_TASK`, which forces a fresh `onCreate` in the same process.
-- [ ] **P6. The PIN is set last, and re-provisioning needs the old one.** With `-Pin 1234` the run completes, and `adb shell cmd lock_settings get-disabled` afterwards fails with `Credential can't be null or empty` — which is what a set credential looks like from the shell. Re-running with `-Pin 1234` and no `-OldPin` must refuse with the "already has a lock credential" message rather than failing obscurely. Re-running with `-Pin 5678 -OldPin 1234` succeeds.
-- [ ] **P7. Clean up the bench device.** `adb shell cmd lock_settings clear --old 5678`, then confirm `get-disabled` reads `true` again. **Leaving a test PIN on an emulator makes every later device check fail in ways that look unrelated.**
+- [ ] **P6. The PIN is set last, and re-provisioning needs the old one.** With `-Pin 1234` the run completes, and `adb shell cmd lock_settings get-disabled` afterwards shows `CredentialType: PIN` in `adb shell "dumpsys lock_settings | grep CredentialType"`. Don't use `cmd lock_settings get-disabled` for this: on Android 15 (TB305FU) it prints `false` even with a PIN set. Re-running with `-Pin 1234` and no `-OldPin` must refuse with the "already has a lock credential" message rather than failing obscurely. Re-running with `-Pin 5678 -OldPin 1234` succeeds.
+- [ ] **P7. Clean up the bench device.** `adb shell cmd lock_settings clear --old 5678`, then confirm `CredentialType` no longer reads `PIN`. **Leaving a test PIN on an emulator makes every later device check fail in ways that look unrelated.**
 
 ---
 

@@ -338,8 +338,9 @@ Step "restricting background data"
 # logs a "Broken pipe" line on stderr too, making the raw result a 2-element
 # array. -match on an array filters elements instead of populating $Matches,
 # so $uid silently comes out empty without the join.
-$uidLine = (Adb shell "dumpsys package $PKG | grep -m1 userId") -join "`n"
-if ($uidLine -match "userId=(\d+)") {
+# Android 15 (TB305FU) prints appId= where older releases print userId=.
+$uidLine = (Adb shell "dumpsys package $PKG | grep -m1 -E 'userId=|appId='") -join "`n"
+if ($uidLine -match "(?:userId|appId)=(\d+)") {
     $uid = $Matches[1]
     Sh "cmd netpolicy set restrict-background true" -What "data saver" | Out-Null
     Sh "cmd netpolicy add restrict-background-whitelist $uid" -What "whitelist uid $uid" | Out-Null
