@@ -26,6 +26,14 @@ enum class SumUpFailureCause(val wire: String) {
     /** Distinct from READER_NOT_FOUND: the reader may be perfectly fine and simply
      *  unreachable because the radio is off, which the kiosk can fix by itself. */
     BLUETOOTH_OFF("bluetooth_off"),
+    /** SumUp returned no result at all (no data, or no result code in it): the
+     *  app's own -1 fallback. Kept apart from UNKNOWN, which means SumUp did
+     *  answer but in words this classifier does not recognise. */
+    NO_RESULT("no_result"),
+    CARD_READER_SETTINGS_OFF("card_reader_settings_off"),
+    /** SumUp could not tell whether the payment went through, so money may have
+     *  moved. Must never be folded into CANCELLED or UNKNOWN. */
+    TRANSACTION_STATUS_UNKNOWN("transaction_status_unknown"),
     /** Every message that does not match one of the phrases above, including
      *  one that happens to look like a transaction code — there is no
      *  narrower bucket to fall back to, and that is deliberate. */
@@ -183,6 +191,33 @@ object DiagnosticEvents {
         )
     }
 
+    const val SUMUP_CODE_NO_RESULT = -1
+    const val SUMUP_CODE_NOT_LOGGED_IN = 8
+    const val SUMUP_CODE_CARD_READER_SETTINGS_OFF = 14
+    const val SUMUP_CODE_UNKNOWN_TRANSACTION_STATUS = 15
+
+    /**
+     * @notice Classifies a SumUp result by its numeric result code first and
+     *  its status message second.
+     * @dev The codes are mirrored as constants instead of read from the SDK so
+     *  this module stays pure and SDK-free; a test pins them to the SDK's
+     *  values. Only the codes whose meaning is unambiguous are mapped here;
+     *  every other code (TRANSACTION_FAILED in particular, which SumUp uses
+     *  for both declines and cancels) falls back to [classifySumUpFailure].
+     *  The code itself already travels unfiltered in the `code` field, so
+     *  using it here changes nothing about what leaves the device.
+     * @param code SumUp's RESULT_CODE extra, or [SUMUP_CODE_NO_RESULT] when absent.
+     * @param message SumUp's MESSAGE extra; read and discarded, never returned.
+     */
+    fun classifySumUpResult(code: Int, message: String?): SumUpFailureCause =
+        when (code) {
+            SUMUP_CODE_NO_RESULT -> SumUpFailureCause.NO_RESULT
+            SUMUP_CODE_NOT_LOGGED_IN -> SumUpFailureCause.NOT_LOGGED_IN
+            SUMUP_CODE_CARD_READER_SETTINGS_OFF -> SumUpFailureCause.CARD_READER_SETTINGS_OFF
+            SUMUP_CODE_UNKNOWN_TRANSACTION_STATUS -> SumUpFailureCause.TRANSACTION_STATUS_UNKNOWN
+            else -> classifySumUpFailure(message)
+        }
+
     /**
      * Classifies a vendor status message into [SumUpFailureCause] by matching
      * a small set of fixed English phrases SumUp's SDK is documented to use
@@ -190,14 +225,11 @@ object DiagnosticEvents {
      * itself. The message is discarded the instant this returns; the caller
      * never has the original text in hand to put on an event.
      *
-     * This is deliberately not combined with the numeric result code: the
-     * code is already a closed, small integer enum from the SDK and was
-     * never the leak vector (it already travels unfiltered in the `code`
-     * field), and folding SumUp's constants in here would tie this pure,
-     * testable module to the SumUp SDK for no gain. Matching stays purely
-     * text-based, which is also what makes it exhaustively testable against
-     * adversarial input — including a message shaped like a transaction code,
-     * which must fall through every branch to [SumUpFailureCause.UNKNOWN].
+     * Matching is purely text-based, which is what makes it exhaustively
+     * testable against adversarial input — including a message shaped like a
+     * transaction code, which must fall through every branch to
+     * [SumUpFailureCause.UNKNOWN]. Call sites use [classifySumUpResult], which
+     * consults the result code before falling back to this.
      */
     fun classifySumUpFailure(message: String?): SumUpFailureCause {
         val text = message.orEmpty()
@@ -214,7 +246,12 @@ object DiagnosticEvents {
         // which is why these were worth widening even though none of it was a
         // leak.
         return when {
-            // Cancellation first: it is the one outcome that is never a fault,
+            // Ahead of cancellation: an unknown status means money may have
+            // moved, and a message that also says "cancel" must not hide that.
+            text.contains("status of transaction is unknown", ignoreCase = true) ||
+                text.contains("unknown transaction status", ignoreCase = true) ->
+                SumUpFailureCause.TRANSACTION_STATUS_UNKNOWN
+            // Cancellation first among the rest: it is the one outcome that is never a fault,
             // so "Transaction cancelled - timed out" is deliberately CANCELLED
             // rather than TIMEOUT. Nobody needs to be sent to look at a kiosk
             // a donor walked away from.
@@ -224,7 +261,13 @@ object DiagnosticEvents {
             text.contains("not logged in", ignoreCase = true) ||
                 text.contains("invalid affiliate", ignoreCase = true) ||
                 text.contains("please log in", ignoreCase = true) ||
-                text.contains("log in again", ignoreCase = true) -> SumUpFailureCause.NOT_LOGGED_IN
+                text.contains("log in again", ignoreCase = true) ||
+                text.contains("log in first", ignoreCase = true) -> SumUpFailureCause.NOT_LOGGED_IN
+            // Before the reader branch: "card reader" alone must not read as an
+            // absent reader when SumUp says its reader settings are off.
+            text.contains("card reader settings are off", ignoreCase = true) ||
+                text.contains("reader settings off", ignoreCase = true) ->
+                SumUpFailureCause.CARD_READER_SETTINGS_OFF
             // Reader before radio. SumUp's readers ARE Bluetooth devices, so
             // "Bluetooth reader not found" and "No Bluetooth device connected"
             // are pairing failures wearing the word "bluetooth" -- and a bare

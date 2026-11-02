@@ -131,7 +131,7 @@ The highest-risk session. Five of these call sites sit beside the payment path a
 - [ ] **G6. Exhausting `maxRestartsBeforeGiveUp` produces one `restart_triggered` with `outcome: gave_up`.** Keep failing: the causing diagnostic keeps arriving on every failure, but no further `restart_triggered` until a success clears the counters and the latch. *(3c-ii.6)*
 - [ ] **G7. A checkout with the reader physically off produces one `checkout_no_reader`. Declining a card with the reader connected produces none.** *(3c-ii.7)*
 - [ ] **G8. A normal donation with diagnostics queued completes normally.** *(3c-ii.8)*
-- [ ] **G9 — settles debt. Capture the real SumUp failure text from G1, G5 and G7.** Read the `message` field in each `detail` object and check whether any of them carries a transaction code, an order code, or any other identifier. This is the only thing that can settle whether the disclosure screen's absolute claim holds, because the SDK is a pinned closed binary and nothing in the repository can answer it. *(known-debt: "the 'transaction identifiers never sent' claim is not provable from this repo")*
+- [ ] **G9. SumUp's own text stays on the tablet.** After G1, G5 and G7, run `adb logcat -d -s SumUpLogin SumUpReader SumUpPayment`: each failure has a line with its `Code:` and `SumUp message:`. Then open the matching diagnostic rows: `detail` holds only `code`, `cause` and, for an app-closed page, `closed_by`, never a `message`. A row with cause `unknown` can now be explained from the logcat line with the same code and time.
 
 ---
 
@@ -172,6 +172,8 @@ On a device with pre-existing stored settings, `onCreate` migrations rewrite `lo
 - [ ] **P4. A corrupt payload reports `provisioning failed: malformed`.**
 - [ ] **P5. Running twice in a row with the same arguments succeeds both times.** The trigger is repeatable without `am force-stop` — Android refuses that for a device-owner package. The app relaunches itself with `NEW_TASK|CLEAR_TASK`, which forces a fresh `onCreate` in the same process.
 - [ ] **P6. The PIN is set last, and re-provisioning needs the old one.** With `-Pin 1234` the run completes, and `adb shell "dumpsys lock_settings | grep CredentialType"` afterwards shows `CredentialType: PIN`. Don't use `cmd lock_settings get-disabled` for this: on Android 15 (TB305FU) it prints `false` even with a PIN set. Re-running with `-Pin 1234` and no `-OldPin` must refuse with the "already has a lock credential" message rather than failing obscurely. Re-running with `-Pin 5678 -OldPin 1234` succeeds.
+- [ ] **P8. Lenovo charge safety is on and survives a reboot.** The run prints `OK Lenovo charge safety on`. Reboot, then `adb shell settings get system longtime_charging_protect_enable` still prints `1` and the battery settings toggle is on. On a non-Lenovo tablet the run ends with a battery WARN instead.
+- [ ] **P9. The keyboard check catches AZERTY.** On a Belgian (nl-BE) tablet before the manual Gboard step, the run ends with a `keyboard layout is ... not QWERTY` WARN. After picking QWERTY in Gboard, a rerun prints `OK keyboard is QWERTY`. Worth trying once on a fresh tablet: `adb shell settings put secure selected_input_method_subtype 1372024331` before the manual step, and note whether Gboard switches (expected: it does not).
 - [ ] **P7. Clean up the bench device.** `adb shell cmd lock_settings clear --old 5678`, then confirm `CredentialType` no longer reads `PIN`. **Leaving a test PIN on an emulator makes every later device check fail in ways that look unrelated.**
 
 ---
@@ -185,6 +187,6 @@ Four outcomes decide phase 6's scope:
 | A2 | Close the `SettingsBootstrap` debt entry | Real identity bug, fix it in phase 6 |
 | C1–C3 | The published schema is correct | The README is wrong and ships wrong; fix before merge |
 | E6 | Close the disk-full rollback regression check | Serious: rollback is the kiosk's only autonomous recovery |
-| G9 | If no identifier appears, the claim holds and the debt entry closes; the README and the disclosure screen can both state it plainly | If one appears, the redactor needs work and the disclosure screen is currently wrong in eight languages |
+| G9 | SumUp's wording is visible on the bench and never in a row | A `message` in a row breaks the disclosure's "no transaction identifier" claim; fix before release |
 
 Record what each check actually produced, not just pass or fail. A row that arrived with the wrong `detail` shape is a pass on "did it arrive" and a failure on everything the field is for.

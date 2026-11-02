@@ -104,7 +104,13 @@ warning short of gating it — not a code change alone.
 
 ---
 
-## The disclosure's "transaction identifiers never sent" claim is not provable from this repo
+## ~~The disclosure's "transaction identifiers never sent" claim is not provable from this repo~~ — RESOLVED 2026-11-02
+
+**Closed.** No diagnostic carries SumUp's text any more: the three call sites
+send only the result `code` and a cause from the closed `SumUpFailureCause`
+set (`DiagnosticEvents.classifySumUpResult`), so a transaction code in SumUp's
+wording has nowhere to go. SumUp's raw message is written to logcat only, for
+bench diagnosis (checklist G9). The original text follows.
 
 **What.** The disclosure screen states SumUp transaction identifiers are never
 sent. The app's own fields never carry one — nothing here reads a transaction

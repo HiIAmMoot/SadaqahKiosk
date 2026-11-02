@@ -687,4 +687,90 @@ class DiagnosticEventsTest {
             DiagnosticEvents.classifySumUpFailure("Not logged in")
         )
     }
+
+    // ── Result code first, text second ─────────────────────────────────────────
+
+    /** -1 is the app's own fallback when SumUp handed back no result at all
+     *  (data == null, or no RESULT_CODE extra). It used to land in "unknown",
+     *  indistinguishable from a real but unrecognised SumUp answer. */
+    @Test
+    fun noResultCodeIsReportedAsNoResult() {
+        assertEquals(SumUpFailureCause.NO_RESULT, DiagnosticEvents.classifySumUpResult(-1, null))
+        assertEquals(SumUpFailureCause.NO_RESULT, DiagnosticEvents.classifySumUpResult(-1, "Unknown error"))
+        assertEquals("no_result", SumUpFailureCause.NO_RESULT.wire)
+    }
+
+    @Test
+    fun notLoggedInCodeIsNotLoggedInWhateverTheText() {
+        assertEquals(
+            SumUpFailureCause.NOT_LOGGED_IN,
+            DiagnosticEvents.classifySumUpResult(8, "Something SumUp never said before")
+        )
+    }
+
+    @Test
+    fun cardReaderSettingsOffCodeHasItsOwnCause() {
+        assertEquals(SumUpFailureCause.CARD_READER_SETTINGS_OFF, DiagnosticEvents.classifySumUpResult(14, null))
+        assertEquals("card_reader_settings_off", SumUpFailureCause.CARD_READER_SETTINGS_OFF.wire)
+    }
+
+    /** Money may have moved. A cancel-sounding message must not hide that. */
+    @Test
+    fun unknownTransactionStatusCodeIsNeverCancelledOrUnknown() {
+        assertEquals(
+            SumUpFailureCause.TRANSACTION_STATUS_UNKNOWN,
+            DiagnosticEvents.classifySumUpResult(15, "Transaction cancelled")
+        )
+        assertEquals("transaction_status_unknown", SumUpFailureCause.TRANSACTION_STATUS_UNKNOWN.wire)
+    }
+
+    @Test
+    fun otherCodesFallBackToTheText() {
+        assertEquals(SumUpFailureCause.DECLINED, DiagnosticEvents.classifySumUpResult(2, "Transaction failed"))
+        assertEquals(SumUpFailureCause.UNKNOWN, DiagnosticEvents.classifySumUpResult(2, null))
+    }
+
+    /** The SDK's own ResultMessage strings for codes 8, 14 and 15, which the
+     *  phrase list missed (seen on the 2026-11-02 bench). */
+    @Test
+    fun theSdkResultMessagesForTheNewCausesAreRecognisedByText() {
+        assertEquals(
+            SumUpFailureCause.NOT_LOGGED_IN,
+            DiagnosticEvents.classifySumUpFailure("Log in first before proceeding")
+        )
+        assertEquals(
+            SumUpFailureCause.CARD_READER_SETTINGS_OFF,
+            DiagnosticEvents.classifySumUpFailure("Card reader settings are off")
+        )
+        assertEquals(
+            SumUpFailureCause.TRANSACTION_STATUS_UNKNOWN,
+            DiagnosticEvents.classifySumUpFailure("The status of transaction is unknown")
+        )
+    }
+
+    @Test
+    fun anUnknownStatusMessageThatAlsoSaysCancelledStaysUnknownStatus() {
+        assertEquals(
+            SumUpFailureCause.TRANSACTION_STATUS_UNKNOWN,
+            DiagnosticEvents.classifySumUpFailure("Cancelled: the status of transaction is unknown")
+        )
+    }
+
+    /** The codes are mirrored rather than imported so this module stays free of
+     *  the SDK; this fails if a SumUp bump renumbers them. */
+    @Test
+    fun theMirroredResultCodesMatchTheSdk() {
+        assertEquals(
+            com.sumup.merchant.reader.api.SumUpAPI.Response.ResultCode.ERROR_NOT_LOGGED_IN,
+            DiagnosticEvents.SUMUP_CODE_NOT_LOGGED_IN
+        )
+        assertEquals(
+            com.sumup.merchant.reader.api.SumUpAPI.Response.ResultCode.ERROR_CARD_READER_SETTINGS_OFF,
+            DiagnosticEvents.SUMUP_CODE_CARD_READER_SETTINGS_OFF
+        )
+        assertEquals(
+            com.sumup.merchant.reader.api.SumUpAPI.Response.ResultCode.ERROR_UNKNOWN_TRANSACTION_STATUS,
+            DiagnosticEvents.SUMUP_CODE_UNKNOWN_TRANSACTION_STATUS
+        )
+    }
 }
