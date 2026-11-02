@@ -6,17 +6,20 @@ This file exists because deferred items were previously recorded only in phase s
 
 ---
 
-## The 02:00 flush floor is not guaranteed while offline
+## The 02:00 telemetry flush never runs
 
-**What.** `scheduleDailyLoginReset` fires once and does not re-arm itself. It is re-armed only by the login path, and both that and `performReinit` return early while offline. A kiosk with wifi down at 02:00 loses the nightly job until an operator next logs in.
+**What.** `scheduleDailyLoginReset` now loops every night (it no longer fires
+once), but `flushTelemetry("nightly")` sits after the `while (isActive)` loop, so
+it runs only when the loop is cancelled. The nightly floor the comment describes
+does not exist: a kiosk that never idles long enough for the screensaver flush
+does not report.
 
-**Why deferred.** That scheduler is the **card-payment recovery path**. A telemetry gap is a poor reason to change code where a mistake costs donations rather than diagnostics. Declined on this reasoning twice — first in phase 3a, which introduced the dependency, and again when scoping 3d.
+**Why deferred.** Telemetry is off on every field kiosk, so nothing is lost
+today. The fix (move the flush inside the loop, after update maintenance, in its
+own try) touches the nightly card-payment recovery loop, so it ships in a patch
+with its own bench check rather than at the last moment before 1.4.0.
 
-**What it costs to leave.** A busy kiosk that never idles during opening hours reports at 02:00 and nowhere else; if it is also offline at 02:00, it may not report for a further day. Nothing is lost — a day's rows sit well inside the queue cap — but the dashboard lags.
-
-**What fixing it needs.** Its own phase, with its own non-negotiables and device checks, treated as card-payment recovery work rather than telemetry work. The re-arm is not the hard part; proving it cannot break reinit is.
-
-**Established in.** Phase 3a spec, "Known limitations"; restated in 3b and 3c specs.
+**Established in.** 1.4.0 release review, 2026-11-02.
 
 ---
 
